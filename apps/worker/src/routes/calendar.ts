@@ -223,7 +223,16 @@ calendar.get('/api/integrations/google-calendar/bookings', async (c) => {
 
 calendar.post('/api/integrations/google-calendar/book', async (c) => {
   try {
-    const body = await c.req.json<{ connectionId: string; friendId?: string; title: string; startAt: string; endAt: string; description?: string; metadata?: Record<string, unknown> }>();
+    const body = await c.req.json<{
+      connectionId: string;
+      friendId?: string;
+      lineUserId?: string;
+      title: string;
+      startAt: string;
+      endAt: string;
+      description?: string;
+      metadata?: Record<string, unknown>;
+    }>();
     if (!body.connectionId || !body.title || !body.startAt || !body.endAt) {
       return c.json({ success: false, error: 'connectionId, title, startAt, endAt are required' }, 400);
     }
@@ -234,7 +243,7 @@ calendar.post('/api/integrations/google-calendar/book', async (c) => {
       metadata: body.metadata ? JSON.stringify(body.metadata) : undefined,
     });
 
-    // Google Calendar にイベントを作成（access_token がある場合のみ、ベストエフォート）
+    // Google Calendar にイベントを作成（ベストエフォート）
     const conn = await getCalendarConnectionById(c.env.DB, body.connectionId);
     if (conn?.access_token) {
       try {
@@ -248,13 +257,103 @@ calendar.post('/api/integrations/google-calendar/book', async (c) => {
           end: body.endAt,
           description: body.description,
         });
-        // event_id を D1 予約レコードに保存
         await updateCalendarBookingEventId(c.env.DB, booking.id, eventId);
         booking.event_id = eventId;
       } catch (err) {
-        // Google API 失敗はベストエフォート — D1 予約は維持する
         console.warn('Google Calendar createEvent error (booking still created in D1):', err);
       }
+    }
+
+    // LINE プッシュ通知（ベストエフォート）
+    try {
+      // lineUserId 直接 or friendId 経由で取得
+      let lineUserId = body.lineUserId;
+      let channelAccessToken: string | undefined;
+
+      if (!lineUserId && body.friendId) {
+        const friend = await c.env.DB
+          .prepare('SELECT f.line_user_id, la.channel_access_token FROM friends f LEFT JOIN line_accounts la ON la.id = f.line_account_id WHERE f.id = ?')
+          .bind(body.friendId)
+          .first<{ line_user_id: string; channel_access_token: string }>();
+        lineUserId = friend?.line_user_id;
+        channelAccessToken = friend?.channel_access_token;
+      } else if (lineUserId) {
+        // lineUserId から channel_access_token を取得（最初のアカウントを使用）
+        const friend = await c.env.DB
+          .prepare('SELECT la.channel_access_token FROM friends f LEFT JOIN line_accounts la ON la.id = f.line_account_id WHERE f.line_user_id = ? AND f.is_following = 1 LIMIT 1')
+          .bind(lineUserId)
+          .first<{ channel_access_token: string }>();
+        channelAccessToken = friend?.channel_access_token;
+      }
+
+      if (lineUserId && channelAccessToken) {
+        // 日時ラベル生成（例: 4月21日(月) 10:00〜11:00）
+        const toJst = (iso: string) => new Date(new Date(iso).getTime());
+        const start = toJst(body.startAt);
+        const end = toJst(body.endAt);
+        const weekdays = ['日', '月', '火', '水', '木', '金', '土'];
+        const jstOffset = 9 * 60 * 60 * 1000;
+        const startJst = new Date(start.getTime() + jstOffset);
+        const endJst = new Date(end.getTime() + jstOffset);
+        const dateStr = `${startJst.getUTCMonth() + 1}月${startJst.getUTCDate()}日(${weekdays[startJst.getUTCDay()]})`;
+        const timeStr = `${String(startJst.getUTCHours()).padStart(2, '0')}:${String(startJst.getUTCMinutes()).padStart(2, '0')}〜${String(endJst.getUTCHours()).padStart(2, '0')}:${String(endJst.getUTCMinutes()).padStart(2, '0')}`;
+        const startDateStr = `${dateStr} ${timeStr}`;
+        const guestName = (body.metadata?.name as string | undefined) ?? body.title;
+
+        const pushRes = await fetch('https://api.line.me/v2/bot/message/push', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${channelAccessToken}`,
+          },
+          body: JSON.stringify({
+            to: lineUserId,
+            messages: [{
+              type: 'flex',
+              altText: `✅ 予約が確定しました（${startDateStr}）`,
+              contents: {
+                type: 'bubble',
+                header: {
+                  type: 'box', layout: 'vertical', backgroundColor: '#06C755', paddingAll: '16px',
+                  contents: [{ type: 'text', text: '✅ 予約確定', color: '#ffffff', size: 'lg', weight: 'bold' }],
+                },
+                body: {
+                  type: 'box', layout: 'vertical', spacing: 'md', paddingAll: '20px',
+                  contents: [
+                    {
+                      type: 'box', layout: 'horizontal',
+                      contents: [
+                        { type: 'text', text: '📅 日時', size: 'sm', color: '#666666', flex: 2 },
+                        { type: 'text', text: startDateStr, size: 'sm', wrap: true, flex: 5 },
+                      ],
+                    },
+                    {
+                      type: 'box', layout: 'horizontal',
+                      contents: [
+                        { type: 'text', text: '👤 お名前', size: 'sm', color: '#666666', flex: 2 },
+                        { type: 'text', text: guestName, size: 'sm', flex: 5 },
+                      ],
+                    },
+                  ],
+                },
+                footer: {
+                  type: 'box', layout: 'vertical', paddingAll: '16px',
+                  contents: [{
+                    type: 'button',
+                    action: { type: 'postback', label: 'キャンセルする', data: `cancel:${booking.id}`, displayText: '予約をキャンセルする' },
+                    style: 'secondary', height: 'sm',
+                  }],
+                },
+              },
+            }],
+          }),
+        });
+        if (!pushRes.ok) {
+          console.warn('LINE push failed:', await pushRes.text());
+        }
+      }
+    } catch (err) {
+      console.warn('LINE push notification error (booking still confirmed):', err);
     }
 
     return c.json({

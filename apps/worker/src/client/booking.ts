@@ -27,6 +27,7 @@ interface State {
   userName: string;
   userEmail: string;
   consultation: string;
+  lineUserId: string;
 }
 
 const state: State = {
@@ -40,6 +41,7 @@ const state: State = {
   userName: '',
   userEmail: '',
   consultation: '',
+  lineUserId: '',
 };
 
 function jstDateLabel(iso: string): string {
@@ -95,6 +97,7 @@ async function submitBooking(): Promise<void> {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         connectionId: CONNECTION_ID,
+        lineUserId: state.lineUserId || undefined,
         title: `${state.userName.trim()}様のご相談`,
         startAt: state.selectedSlot.startAt,
         endAt: state.selectedSlot.endAt,
@@ -248,6 +251,7 @@ export async function initBooking(): Promise<void> {
   try {
     const profile = await liff.getProfile();
     state.userName = profile.displayName;
+    state.lineUserId = profile.userId;
   } catch { /* LIFFプロファイル取得失敗は無視 */ }
 
   render();
