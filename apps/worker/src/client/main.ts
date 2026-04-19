@@ -57,7 +57,15 @@ function getPage(): string | null {
   const path = window.location.pathname.replace(/^\/+/, '');
   if (path === 'book') return 'book';
   const params = new URLSearchParams(window.location.search);
-  return params.get('page');
+  const direct = params.get('page');
+  if (direct) return direct;
+  // liff.state contains the original query string encoded (e.g. "?page=book")
+  const liffState = params.get('liff.state');
+  if (liffState) {
+    const stateStr = liffState.startsWith('?') ? liffState.slice(1) : liffState;
+    return new URLSearchParams(stateStr).get('page');
+  }
+  return null;
 }
 
 function getRedirectUrl(): string | null {

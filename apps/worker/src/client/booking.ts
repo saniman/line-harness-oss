@@ -123,7 +123,7 @@ async function submitBooking(): Promise<void> {
 }
 
 function render(): void {
-  const root = document.getElementById('booking-root');
+  const root = document.getElementById('app');
   if (!root) return;
 
   if (state.done) {
