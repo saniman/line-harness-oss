@@ -20,6 +20,7 @@ export interface CreateEventInput {
   start: string;   // ISO datetime string
   end: string;     // ISO datetime string
   description?: string;
+  attendeeEmail?: string;
 }
 
 // ── OAuth helpers ──────────────────────────────────────────────────────────
@@ -159,12 +160,16 @@ export class GoogleCalendarClient {
   async createEvent(event: CreateEventInput): Promise<{ eventId: string }> {
     const url = `${GCAL_BASE}/calendars/${encodeURIComponent(this.config.calendarId)}/events`;
 
-    const body = {
+    const body: Record<string, unknown> = {
       summary: event.summary,
       description: event.description,
       start: { dateTime: event.start, timeZone: TIMEZONE },
       end: { dateTime: event.end, timeZone: TIMEZONE },
     };
+    if (event.attendeeEmail) {
+      body.attendees = [{ email: event.attendeeEmail }];
+      body.sendUpdates = 'all';
+    }
 
     const res = await fetch(url, {
       method: 'POST',

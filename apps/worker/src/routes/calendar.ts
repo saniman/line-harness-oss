@@ -253,11 +253,13 @@ calendar.post('/api/integrations/google-calendar/book', async (c) => {
           calendarId: conn.calendar_id,
           accessToken,
         });
+        const attendeeEmail = body.metadata?.email as string | undefined;
         const { eventId } = await gcal.createEvent({
           summary: body.title,
           start: body.startAt,
           end: body.endAt,
           description: body.description,
+          attendeeEmail,
         });
         await updateCalendarBookingEventId(c.env.DB, booking.id, eventId);
         booking.event_id = eventId;
@@ -281,11 +283,14 @@ calendar.post('/api/integrations/google-calendar/book', async (c) => {
       }
 
       if (lineUserId) {
-        // friends テーブルに line_account_id FK がないため、アクティブな LINE アカウントのトークンを使用
+        // line_accounts テーブルが空の場合は Worker の環境変数から取得
         const account = await c.env.DB
           .prepare('SELECT channel_access_token FROM line_accounts WHERE is_active = 1 ORDER BY created_at DESC LIMIT 1')
           .first<{ channel_access_token: string }>();
-        channelAccessToken = account?.channel_access_token;
+        channelAccessToken = account?.channel_access_token ?? c.env.LINE_CHANNEL_ACCESS_TOKEN;
+        console.log('[LINE push] lineUserId:', lineUserId, '| token:', channelAccessToken ? '取得済み' : 'undefined');
+      } else {
+        console.log('[LINE push] lineUserId が未指定のためスキップ');
       }
 
       if (lineUserId && channelAccessToken) {
@@ -350,8 +355,10 @@ calendar.post('/api/integrations/google-calendar/book', async (c) => {
             }],
           }),
         });
+        const pushBody = await pushRes.text();
+        console.log('[LINE push] status:', pushRes.status, '| body:', pushBody);
         if (!pushRes.ok) {
-          console.warn('LINE push failed:', await pushRes.text());
+          console.warn('[LINE push] FAILED:', pushBody);
         }
       }
     } catch (err) {
