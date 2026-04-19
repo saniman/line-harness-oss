@@ -16,6 +16,7 @@ import {
   GoogleCalendarClient,
   getGoogleAuthUrl,
   exchangeCodeForTokens,
+  getValidAccessToken,
 } from '../services/google-calendar.js';
 import type { Env } from '../index.js';
 
@@ -245,11 +246,12 @@ calendar.post('/api/integrations/google-calendar/book', async (c) => {
 
     // Google Calendar にイベントを作成（ベストエフォート）
     const conn = await getCalendarConnectionById(c.env.DB, body.connectionId);
-    if (conn?.access_token) {
+    if (conn) {
       try {
+        const accessToken = await getValidAccessToken(c.env, c.env.DB, conn.id);
         const gcal = new GoogleCalendarClient({
           calendarId: conn.calendar_id,
-          accessToken: conn.access_token,
+          accessToken,
         });
         const { eventId } = await gcal.createEvent({
           summary: body.title,
@@ -272,18 +274,18 @@ calendar.post('/api/integrations/google-calendar/book', async (c) => {
 
       if (!lineUserId && body.friendId) {
         const friend = await c.env.DB
-          .prepare('SELECT f.line_user_id, la.channel_access_token FROM friends f LEFT JOIN line_accounts la ON la.id = f.line_account_id WHERE f.id = ?')
+          .prepare('SELECT line_user_id FROM friends WHERE id = ?')
           .bind(body.friendId)
-          .first<{ line_user_id: string; channel_access_token: string }>();
+          .first<{ line_user_id: string }>();
         lineUserId = friend?.line_user_id;
-        channelAccessToken = friend?.channel_access_token;
-      } else if (lineUserId) {
-        // lineUserId から channel_access_token を取得（最初のアカウントを使用）
-        const friend = await c.env.DB
-          .prepare('SELECT la.channel_access_token FROM friends f LEFT JOIN line_accounts la ON la.id = f.line_account_id WHERE f.line_user_id = ? AND f.is_following = 1 LIMIT 1')
-          .bind(lineUserId)
+      }
+
+      if (lineUserId) {
+        // friends テーブルに line_account_id FK がないため、アクティブな LINE アカウントのトークンを使用
+        const account = await c.env.DB
+          .prepare('SELECT channel_access_token FROM line_accounts WHERE is_active = 1 ORDER BY created_at DESC LIMIT 1')
           .first<{ channel_access_token: string }>();
-        channelAccessToken = friend?.channel_access_token;
+        channelAccessToken = account?.channel_access_token;
       }
 
       if (lineUserId && channelAccessToken) {
