@@ -61,6 +61,9 @@ export type Env = {
     X_HARNESS_URL?: string;  // Optional: X Harness API URL for account linking
     IG_HARNESS_URL?: string;  // Optional: IG Harness API URL for cross-platform linking
     IG_HARNESS_LINK_SECRET?: string;  // Shared secret for IG Harness link-line webhook
+    GOOGLE_CLIENT_ID: string;
+    GOOGLE_CLIENT_SECRET: string;
+    GOOGLE_REDIRECT_URI?: string;
   };
   Variables: {
     staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' };

@@ -12,10 +12,59 @@ import {
   getBookingsInRange,
   toJstString,
 } from '@line-crm/db';
-import { GoogleCalendarClient } from '../services/google-calendar.js';
+import {
+  GoogleCalendarClient,
+  getGoogleAuthUrl,
+  exchangeCodeForTokens,
+} from '../services/google-calendar.js';
 import type { Env } from '../index.js';
 
 const calendar = new Hono<Env>();
+
+// ========== OAuth ==========
+
+calendar.get('/api/integrations/google-calendar/auth', async (c) => {
+  try {
+    const state = crypto.randomUUID();
+    const url = getGoogleAuthUrl(c.env, state);
+    return c.json({ success: true, data: { url } });
+  } catch (err) {
+    console.error('GET /api/integrations/google-calendar/auth error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+calendar.get('/api/integrations/google-calendar/callback', async (c) => {
+  const code = c.req.query('code');
+  const error = c.req.query('error');
+
+  if (error || !code) {
+    return c.html(`<h1>認証失敗</h1><p>${error ?? 'codeが取得できませんでした'}</p>`, 400);
+  }
+
+  try {
+    const tokens = await exchangeCodeForTokens(c.env, code);
+    const expiresAt = new Date(Date.now() + tokens.expires_in * 1000).toISOString();
+    const id = crypto.randomUUID();
+
+    await c.env.DB.prepare(`
+      INSERT INTO google_calendar_connections
+        (id, calendar_id, auth_type, access_token, refresh_token, token_expires_at, created_at, updated_at)
+      VALUES (?, 'primary', 'oauth', ?, ?, ?, datetime('now'), datetime('now'))
+    `).bind(id, tokens.access_token, tokens.refresh_token, expiresAt).run();
+
+    return c.html(`
+      <html><body style="font-family:sans-serif;padding:32px">
+        <h1>✅ Google Calendar 連携完了</h1>
+        <p>接続ID: <code style="background:#f0f0f0;padding:4px 8px;border-radius:4px">${id}</code></p>
+        <p>このIDを管理画面の設定に保存してください。</p>
+      </body></html>
+    `);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return c.html(`<h1>エラー</h1><p>${message}</p>`, 500);
+  }
+});
 
 // ========== 接続管理 ==========
 

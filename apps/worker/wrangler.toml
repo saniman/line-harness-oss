@@ -3,11 +3,15 @@ main = "src/index.ts"
 compatibility_date = "2024-12-01"
 workers_dev = true
 
+routes = [
+  { pattern = "api.walover-co.work", custom_domain = true }
+]
+
 # ═══════════════════════════════════════════════════════════════
 # デフォルト = テスト環境 (noda@)
 # 使い方: npx wrangler deploy
 # ═══════════════════════════════════════════════════════════════
-account_id = "YOUR_DEV_ACCOUNT_ID"
+account_id = "aa7b3de8b8dc8dd263572893aa4f652e"
 
 [assets]
 directory = "dist/client"
@@ -16,11 +20,11 @@ binding = "ASSETS"
 [[d1_databases]]
 binding = "DB"
 database_name = "line-harness"
-database_id = "YOUR_DEV_D1_DATABASE_ID"
+database_id = "b41a1c65-a224-41bc-a99a-3284b43ea440"
 
-[[r2_buckets]]
-binding = "IMAGES"
-bucket_name = "line-harness-images"
+# [[r2_buckets]]
+# binding = "IMAGES"
+# bucket_name = "line-harness-images"
 
 [triggers]
 crons = ["*/5 * * * *"]

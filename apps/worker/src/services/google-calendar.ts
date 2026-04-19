@@ -1,7 +1,9 @@
 // Google Calendar API client
+import type { Env } from '../index.js';
 
 const GCAL_BASE = 'https://www.googleapis.com/calendar/v3';
 const TIMEZONE = 'Asia/Tokyo';
+const DEFAULT_REDIRECT_URI = 'https://api.walover-co.work/api/integrations/google-calendar/callback';
 
 export interface GoogleCalendarConfig {
   calendarId: string;
@@ -19,6 +21,99 @@ export interface CreateEventInput {
   end: string;     // ISO datetime string
   description?: string;
 }
+
+// ── OAuth helpers ──────────────────────────────────────────────────────────
+
+export function getGoogleAuthUrl(env: Env['Bindings'], state?: string): string {
+  const params = new URLSearchParams({
+    client_id: env.GOOGLE_CLIENT_ID,
+    redirect_uri: env.GOOGLE_REDIRECT_URI ?? DEFAULT_REDIRECT_URI,
+    response_type: 'code',
+    scope: 'https://www.googleapis.com/auth/calendar',
+    access_type: 'offline',
+    prompt: 'consent',
+    ...(state ? { state } : {}),
+  });
+  return `https://accounts.google.com/o/oauth2/v2/auth?${params}`;
+}
+
+export async function exchangeCodeForTokens(
+  env: Env['Bindings'],
+  code: string
+): Promise<{ access_token: string; refresh_token: string; expires_in: number }> {
+  const res = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      code,
+      client_id: env.GOOGLE_CLIENT_ID,
+      client_secret: env.GOOGLE_CLIENT_SECRET,
+      redirect_uri: env.GOOGLE_REDIRECT_URI ?? DEFAULT_REDIRECT_URI,
+      grant_type: 'authorization_code',
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Token exchange failed: ${err}`);
+  }
+  return res.json();
+}
+
+export async function refreshAccessToken(
+  env: Env['Bindings'],
+  refreshToken: string
+): Promise<{ access_token: string; expires_in: number }> {
+  const res = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      refresh_token: refreshToken,
+      client_id: env.GOOGLE_CLIENT_ID,
+      client_secret: env.GOOGLE_CLIENT_SECRET,
+      grant_type: 'refresh_token',
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Token refresh failed: ${err}`);
+  }
+  return res.json();
+}
+
+// Returns a valid access token, refreshing if within 5 minutes of expiry.
+export async function getValidAccessToken(
+  env: Env['Bindings'],
+  db: D1Database,
+  connectionId: string
+): Promise<string> {
+  const conn = await db
+    .prepare('SELECT * FROM google_calendar_connections WHERE id = ?')
+    .bind(connectionId)
+    .first<Record<string, unknown>>();
+
+  if (!conn) throw new Error('Connection not found');
+  if (!conn.refresh_token) throw new Error('No refresh token available');
+
+  const expiresAt = conn.token_expires_at ? new Date(conn.token_expires_at as string) : null;
+  const shouldRefresh =
+    !expiresAt || expiresAt.getTime() - Date.now() < 5 * 60 * 1000;
+
+  if (shouldRefresh) {
+    const tokens = await refreshAccessToken(env, conn.refresh_token as string);
+    const newExpiresAt = new Date(Date.now() + tokens.expires_in * 1000).toISOString();
+    await db
+      .prepare(
+        'UPDATE google_calendar_connections SET access_token = ?, token_expires_at = ? WHERE id = ?'
+      )
+      .bind(tokens.access_token, newExpiresAt, connectionId)
+      .run();
+    return tokens.access_token;
+  }
+
+  return conn.access_token as string;
+}
+
+// ── API client ─────────────────────────────────────────────────────────────
 
 export class GoogleCalendarClient {
   constructor(private config: GoogleCalendarConfig) {}

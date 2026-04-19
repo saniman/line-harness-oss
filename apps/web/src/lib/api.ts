@@ -554,4 +554,21 @@ export const api = {
     regenerateKey: (id: string) =>
       fetchApi<ApiResponse<{ apiKey: string }>>(`/api/staff/${id}/regenerate-key`, { method: 'POST' }),
   },
+  googleCalendar: {
+    list: () =>
+      fetchApi<ApiResponse<CalendarConnection[]>>('/api/integrations/google-calendar'),
+    getAuthUrl: () =>
+      fetchApi<ApiResponse<{ url: string }>>('/api/integrations/google-calendar/auth'),
+    delete: (id: string) =>
+      fetchApi<ApiResponse<null>>(`/api/integrations/google-calendar/${id}`, { method: 'DELETE' }),
+  },
+}
+
+export type CalendarConnection = {
+  id: string
+  calendarId: string
+  authType: string
+  isActive: boolean
+  createdAt: string
+  updatedAt: string
 }

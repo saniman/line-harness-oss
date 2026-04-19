@@ -16,6 +16,8 @@ import {
 } from '@line-crm/db';
 import { fireEvent } from '../services/event-bus.js';
 import { buildMessage, expandVariables } from '../services/step-delivery.js';
+import { getValidAccessToken, GoogleCalendarClient } from '../services/google-calendar.js';
+import { toJstString } from '@line-crm/db';
 import type { Env } from '../index.js';
 
 const webhook = new Hono<Env>();
@@ -66,7 +68,7 @@ webhook.post('/webhook', async (c) => {
   const processingPromise = (async () => {
     for (const event of body.events) {
       try {
-        await handleEvent(db, lineClient, event, channelAccessToken, matchedAccountId, c.env.WORKER_URL || new URL(c.req.url).origin);
+        await handleEvent(db, lineClient, event, channelAccessToken, matchedAccountId, c.env.WORKER_URL || new URL(c.req.url).origin, c.env);
       } catch (err) {
         console.error('Error handling webhook event:', err);
       }
@@ -85,6 +87,7 @@ async function handleEvent(
   lineAccessToken: string,
   lineAccountId: string | null = null,
   workerUrl?: string,
+  env?: Env['Bindings'],
 ): Promise<void> {
   if (event.type === 'follow') {
     const userId =
@@ -197,10 +200,157 @@ async function handleEvent(
     const userId = event.source.type === 'user' ? event.source.userId : undefined;
     if (!userId) return;
 
-    const friend = await getFriendByLineUserId(db, userId);
-    if (!friend) return;
+    let friend = await getFriendByLineUserId(db, userId);
+    if (!friend) {
+      let profile;
+      try { profile = await lineClient.getProfile(userId); } catch {}
+      friend = await upsertFriend(db, {
+        lineUserId: userId,
+        displayName: profile?.displayName ?? null,
+        pictureUrl: profile?.pictureUrl ?? null,
+        statusMessage: profile?.statusMessage ?? null,
+      });
+    }
 
     const postbackData = (event as unknown as { postback: { data: string } }).postback.data;
+
+    // 予約確定 postback: "book:{connectionId}:{startAt}:{endAt}"
+    if (postbackData.startsWith('book:') && env) {
+      const parts = postbackData.split(':');
+      // parts: ['book', connectionId, date, 'T', time, offset] — reassemble ISO strings
+      // Format: book:{connectionId}:{startISO}:{endISO}
+      // We encode as: book:{connId}|{startAt}|{endAt}
+      const payload = postbackData.slice('book:'.length);
+      const [connId, startAt, endAt] = payload.split('|');
+      if (connId && startAt && endAt) {
+        try {
+          const accessToken = await getValidAccessToken(env, db, connId);
+          const conn = await db.prepare('SELECT calendar_id FROM google_calendar_connections WHERE id = ?')
+            .bind(connId).first<{ calendar_id: string }>();
+          const gcal = new GoogleCalendarClient({ calendarId: conn?.calendar_id ?? 'primary', accessToken });
+
+          const bookingId = crypto.randomUUID();
+          const startDate = new Date(startAt);
+          const mm = String(startDate.getMonth() + 1).padStart(2, '0');
+          const dd = String(startDate.getDate()).padStart(2, '0');
+          const hh = String(startDate.getHours()).padStart(2, '0');
+          const title = `${friend.display_name ?? 'LINE予約'} ${mm}/${dd} ${hh}:00`;
+
+          await db.prepare(
+            `INSERT INTO calendar_bookings (id, connection_id, friend_id, title, start_at, end_at, status, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, 'confirmed', datetime('now'), datetime('now'))`
+          ).bind(bookingId, connId, friend.id, title, startAt, endAt).run();
+
+          let eventId: string | null = null;
+          try {
+            const result = await gcal.createEvent({ summary: title, start: startAt, end: endAt });
+            eventId = result.eventId;
+            await db.prepare('UPDATE calendar_bookings SET event_id = ? WHERE id = ?').bind(eventId, bookingId).run();
+          } catch (err) {
+            console.warn('Google Calendar createEvent failed (booking saved in D1):', err);
+          }
+
+          const startDt = new Date(startAt);
+          const dateLabel = `${startDt.getFullYear()}年${startDt.getMonth() + 1}月${startDt.getDate()}日`;
+          const timeLabel = `${String(startDt.getHours()).padStart(2, '0')}:00〜${String(new Date(endAt).getHours()).padStart(2, '0')}:00`;
+
+          await lineClient.replyMessage(event.replyToken, [buildMessage('flex', JSON.stringify({
+            type: 'bubble',
+            header: { type: 'box', layout: 'vertical', backgroundColor: '#06C755', paddingAll: '20px',
+              contents: [{ type: 'text', text: '✅ 予約が確定しました', color: '#ffffff', weight: 'bold', size: 'lg' }],
+            },
+            body: { type: 'box', layout: 'vertical', paddingAll: '20px', spacing: 'md',
+              contents: [
+                { type: 'box', layout: 'horizontal', contents: [
+                  { type: 'text', text: '日時', size: 'sm', color: '#8b8b8b', flex: 2 },
+                  { type: 'text', text: `${dateLabel} ${timeLabel}`, size: 'sm', color: '#1e293b', weight: 'bold', flex: 5, wrap: true },
+                ]},
+                { type: 'separator' },
+                { type: 'text', text: '予約をキャンセルする場合は下のボタンを押してください。', size: 'xs', color: '#8b8b8b', wrap: true },
+              ],
+            },
+            footer: { type: 'box', layout: 'vertical', paddingAll: '12px',
+              contents: [{
+                type: 'button',
+                action: {
+                  type: 'postback',
+                  label: '予約をキャンセル',
+                  data: `cancel:${bookingId}`,
+                  displayText: '予約をキャンセルします',
+                },
+                style: 'secondary',
+                color: '#ef4444',
+                height: 'sm',
+              }],
+            },
+          }))]);
+        } catch (err) {
+          console.error('Booking postback error:', err);
+          await lineClient.replyMessage(event.replyToken, [buildMessage('text', '予約処理中にエラーが発生しました。もう一度お試しください。')]);
+        }
+        return;
+      }
+    }
+
+    // キャンセル postback: "cancel:{bookingId}"
+    if (postbackData.startsWith('cancel:') && env) {
+      const bookingId = postbackData.slice('cancel:'.length);
+      try {
+        const booking = await db
+          .prepare("SELECT * FROM calendar_bookings WHERE id = ? AND friend_id = ? AND status = 'confirmed'")
+          .bind(bookingId, friend.id)
+          .first<{ id: string; connection_id: string; event_id: string | null; start_at: string; end_at: string }>();
+
+        if (!booking) {
+          await lineClient.replyMessage(event.replyToken, [buildMessage('text', '予約が見つかりませんでした。すでにキャンセル済みの可能性があります。')]);
+          return;
+        }
+
+        // D1 のステータスを cancelled に更新
+        await db
+          .prepare("UPDATE calendar_bookings SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?")
+          .bind(bookingId).run();
+
+        // Google Calendar のイベントを削除（ベストエフォート）
+        if (booking.event_id && booking.connection_id) {
+          try {
+            const accessToken = await getValidAccessToken(env, db, booking.connection_id);
+            const conn = await db
+              .prepare('SELECT calendar_id FROM google_calendar_connections WHERE id = ?')
+              .bind(booking.connection_id).first<{ calendar_id: string }>();
+            const gcal = new GoogleCalendarClient({ calendarId: conn?.calendar_id ?? 'primary', accessToken });
+            await gcal.deleteEvent(booking.event_id);
+          } catch (err) {
+            console.warn('Google Calendar deleteEvent failed (D1 status still cancelled):', err);
+          }
+        }
+
+        const startDt = new Date(booking.start_at);
+        const dateLabel = `${startDt.getFullYear()}年${startDt.getMonth() + 1}月${startDt.getDate()}日`;
+        const timeLabel = `${String(startDt.getHours()).padStart(2, '0')}:00〜${String(new Date(booking.end_at).getHours()).padStart(2, '0')}:00`;
+
+        await lineClient.replyMessage(event.replyToken, [buildMessage('flex', JSON.stringify({
+          type: 'bubble',
+          header: { type: 'box', layout: 'vertical', backgroundColor: '#6b7280', paddingAll: '20px',
+            contents: [{ type: 'text', text: '🗑️ 予約をキャンセルしました', color: '#ffffff', weight: 'bold', size: 'md' }],
+          },
+          body: { type: 'box', layout: 'vertical', paddingAll: '20px', spacing: 'md',
+            contents: [
+              { type: 'box', layout: 'horizontal', contents: [
+                { type: 'text', text: '日時', size: 'sm', color: '#8b8b8b', flex: 2 },
+                { type: 'text', text: `${dateLabel} ${timeLabel}`, size: 'sm', color: '#6b7280', flex: 5, wrap: true },
+              ]},
+              { type: 'separator' },
+              { type: 'text', text: '再度ご予約を希望される場合は「予約」とお送りください。', size: 'xs', color: '#8b8b8b', wrap: true },
+            ],
+          },
+        }))]);
+      } catch (err) {
+        console.error('Cancel postback error:', err);
+        await lineClient.replyMessage(event.replyToken, [buildMessage('text', 'キャンセル処理中にエラーが発生しました。')]);
+      }
+      return;
+    }
 
     // Match postback data against auto_replies (exact match on keyword)
     const autoReplyQuery = lineAccountId
@@ -243,8 +393,17 @@ async function handleEvent(
       event.source.type === 'user' ? event.source.userId : undefined;
     if (!userId) return;
 
-    const friend = await getFriendByLineUserId(db, userId);
-    if (!friend) return;
+    let friend = await getFriendByLineUserId(db, userId);
+    if (!friend) {
+      let profile;
+      try { profile = await lineClient.getProfile(userId); } catch {}
+      friend = await upsertFriend(db, {
+        lineUserId: userId,
+        displayName: profile?.displayName ?? null,
+        pictureUrl: profile?.pictureUrl ?? null,
+        statusMessage: profile?.statusMessage ?? null,
+      });
+    }
 
     const incomingText = textMessage.text;
     const now = jstNow();
@@ -356,6 +515,26 @@ async function handleEvent(
       }
     }
 
+    let matched = false;
+    let replyTokenConsumed = false;
+
+    // 予約キーワード検出
+    if (incomingText.includes('予約') && env) {
+      const replyMessage = await buildBookingCarousel(db, env, friend.display_name ?? 'ゲスト');
+      if (replyMessage) {
+        try {
+          await lineClient.replyMessage(event.replyToken, [replyMessage]);
+          replyTokenConsumed = true;
+        } catch (err) {
+          console.error('Failed to send booking carousel:', err);
+        }
+        if (replyTokenConsumed) {
+          await fireEvent(db, 'message_received', { friendId: friend.id, eventData: { text: incomingText, matched: true } }, lineAccessToken, lineAccountId);
+          return;
+        }
+      }
+    }
+
     // 自動返信チェック（このアカウントのルール + グローバルルールのみ）
     // NOTE: Auto-replies use replyMessage (free, no quota) instead of pushMessage
     // The replyToken is only valid for ~1 minute after the message event
@@ -374,8 +553,6 @@ async function handleEvent(
         created_at: string;
       }>();
 
-    let matched = false;
-    let replyTokenConsumed = false;
     for (const rule of autoReplies.results) {
       const isMatch =
         rule.match_type === 'exact'
@@ -421,6 +598,125 @@ async function handleEvent(
 
     return;
   }
+}
+
+// ── Booking carousel builder ────────────────────────────────────────────────
+
+async function buildBookingCarousel(
+  db: D1Database,
+  env: Env['Bindings'],
+  userName: string,
+): Promise<ReturnType<typeof buildMessage> | null> {
+  // アクティブな OAuth 接続を取得
+  const conn = await db
+    .prepare("SELECT id, calendar_id FROM google_calendar_connections WHERE is_active = 1 AND auth_type = 'oauth' ORDER BY created_at DESC LIMIT 1")
+    .first<{ id: string; calendar_id: string }>();
+  if (!conn) return null;
+
+  const START_HOUR = 10;
+  const END_HOUR = 18;
+  const SLOT_MIN = 60;
+
+  // 翌日〜7日先のスロットを収集（今日は除外）
+  const bubbles: unknown[] = [];
+  const today = new Date(Date.now() + 9 * 3600_000);
+  today.setUTCHours(0, 0, 0, 0);
+
+  let accessToken: string;
+  try {
+    accessToken = await getValidAccessToken(env, db, conn.id);
+  } catch {
+    return null;
+  }
+  const gcal = new GoogleCalendarClient({ calendarId: conn.calendar_id, accessToken });
+
+  for (let dayOffset = 1; dayOffset <= 7 && bubbles.length < 5; dayOffset++) {
+    const day = new Date(today.getTime() + dayOffset * 86_400_000);
+    const yyyy = day.getUTCFullYear();
+    const mm = String(day.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(day.getUTCDate()).padStart(2, '0');
+    const dateStr = `${yyyy}-${mm}-${dd}`;
+    const dayStart = `${dateStr}T${String(START_HOUR).padStart(2, '0')}:00:00+09:00`;
+    const dayEnd = `${dateStr}T${String(END_HOUR).padStart(2, '0')}:00:00+09:00`;
+
+    // D1 予約取得
+    const d1Bookings = await db
+      .prepare("SELECT start_at, end_at FROM calendar_bookings WHERE connection_id = ? AND start_at >= ? AND end_at <= ? AND status = 'confirmed'")
+      .bind(conn.id, dayStart, dayEnd)
+      .all<{ start_at: string; end_at: string }>();
+
+    // Google FreeBusy 取得（ベストエフォート）
+    let busyIntervals: { start: string; end: string }[] = [];
+    try {
+      busyIntervals = await gcal.getFreeBusy(dayStart, dayEnd);
+    } catch { /* フォールバック: D1 のみ */ }
+
+    // スロット生成
+    const slotButtons: unknown[] = [];
+    const baseDate = new Date(`${dateStr}T${String(START_HOUR).padStart(2, '0')}:00:00+09:00`);
+
+    for (let h = START_HOUR; h < END_HOUR; h++) {
+      const slotStart = new Date(baseDate.getTime() + (h - START_HOUR) * 3600_000);
+      const slotEnd = new Date(slotStart.getTime() + SLOT_MIN * 60_000);
+      const startStr = toJstString(slotStart);
+      const endStr = toJstString(slotEnd);
+
+      const inD1 = d1Bookings.results.some(b =>
+        slotStart.getTime() < new Date(b.end_at).getTime() &&
+        slotEnd.getTime() > new Date(b.start_at).getTime()
+      );
+      const inGoogle = busyIntervals.some(iv =>
+        slotStart.getTime() < new Date(iv.end).getTime() &&
+        slotEnd.getTime() > new Date(iv.start).getTime()
+      );
+
+      if (!inD1 && !inGoogle) {
+        slotButtons.push({
+          type: 'button',
+          action: {
+            type: 'postback',
+            label: `${h}:00〜${h + 1}:00`,
+            data: `book:${conn.id}|${startStr}|${endStr}`,
+            displayText: `${mm}/${dd} ${h}:00〜${h + 1}:00 を予約`,
+          },
+          style: 'primary',
+          color: '#06C755',
+          margin: 'sm',
+          height: 'sm',
+        });
+      }
+    }
+
+    if (slotButtons.length === 0) continue;
+
+    const weekdays = ['日', '月', '火', '水', '木', '金', '土'];
+    const weekday = weekdays[day.getUTCDay()];
+
+    bubbles.push({
+      type: 'bubble',
+      size: 'kilo',
+      header: {
+        type: 'box', layout: 'vertical', backgroundColor: '#f0fdf4', paddingAll: '16px',
+        contents: [
+          { type: 'text', text: `${mm}/${dd}（${weekday}）`, weight: 'bold', size: 'md', color: '#1e293b' },
+          { type: 'text', text: `${slotButtons.length}枠 空きあり`, size: 'xs', color: '#06C755', margin: 'xs' },
+        ],
+      },
+      body: {
+        type: 'box', layout: 'vertical', paddingAll: '12px', spacing: 'xs',
+        contents: slotButtons.slice(0, 6),
+      },
+    });
+  }
+
+  if (bubbles.length === 0) {
+    return buildMessage('text', '申し訳ございません。直近7日間の空きスロットが見つかりませんでした。');
+  }
+
+  return buildMessage('flex', JSON.stringify({
+    type: 'carousel',
+    contents: bubbles,
+  }));
 }
 
 export { webhook };
