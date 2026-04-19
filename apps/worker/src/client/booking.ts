@@ -1,460 +1,254 @@
-/**
- * LIFF Booking Page — Calendar-based slot booking
- *
- * Flow:
- * 1. Show calendar date picker (current month)
- * 2. Tap date → fetch available slots from API
- * 3. Tap slot → show confirm section
- * 4. Submit booking → show confirmation
- */
-
 declare const liff: {
   init(config: { liffId: string }): Promise<void>;
   isLoggedIn(): boolean;
   login(opts?: { redirectUri?: string }): void;
   getProfile(): Promise<{ userId: string; displayName: string; pictureUrl?: string }>;
   getIDToken(): string | null;
-  getDecodedIDToken(): { sub: string; name?: string; email?: string; picture?: string } | null;
   isInClient(): boolean;
   closeWindow(): void;
 };
 
 const CONNECTION_ID = import.meta.env?.VITE_CALENDAR_CONNECTION_ID || '';
+const API_BASE = import.meta.env?.VITE_API_BASE || '';
 
 interface Slot {
   startAt: string;
   endAt: string;
-  available: boolean;
 }
 
-interface BookingState {
-  currentYear: number;
-  currentMonth: number; // 0-indexed
+interface State {
   selectedDate: string | null;
-  slots: Slot[];
   selectedSlot: Slot | null;
-  profile: { userId: string; displayName: string; pictureUrl?: string } | null;
-  friendId: string | null;
-  loading: boolean;
+  slots: Slot[];
+  loadingSlots: boolean;
   submitting: boolean;
+  done: boolean;
+  error: string;
+  userName: string;
+  userEmail: string;
+  consultation: string;
 }
 
-const state: BookingState = {
-  currentYear: new Date().getFullYear(),
-  currentMonth: new Date().getMonth(),
+const state: State = {
   selectedDate: null,
-  slots: [],
   selectedSlot: null,
-  profile: null,
-  friendId: null,
-  loading: false,
+  slots: [],
+  loadingSlots: false,
   submitting: false,
+  done: false,
+  error: '',
+  userName: '',
+  userEmail: '',
+  consultation: '',
 };
 
-function escapeHtml(str: string): string {
-  const div = document.createElement('div');
-  div.textContent = str;
-  return div.innerHTML;
-}
-
-function apiCall(path: string, options?: RequestInit): Promise<Response> {
-  return fetch(path, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...options?.headers,
-    },
-  });
-}
-
-function formatTime(isoString: string): string {
-  const d = new Date(isoString);
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-}
-
-function formatDateJa(dateStr: string): string {
-  const d = new Date(dateStr + 'T00:00:00');
+function jstDateLabel(iso: string): string {
+  const d = new Date(iso);
+  const offset = 9 * 60 * 60 * 1000;
+  const jst = new Date(d.getTime() + offset);
+  const mm = String(jst.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(jst.getUTCDate()).padStart(2, '0');
   const weekdays = ['日', '月', '火', '水', '木', '金', '土'];
-  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日(${weekdays[d.getDay()]})`;
+  const dow = weekdays[jst.getUTCDay()];
+  return `${mm}/${dd}(${dow})`;
 }
 
-function getApp(): HTMLElement {
-  return document.getElementById('app')!;
+function jstTimeLabel(iso: string): string {
+  const d = new Date(iso);
+  const offset = 9 * 60 * 60 * 1000;
+  const jst = new Date(d.getTime() + offset);
+  const hh = String(jst.getUTCHours()).padStart(2, '0');
+  const min = String(jst.getUTCMinutes()).padStart(2, '0');
+  return `${hh}:${min}`;
 }
 
-// ========== Calendar Rendering ==========
-
-function getDaysInMonth(year: number, month: number): number {
-  return new Date(year, month + 1, 0).getDate();
-}
-
-function getFirstDayOfWeek(year: number, month: number): number {
-  return new Date(year, month, 1).getDay();
-}
-
-function isToday(year: number, month: number, day: number): boolean {
-  const now = new Date();
-  return now.getFullYear() === year && now.getMonth() === month && now.getDate() === day;
-}
-
-function isPast(year: number, month: number, day: number): boolean {
-  const now = new Date();
-  const target = new Date(year, month, day);
-  now.setHours(0, 0, 0, 0);
-  return target < now;
-}
-
-function dateToString(year: number, month: number, day: number): string {
-  return `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-}
-
-function renderCalendar(): string {
-  const { currentYear, currentMonth, selectedDate } = state;
-  const daysInMonth = getDaysInMonth(currentYear, currentMonth);
-  const firstDay = getFirstDayOfWeek(currentYear, currentMonth);
-  const weekdays = ['日', '月', '火', '水', '木', '金', '土'];
-
-  let html = `
-    <div class="booking-calendar">
-      <div class="calendar-header">
-        <button class="cal-nav" data-action="prev-month">&lt;</button>
-        <span class="cal-title">${currentYear}年${currentMonth + 1}月</span>
-        <button class="cal-nav" data-action="next-month">&gt;</button>
-      </div>
-      <div class="cal-weekdays">
-        ${weekdays.map((d, i) => `<span class="${i === 0 ? 'sun' : i === 6 ? 'sat' : ''}">${d}</span>`).join('')}
-      </div>
-      <div class="cal-days">
-  `;
-
-  // Empty cells before first day
-  for (let i = 0; i < firstDay; i++) {
-    html += '<span class="cal-day empty"></span>';
+function get14Days(): string[] {
+  const days: string[] = [];
+  const now = new Date(Date.now() + 9 * 60 * 60 * 1000);
+  now.setUTCHours(0, 0, 0, 0);
+  for (let i = 1; i <= 14; i++) {
+    const d = new Date(now.getTime() + i * 86400000);
+    const yyyy = d.getUTCFullYear();
+    const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(d.getUTCDate()).padStart(2, '0');
+    days.push(`${yyyy}-${mm}-${dd}`);
   }
-
-  for (let day = 1; day <= daysInMonth; day++) {
-    const dateStr = dateToString(currentYear, currentMonth, day);
-    const past = isPast(currentYear, currentMonth, day);
-    const today = isToday(currentYear, currentMonth, day);
-    const selected = selectedDate === dateStr;
-    const classes = [
-      'cal-day',
-      past ? 'past' : 'active',
-      today ? 'today' : '',
-      selected ? 'selected' : '',
-      new Date(currentYear, currentMonth, day).getDay() === 0 ? 'sun' : '',
-      new Date(currentYear, currentMonth, day).getDay() === 6 ? 'sat' : '',
-    ].filter(Boolean).join(' ');
-
-    html += `<span class="${classes}" ${past ? '' : `data-date="${dateStr}"`}>${day}</span>`;
-  }
-
-  html += '</div></div>';
-  return html;
+  return days;
 }
 
-// ========== Slots Rendering ==========
-
-function renderSlots(): string {
-  const { slots, selectedDate, selectedSlot, loading } = state;
-
-  if (!selectedDate) return '';
-
-  if (loading) {
-    return `
-      <div class="slots-section">
-        <h3>${formatDateJa(selectedDate)}</h3>
-        <div class="slots-loading">
-          <div class="loading-spinner"></div>
-          <p>空き状況を確認中...</p>
-        </div>
-      </div>
-    `;
-  }
-
-  if (slots.length === 0) {
-    return `
-      <div class="slots-section">
-        <h3>${formatDateJa(selectedDate)}</h3>
-        <p class="no-slots">この日は予約枠がありません</p>
-      </div>
-    `;
-  }
-
-  const slotButtons = slots.map((slot) => {
-    const isSelected = selectedSlot?.startAt === slot.startAt;
-    const cls = slot.available
-      ? (isSelected ? 'slot-btn selected' : 'slot-btn available')
-      : 'slot-btn full';
-    return `<button class="${cls}" ${slot.available ? `data-start="${slot.startAt}" data-end="${slot.endAt}"` : 'disabled'}>${formatTime(slot.startAt)} - ${formatTime(slot.endAt)}</button>`;
-  }).join('');
-
-  return `
-    <div class="slots-section">
-      <h3>${formatDateJa(selectedDate)}</h3>
-      <div class="slots-grid">${slotButtons}</div>
-    </div>
-  `;
-}
-
-// ========== Confirm Section ==========
-
-function renderConfirm(): string {
-  const { selectedSlot, selectedDate, profile } = state;
-  if (!selectedSlot || !selectedDate) return '';
-
-  return `
-    <div class="confirm-section">
-      <div class="confirm-card">
-        <h3>予約内容の確認</h3>
-        <div class="confirm-details">
-          <div class="confirm-row">
-            <span class="confirm-label">日付</span>
-            <span class="confirm-value">${formatDateJa(selectedDate)}</span>
-          </div>
-          <div class="confirm-row">
-            <span class="confirm-label">時間</span>
-            <span class="confirm-value">${formatTime(selectedSlot.startAt)} - ${formatTime(selectedSlot.endAt)}</span>
-          </div>
-          <div class="confirm-row">
-            <span class="confirm-label">お名前</span>
-            <span class="confirm-value">${profile ? escapeHtml(profile.displayName) : '---'}</span>
-          </div>
-        </div>
-        <button class="book-btn" data-action="confirm-booking">予約を確定する</button>
-      </div>
-    </div>
-  `;
-}
-
-// ========== Main Render ==========
-
-function render(): void {
-  const app = getApp();
-  app.innerHTML = `
-    <div class="booking-page">
-      <div class="booking-header">
-        <h1>予約</h1>
-        <p>ご希望の日時をお選びください</p>
-      </div>
-      ${renderCalendar()}
-      ${renderSlots()}
-      ${renderConfirm()}
-    </div>
-  `;
-  attachEvents();
-}
-
-function renderSuccess(date: string, slot: Slot): void {
-  const app = getApp();
-  app.innerHTML = `
-    <div class="booking-page">
-      <div class="success-card">
-        <div class="success-icon">✓</div>
-        <h2>予約が完了しました</h2>
-        <div class="confirm-details">
-          <div class="confirm-row">
-            <span class="confirm-label">日付</span>
-            <span class="confirm-value">${formatDateJa(date)}</span>
-          </div>
-          <div class="confirm-row">
-            <span class="confirm-label">時間</span>
-            <span class="confirm-value">${formatTime(slot.startAt)} - ${formatTime(slot.endAt)}</span>
-          </div>
-        </div>
-        <p class="success-message">ご予約ありがとうございます。<br>当日のお越しをお待ちしております。</p>
-        <button class="close-btn" data-action="close">閉じる</button>
-      </div>
-    </div>
-  `;
-
-  const closeBtn = app.querySelector('[data-action="close"]');
-  closeBtn?.addEventListener('click', () => {
-    if (liff.isInClient()) {
-      liff.closeWindow();
-    } else {
-      window.close();
-    }
-  });
-}
-
-function renderError(message: string): void {
-  const app = getApp();
-  app.innerHTML = `
-    <div class="booking-page">
-      <div class="card">
-        <h2 style="color: #e53e3e;">エラー</h2>
-        <p class="error">${escapeHtml(message)}</p>
-        <button class="close-btn" data-action="retry" style="margin-top:16px;">やり直す</button>
-      </div>
-    </div>
-  `;
-  app.querySelector('[data-action="retry"]')?.addEventListener('click', () => {
-    state.selectedDate = null;
-    state.selectedSlot = null;
-    state.slots = [];
-    render();
-  });
-}
-
-// ========== Event Handlers ==========
-
-function attachEvents(): void {
-  const app = getApp();
-
-  // Month navigation
-  app.querySelectorAll('.cal-nav').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const action = (btn as HTMLElement).dataset.action;
-      if (action === 'prev-month') {
-        state.currentMonth--;
-        if (state.currentMonth < 0) {
-          state.currentMonth = 11;
-          state.currentYear--;
-        }
-      } else {
-        state.currentMonth++;
-        if (state.currentMonth > 11) {
-          state.currentMonth = 0;
-          state.currentYear++;
-        }
-      }
-      state.selectedDate = null;
-      state.selectedSlot = null;
-      state.slots = [];
-      render();
-    });
-  });
-
-  // Date selection
-  app.querySelectorAll('.cal-day.active').forEach((el) => {
-    el.addEventListener('click', () => {
-      const date = (el as HTMLElement).dataset.date;
-      if (date) {
-        state.selectedDate = date;
-        state.selectedSlot = null;
-        state.slots = [];
-        state.loading = true;
-        render();
-        fetchSlots(date);
-      }
-    });
-  });
-
-  // Slot selection
-  app.querySelectorAll('.slot-btn.available').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const startAt = (btn as HTMLElement).dataset.start!;
-      const endAt = (btn as HTMLElement).dataset.end!;
-      state.selectedSlot = { startAt, endAt, available: true };
-      render();
-      // Scroll to confirm
-      setTimeout(() => {
-        const confirmEl = getApp().querySelector('.confirm-section');
-        confirmEl?.scrollIntoView({ behavior: 'smooth' });
-      }, 50);
-    });
-  });
-
-  // Confirm booking
-  const confirmBtn = app.querySelector('[data-action="confirm-booking"]');
-  confirmBtn?.addEventListener('click', () => submitBooking());
-}
-
-// ========== API Calls ==========
-
-async function fetchSlots(date: string): Promise<void> {
-  try {
-    const params = new URLSearchParams({ date });
-    if (CONNECTION_ID) params.set('connectionId', CONNECTION_ID);
-    const res = await apiCall(`/api/integrations/google-calendar/slots?${params}`);
-    if (!res.ok) throw new Error('スロット取得に失敗しました');
-    const json = await res.json() as { success: boolean; data: Slot[] };
-    if (!json.success) throw new Error('スロット取得に失敗しました');
-    state.slots = json.data;
-  } catch (err) {
-    state.slots = [];
-    console.error('fetchSlots error:', err);
-  } finally {
-    state.loading = false;
-    render();
-  }
+async function fetchSlots(date: string): Promise<Slot[]> {
+  const url = `${API_BASE}/api/integrations/google-calendar/slots?connectionId=${CONNECTION_ID}&date=${date}`;
+  const res = await fetch(url);
+  if (!res.ok) return [];
+  const json = await res.json() as { success: boolean; data: Slot[] };
+  return json.success ? json.data.filter(s => s.available !== false) : [];
 }
 
 async function submitBooking(): Promise<void> {
-  const { selectedSlot, selectedDate, profile, friendId } = state;
-  if (!selectedSlot || !selectedDate || !profile || state.submitting) return;
+  if (!state.selectedSlot || !state.userName.trim()) return;
   state.submitting = true;
-
-  const confirmBtn = getApp().querySelector('[data-action="confirm-booking"]') as HTMLButtonElement | null;
-  if (confirmBtn) {
-    confirmBtn.disabled = true;
-    confirmBtn.textContent = '送信中...';
-  }
-
+  state.error = '';
+  render();
   try {
-    const body: Record<string, unknown> = {
-      title: `${profile.displayName}様 予約`,
-      startAt: selectedSlot.startAt,
-      endAt: selectedSlot.endAt,
-    };
-    if (CONNECTION_ID) body.connectionId = CONNECTION_ID;
-    if (friendId) body.friendId = friendId;
-
-    const res = await apiCall('/api/integrations/google-calendar/book', {
+    const res = await fetch(`${API_BASE}/api/integrations/google-calendar/book`, {
       method: 'POST',
-      body: JSON.stringify(body),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        connectionId: CONNECTION_ID,
+        title: `${state.userName.trim()}様のご相談`,
+        startAt: state.selectedSlot.startAt,
+        endAt: state.selectedSlot.endAt,
+        description: state.consultation.trim() || undefined,
+        metadata: {
+          name: state.userName.trim(),
+          email: state.userEmail.trim() || undefined,
+        },
+      }),
     });
-
-    if (!res.ok) {
-      const errData = await res.json().catch(() => null) as { error?: string } | null;
-      throw new Error(errData?.error || '予約に失敗しました');
+    const json = await res.json() as { success: boolean; error?: string };
+    if (json.success) {
+      state.done = true;
+      render();
+      setTimeout(() => {
+        if (liff.isInClient()) liff.closeWindow();
+      }, 3000);
+    } else {
+      state.error = json.error || '予約に失敗しました。もう一度お試しください。';
     }
-
-    renderSuccess(selectedDate, selectedSlot);
-  } catch (err) {
-    state.submitting = false;
-    renderError(err instanceof Error ? err.message : '予約に失敗しました');
+  } catch {
+    state.error = 'ネットワークエラーが発生しました。';
   }
+  state.submitting = false;
+  render();
 }
 
-// ========== Init ==========
+function render(): void {
+  const root = document.getElementById('booking-root');
+  if (!root) return;
+
+  if (state.done) {
+    root.innerHTML = `
+      <div style="text-align:center;padding:48px 24px;">
+        <div style="font-size:48px;margin-bottom:16px;">✅</div>
+        <div style="font-size:18px;font-weight:bold;color:#1e293b;margin-bottom:8px;">予約が完了しました</div>
+        <div style="font-size:14px;color:#64748b;">確認メッセージをLINEにお送りします。<br>まもなくこの画面は閉じます。</div>
+      </div>`;
+    return;
+  }
+
+  const days = get14Days();
+
+  const dateTabs = days.map(d => {
+    const active = d === state.selectedDate;
+    const label = jstDateLabel(`${d}T00:00:00+09:00`);
+    return `<button
+      onclick="window.__selectDate('${d}')"
+      style="flex-shrink:0;padding:8px 14px;border-radius:20px;border:2px solid ${active ? '#06C755' : '#e2e8f0'};
+        background:${active ? '#06C755' : '#fff'};color:${active ? '#fff' : '#334155'};
+        font-size:13px;font-weight:${active ? 'bold' : 'normal'};cursor:pointer;white-space:nowrap;"
+    >${label}</button>`;
+  }).join('');
+
+  let slotsHtml = '';
+  if (!state.selectedDate) {
+    slotsHtml = `<div style="padding:24px;text-align:center;color:#94a3b8;font-size:14px;">日付を選択してください</div>`;
+  } else if (state.loadingSlots) {
+    slotsHtml = `<div style="padding:24px;text-align:center;color:#94a3b8;font-size:14px;">読み込み中...</div>`;
+  } else if (state.slots.length === 0) {
+    slotsHtml = `<div style="padding:24px;text-align:center;color:#94a3b8;font-size:14px;">この日は空き枠がありません</div>`;
+  } else {
+    slotsHtml = state.slots.map(slot => {
+      const active = state.selectedSlot?.startAt === slot.startAt;
+      const start = jstTimeLabel(slot.startAt);
+      const end = jstTimeLabel(slot.endAt);
+      return `<button
+        onclick="window.__selectSlot('${encodeURIComponent(JSON.stringify(slot))}')"
+        style="display:block;width:100%;padding:14px 16px;border-radius:10px;border:2px solid ${active ? '#06C755' : '#e2e8f0'};
+          background:${active ? '#f0fdf4' : '#fff'};color:#1e293b;font-size:15px;font-weight:${active ? 'bold' : 'normal'};
+          cursor:pointer;text-align:left;margin-bottom:8px;"
+      >${start} 〜 ${end}</button>`;
+    }).join('');
+  }
+
+  const formHtml = state.selectedSlot ? `
+    <div style="margin-top:20px;padding:16px;background:#f8fafc;border-radius:12px;">
+      <div style="font-size:13px;font-weight:bold;color:#64748b;margin-bottom:12px;">お客様情報</div>
+      <label style="display:block;margin-bottom:10px;">
+        <span style="font-size:13px;color:#334155;font-weight:bold;">お名前 <span style="color:#ef4444">*</span></span>
+        <input id="booking-name" type="text" placeholder="山田 太郎" value="${escapeHtml(state.userName)}"
+          oninput="window.__setName(this.value)"
+          style="display:block;width:100%;box-sizing:border-box;margin-top:4px;padding:10px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:15px;" />
+      </label>
+      <label style="display:block;margin-bottom:10px;">
+        <span style="font-size:13px;color:#334155;font-weight:bold;">メールアドレス（任意）</span>
+        <input id="booking-email" type="email" placeholder="example@mail.com" value="${escapeHtml(state.userEmail)}"
+          oninput="window.__setEmail(this.value)"
+          style="display:block;width:100%;box-sizing:border-box;margin-top:4px;padding:10px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:15px;" />
+      </label>
+      <label style="display:block;margin-bottom:16px;">
+        <span style="font-size:13px;color:#334155;font-weight:bold;">ご相談内容（任意）</span>
+        <textarea id="booking-consultation" placeholder="ご相談したい内容をご記入ください"
+          oninput="window.__setConsultation(this.value)"
+          style="display:block;width:100%;box-sizing:border-box;margin-top:4px;padding:10px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:15px;resize:vertical;min-height:80px;"
+        >${escapeHtml(state.consultation)}</textarea>
+      </label>
+      ${state.error ? `<div style="margin-bottom:12px;padding:10px;background:#fef2f2;border-radius:8px;color:#dc2626;font-size:13px;">${escapeHtml(state.error)}</div>` : ''}
+      <button
+        onclick="window.__submit()"
+        ${state.submitting || !state.userName.trim() ? 'disabled' : ''}
+        style="display:block;width:100%;padding:16px;border-radius:10px;border:none;
+          background:${state.submitting || !state.userName.trim() ? '#94a3b8' : '#06C755'};color:#fff;
+          font-size:16px;font-weight:bold;cursor:${state.submitting || !state.userName.trim() ? 'not-allowed' : 'pointer'};"
+      >${state.submitting ? '送信中...' : 'この日時で予約する'}</button>
+    </div>` : '';
+
+  root.innerHTML = `
+    <div style="padding:16px 16px 32px;font-family:-apple-system,BlinkMacSystemFont,'Hiragino Sans',sans-serif;max-width:480px;margin:0 auto;">
+      <div style="font-size:18px;font-weight:bold;color:#1e293b;margin-bottom:4px;">日程を選ぶ</div>
+      <div style="font-size:13px;color:#64748b;margin-bottom:16px;">ご希望の日時をお選びください</div>
+
+      <div style="overflow-x:auto;display:flex;gap:8px;padding-bottom:8px;margin-bottom:16px;-webkit-overflow-scrolling:touch;">
+        ${dateTabs}
+      </div>
+
+      <div>${slotsHtml}</div>
+      ${formHtml}
+    </div>`;
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+(window as unknown as Record<string, unknown>).__selectDate = async (date: string) => {
+  if (state.selectedDate === date) return;
+  state.selectedDate = date;
+  state.selectedSlot = null;
+  state.slots = [];
+  state.loadingSlots = true;
+  state.error = '';
+  render();
+  state.slots = await fetchSlots(date);
+  state.loadingSlots = false;
+  render();
+};
+
+(window as unknown as Record<string, unknown>).__selectSlot = (encoded: string) => {
+  state.selectedSlot = JSON.parse(decodeURIComponent(encoded)) as Slot;
+  state.error = '';
+  render();
+};
+
+(window as unknown as Record<string, unknown>).__setName = (v: string) => { state.userName = v; };
+(window as unknown as Record<string, unknown>).__setEmail = (v: string) => { state.userEmail = v; };
+(window as unknown as Record<string, unknown>).__setConsultation = (v: string) => { state.consultation = v; };
+(window as unknown as Record<string, unknown>).__submit = () => { submitBooking(); };
 
 export async function initBooking(): Promise<void> {
-  const profile = await liff.getProfile();
-  state.profile = profile;
-
-  // Try to get friendId from UUID linking
-  const UUID_STORAGE_KEY = 'lh_uuid';
   try {
-    state.friendId = localStorage.getItem(UUID_STORAGE_KEY);
-  } catch {
-    // silent
-  }
-
-  // Silent UUID linking (same as main flow)
-  const rawIdToken = liff.getIDToken();
-  if (rawIdToken) {
-    const existingUuid = state.friendId;
-    apiCall('/api/liff/link', {
-      method: 'POST',
-      body: JSON.stringify({
-        idToken: rawIdToken,
-        displayName: profile.displayName,
-        existingUuid: existingUuid,
-      }),
-    }).then(async (res) => {
-      if (res.ok) {
-        const data = await res.json() as { success: boolean; data?: { userId?: string } };
-        if (data?.data?.userId) {
-          try {
-            localStorage.setItem(UUID_STORAGE_KEY, data.data.userId);
-            state.friendId = data.data.userId;
-          } catch { /* silent */ }
-        }
-      }
-    }).catch(() => { /* silent */ });
-  }
+    const profile = await liff.getProfile();
+    state.userName = profile.displayName;
+  } catch { /* LIFFプロファイル取得失敗は無視 */ }
 
   render();
 }

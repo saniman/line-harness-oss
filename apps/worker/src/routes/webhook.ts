@@ -518,20 +518,32 @@ async function handleEvent(
     let matched = false;
     let replyTokenConsumed = false;
 
-    // 予約キーワード検出
+    // 予約キーワード検出 → LIFFページへ誘導
     if (incomingText.includes('予約') && env) {
-      const replyMessage = await buildBookingCarousel(db, env, friend.display_name ?? 'ゲスト');
-      if (replyMessage) {
-        try {
-          await lineClient.replyMessage(event.replyToken, [replyMessage]);
-          replyTokenConsumed = true;
-        } catch (err) {
-          console.error('Failed to send booking carousel:', err);
-        }
-        if (replyTokenConsumed) {
-          await fireEvent(db, 'message_received', { friendId: friend.id, eventData: { text: incomingText, matched: true } }, lineAccessToken, lineAccountId);
-          return;
-        }
+      const liffUrl = env.LIFF_URL ?? 'https://liff.line.me/dummy';
+      try {
+        await lineClient.replyMessage(event.replyToken, [buildMessage('flex', JSON.stringify({
+          type: 'bubble',
+          body: {
+            type: 'box', layout: 'vertical', paddingAll: '20px',
+            contents: [
+              { type: 'text', text: 'ご予約はこちらから日程をお選びください 📅', size: 'sm', color: '#1e293b', wrap: true },
+            ],
+          },
+          footer: {
+            type: 'box', layout: 'vertical', paddingAll: '16px',
+            contents: [
+              { type: 'button', action: { type: 'uri', label: '日程を選ぶ', uri: `${liffUrl}?page=book` }, style: 'primary', color: '#06C755' },
+            ],
+          },
+        }))]);
+        replyTokenConsumed = true;
+      } catch (err) {
+        console.error('Failed to send booking LIFF button:', err);
+      }
+      if (replyTokenConsumed) {
+        await fireEvent(db, 'message_received', { friendId: friend.id, eventData: { text: incomingText, matched: true } }, lineAccessToken, lineAccountId);
+        return;
       }
     }
 
@@ -598,125 +610,6 @@ async function handleEvent(
 
     return;
   }
-}
-
-// ── Booking carousel builder ────────────────────────────────────────────────
-
-async function buildBookingCarousel(
-  db: D1Database,
-  env: Env['Bindings'],
-  userName: string,
-): Promise<ReturnType<typeof buildMessage> | null> {
-  // アクティブな OAuth 接続を取得
-  const conn = await db
-    .prepare("SELECT id, calendar_id FROM google_calendar_connections WHERE is_active = 1 AND auth_type = 'oauth' ORDER BY created_at DESC LIMIT 1")
-    .first<{ id: string; calendar_id: string }>();
-  if (!conn) return null;
-
-  const START_HOUR = 10;
-  const END_HOUR = 18;
-  const SLOT_MIN = 60;
-
-  // 翌日〜7日先のスロットを収集（今日は除外）
-  const bubbles: unknown[] = [];
-  const today = new Date(Date.now() + 9 * 3600_000);
-  today.setUTCHours(0, 0, 0, 0);
-
-  let accessToken: string;
-  try {
-    accessToken = await getValidAccessToken(env, db, conn.id);
-  } catch {
-    return null;
-  }
-  const gcal = new GoogleCalendarClient({ calendarId: conn.calendar_id, accessToken });
-
-  for (let dayOffset = 1; dayOffset <= 7 && bubbles.length < 5; dayOffset++) {
-    const day = new Date(today.getTime() + dayOffset * 86_400_000);
-    const yyyy = day.getUTCFullYear();
-    const mm = String(day.getUTCMonth() + 1).padStart(2, '0');
-    const dd = String(day.getUTCDate()).padStart(2, '0');
-    const dateStr = `${yyyy}-${mm}-${dd}`;
-    const dayStart = `${dateStr}T${String(START_HOUR).padStart(2, '0')}:00:00+09:00`;
-    const dayEnd = `${dateStr}T${String(END_HOUR).padStart(2, '0')}:00:00+09:00`;
-
-    // D1 予約取得
-    const d1Bookings = await db
-      .prepare("SELECT start_at, end_at FROM calendar_bookings WHERE connection_id = ? AND start_at >= ? AND end_at <= ? AND status = 'confirmed'")
-      .bind(conn.id, dayStart, dayEnd)
-      .all<{ start_at: string; end_at: string }>();
-
-    // Google FreeBusy 取得（ベストエフォート）
-    let busyIntervals: { start: string; end: string }[] = [];
-    try {
-      busyIntervals = await gcal.getFreeBusy(dayStart, dayEnd);
-    } catch { /* フォールバック: D1 のみ */ }
-
-    // スロット生成
-    const slotButtons: unknown[] = [];
-    const baseDate = new Date(`${dateStr}T${String(START_HOUR).padStart(2, '0')}:00:00+09:00`);
-
-    for (let h = START_HOUR; h < END_HOUR; h++) {
-      const slotStart = new Date(baseDate.getTime() + (h - START_HOUR) * 3600_000);
-      const slotEnd = new Date(slotStart.getTime() + SLOT_MIN * 60_000);
-      const startStr = toJstString(slotStart);
-      const endStr = toJstString(slotEnd);
-
-      const inD1 = d1Bookings.results.some(b =>
-        slotStart.getTime() < new Date(b.end_at).getTime() &&
-        slotEnd.getTime() > new Date(b.start_at).getTime()
-      );
-      const inGoogle = busyIntervals.some(iv =>
-        slotStart.getTime() < new Date(iv.end).getTime() &&
-        slotEnd.getTime() > new Date(iv.start).getTime()
-      );
-
-      if (!inD1 && !inGoogle) {
-        slotButtons.push({
-          type: 'button',
-          action: {
-            type: 'postback',
-            label: `${h}:00〜${h + 1}:00`,
-            data: `book:${conn.id}|${startStr}|${endStr}`,
-            displayText: `${mm}/${dd} ${h}:00〜${h + 1}:00 を予約`,
-          },
-          style: 'primary',
-          color: '#06C755',
-          margin: 'sm',
-          height: 'sm',
-        });
-      }
-    }
-
-    if (slotButtons.length === 0) continue;
-
-    const weekdays = ['日', '月', '火', '水', '木', '金', '土'];
-    const weekday = weekdays[day.getUTCDay()];
-
-    bubbles.push({
-      type: 'bubble',
-      size: 'kilo',
-      header: {
-        type: 'box', layout: 'vertical', backgroundColor: '#f0fdf4', paddingAll: '16px',
-        contents: [
-          { type: 'text', text: `${mm}/${dd}（${weekday}）`, weight: 'bold', size: 'md', color: '#1e293b' },
-          { type: 'text', text: `${slotButtons.length}枠 空きあり`, size: 'xs', color: '#06C755', margin: 'xs' },
-        ],
-      },
-      body: {
-        type: 'box', layout: 'vertical', paddingAll: '12px', spacing: 'xs',
-        contents: slotButtons.slice(0, 6),
-      },
-    });
-  }
-
-  if (bubbles.length === 0) {
-    return buildMessage('text', '申し訳ございません。直近7日間の空きスロットが見つかりませんでした。');
-  }
-
-  return buildMessage('flex', JSON.stringify({
-    type: 'carousel',
-    contents: bubbles,
-  }));
 }
 
 export { webhook };
