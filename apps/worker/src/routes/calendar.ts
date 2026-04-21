@@ -11,6 +11,10 @@ import {
   updateCalendarBookingEventId,
   getBookingsInRange,
   toJstString,
+  createReminder,
+  updateReminder,
+  createReminderStep,
+  enrollFriendInReminder,
 } from '@line-crm/db';
 import {
   GoogleCalendarClient,
@@ -363,6 +367,129 @@ calendar.post('/api/integrations/google-calendar/book', async (c) => {
       }
     } catch (err) {
       console.warn('LINE push notification error (booking still confirmed):', err);
+    }
+
+    // 予約リマインダー登録（ベストエフォート）
+    try {
+      // lineUserId または friendId から friend レコードを取得
+      let friendRecord: { id: string } | null = null;
+      if (body.lineUserId) {
+        friendRecord = await c.env.DB
+          .prepare('SELECT id FROM friends WHERE line_user_id = ? LIMIT 1')
+          .bind(body.lineUserId)
+          .first<{ id: string }>();
+      } else if (body.friendId) {
+        friendRecord = await c.env.DB
+          .prepare('SELECT id FROM friends WHERE id = ? LIMIT 1')
+          .bind(body.friendId)
+          .first<{ id: string }>();
+      }
+
+      if (friendRecord) {
+        const bookingStart = new Date(body.startAt);
+        const bookingEnd = new Date(body.endAt);
+        const jstOffset = 9 * 60 * 60 * 1000;
+        const startJst = new Date(bookingStart.getTime() + jstOffset);
+        const endJst = new Date(bookingEnd.getTime() + jstOffset);
+        const weekdays = ['日', '月', '火', '水', '木', '金', '土'];
+        const dateLabel = `${startJst.getUTCMonth() + 1}月${startJst.getUTCDate()}日(${weekdays[startJst.getUTCDay()]})`;
+        const timeLabel = `${String(startJst.getUTCHours()).padStart(2, '0')}:${String(startJst.getUTCMinutes()).padStart(2, '0')}〜${String(endJst.getUTCHours()).padStart(2, '0')}:${String(endJst.getUTCMinutes()).padStart(2, '0')}`;
+        const dateTimeLabel = `${dateLabel} ${timeLabel}`;
+        const guestName = (body.metadata?.name as string | undefined) ?? '';
+
+        // 前日 09:00 JST のオフセット（分）= 前日09:00 - 予約開始時刻
+        const dayBefore09 = new Date(startJst.getTime() - 24 * 60 * 60 * 1000);
+        dayBefore09.setUTCHours(0, 0, 0, 0); // JST 09:00 = UTC 00:00
+        const offsetDayBefore = Math.round((dayBefore09.getTime() - bookingStart.getTime()) / 60_000);
+
+        // 当日 08:00 JST のオフセット（分）= 当日08:00 - 予約開始時刻
+        const sameDay08 = new Date(startJst.getTime());
+        sameDay08.setUTCHours(23, 0, 0, 0); // JST 08:00 = UTC 23:00 前日
+        // startJst の日付の UTC 23:00 = JST 08:00 当日
+        const sameDayDate = new Date(Date.UTC(startJst.getUTCFullYear(), startJst.getUTCMonth(), startJst.getUTCDate()) - 60 * 60 * 1000);
+        const offsetSameDay = Math.round((sameDayDate.getTime() - bookingStart.getTime()) / 60_000);
+
+        const now = Date.now();
+        const willSendDayBefore = now < dayBefore09.getTime();
+        const willSendSameDay = now < sameDayDate.getTime();
+
+        if (willSendDayBefore || willSendSameDay) {
+          // リマインダーテンプレートを作成（予約ごとに個別）
+          const reminder = await createReminder(c.env.DB, {
+            name: `予約リマインダー: ${booking.id}`,
+            description: `booking_id:${booking.id}`,
+          });
+          await updateReminder(c.env.DB, reminder.id, { isActive: true });
+
+          if (willSendDayBefore) {
+            await createReminderStep(c.env.DB, {
+              reminderId: reminder.id,
+              offsetMinutes: offsetDayBefore,
+              messageType: 'flex',
+              messageContent: JSON.stringify({
+                type: 'bubble',
+                body: {
+                  type: 'box', layout: 'vertical', paddingAll: '20px', spacing: 'md',
+                  contents: [
+                    { type: 'text', text: '明日の予約のご確認です 📅', weight: 'bold', size: 'md', color: '#1e293b' },
+                    { type: 'text', text: body.title, size: 'sm', color: '#64748b', margin: 'sm' },
+                    { type: 'separator', margin: 'lg' },
+                    { type: 'box', layout: 'horizontal', margin: 'lg', contents: [
+                      { type: 'text', text: '📅 日時', size: 'sm', color: '#666666', flex: 2 },
+                      { type: 'text', text: dateTimeLabel, size: 'sm', wrap: true, flex: 5 },
+                    ]},
+                    ...(guestName ? [{ type: 'box', layout: 'horizontal', contents: [
+                      { type: 'text', text: '👤 お名前', size: 'sm', color: '#666666', flex: 2 },
+                      { type: 'text', text: guestName, size: 'sm', flex: 5 },
+                    ]}] : []),
+                  ],
+                },
+                footer: {
+                  type: 'box', layout: 'vertical', paddingAll: '16px',
+                  contents: [{
+                    type: 'button',
+                    action: { type: 'postback', label: 'キャンセルする', data: `cancel:${booking.id}`, displayText: '予約をキャンセルする' },
+                    style: 'secondary', height: 'sm',
+                  }],
+                },
+              }),
+            });
+          }
+
+          if (willSendSameDay) {
+            await createReminderStep(c.env.DB, {
+              reminderId: reminder.id,
+              offsetMinutes: offsetSameDay,
+              messageType: 'flex',
+              messageContent: JSON.stringify({
+                type: 'bubble',
+                body: {
+                  type: 'box', layout: 'vertical', paddingAll: '20px', spacing: 'md',
+                  contents: [
+                    { type: 'text', text: '本日の予約をお忘れなく！📅', weight: 'bold', size: 'md', color: '#06C755' },
+                    { type: 'text', text: body.title, size: 'sm', color: '#64748b', margin: 'sm' },
+                    { type: 'separator', margin: 'lg' },
+                    { type: 'box', layout: 'horizontal', margin: 'lg', contents: [
+                      { type: 'text', text: '📅 日時', size: 'sm', color: '#666666', flex: 2 },
+                      { type: 'text', text: dateTimeLabel, size: 'sm', wrap: true, flex: 5 },
+                    ]},
+                    { type: 'text', text: 'ご来店をお待ちしております。', size: 'xs', color: '#94a3b8', margin: 'lg', wrap: true },
+                  ],
+                },
+              }),
+            });
+          }
+
+          await enrollFriendInReminder(c.env.DB, {
+            friendId: friendRecord.id,
+            reminderId: reminder.id,
+            targetDate: body.startAt,
+          });
+          console.log('[Reminder] enrolled friend', friendRecord.id, 'for booking', booking.id);
+        }
+      }
+    } catch (err) {
+      console.warn('Reminder enrollment error (booking still confirmed):', err);
     }
 
     return c.json({
