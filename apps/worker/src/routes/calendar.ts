@@ -24,6 +24,19 @@ import {
 } from '../services/google-calendar.js';
 import type { Env } from '../index.js';
 
+export function validateBookingRequest(body: {
+  connectionId?: string;
+  title?: string;
+  startAt?: string;
+  endAt?: string;
+}): string | null {
+  if (!body.connectionId) return 'connectionId is required';
+  if (!body.title) return 'title is required';
+  if (!body.startAt || !body.endAt) return 'startAt and endAt are required';
+  if (new Date(body.startAt) >= new Date(body.endAt)) return 'startAt must be before endAt';
+  return null;
+}
+
 const calendar = new Hono<Env>();
 
 // ========== OAuth ==========
@@ -238,8 +251,9 @@ calendar.post('/api/integrations/google-calendar/book', async (c) => {
       description?: string;
       metadata?: Record<string, unknown>;
     }>();
-    if (!body.connectionId || !body.title || !body.startAt || !body.endAt) {
-      return c.json({ success: false, error: 'connectionId, title, startAt, endAt are required' }, 400);
+    const validationError = validateBookingRequest(body);
+    if (validationError) {
+      return c.json({ success: false, error: validationError }, 400);
     }
 
     // D1 に予約レコードを作成

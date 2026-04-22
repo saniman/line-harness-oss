@@ -81,6 +81,37 @@ export async function refreshAccessToken(
   return res.json();
 }
 
+export function isTokenExpiringSoon(expiresAt: Date | null, bufferMs = 5 * 60 * 1000): boolean {
+  return !expiresAt || expiresAt.getTime() - Date.now() < bufferMs;
+}
+
+export function isSlotOverlapping(
+  slotStart: number,
+  slotEnd: number,
+  intervalStart: number,
+  intervalEnd: number
+): boolean {
+  return slotStart < intervalEnd && slotEnd > intervalStart;
+}
+
+export function generateSlots(
+  date: string,
+  startHour: number,
+  endHour: number,
+  slotMinutes: number
+): { startAt: Date; endAt: Date }[] {
+  const slots: { startAt: Date; endAt: Date }[] = [];
+  const baseDate = new Date(`${date}T${String(startHour).padStart(2, '0')}:00:00+09:00`);
+  for (let h = startHour; h < endHour; h += slotMinutes / 60) {
+    const slotStart = new Date(baseDate);
+    slotStart.setMinutes(slotStart.getMinutes() + (h - startHour) * 60);
+    const slotEnd = new Date(slotStart);
+    slotEnd.setMinutes(slotEnd.getMinutes() + slotMinutes);
+    slots.push({ startAt: slotStart, endAt: slotEnd });
+  }
+  return slots;
+}
+
 // Returns a valid access token, refreshing if within 5 minutes of expiry.
 export async function getValidAccessToken(
   env: Env['Bindings'],
@@ -96,8 +127,7 @@ export async function getValidAccessToken(
   if (!conn.refresh_token) throw new Error('No refresh token available');
 
   const expiresAt = conn.token_expires_at ? new Date(conn.token_expires_at as string) : null;
-  const shouldRefresh =
-    !expiresAt || expiresAt.getTime() - Date.now() < 5 * 60 * 1000;
+  const shouldRefresh = isTokenExpiringSoon(expiresAt);
 
   if (shouldRefresh) {
     const tokens = await refreshAccessToken(env, conn.refresh_token as string);
