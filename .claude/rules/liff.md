@@ -25,6 +25,14 @@ globs: "apps/worker/src/client/**/*.ts"
 - liff.state=%3Fpage%3Dbook の形式でも届く → getPage() で liff.state を展開して取得
 - レンダリング先は document.getElementById('app')（#booking-root は存在しない）
 
+## 既知の落とし穴
+
+### フォームのボタンstate管理
+- `__setName` / `__setEmail` は state を更新するだけでなく `updateSubmitButton()` を必ず呼ぶこと
+- `render()` で全体を差し替えるとフォーカスが飛ぶため、ボタン状態の更新は `updateSubmitButton()` で個別に行う
+- バリデーション条件（`isDisabled` ロジック）は `render()` と `updateSubmitButton()` で同じ式を使う
+- 回帰テスト: `src/client/booking.test.ts` の「__setNameを呼んだ後にボタン状態が更新される」を参照
+
 ## API呼び出し
 - slots と book エンドポイントは認証不要（Bearer トークン不要）
 - エラー時はユーザーに分かりやすいメッセージを表示する

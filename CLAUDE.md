@@ -26,6 +26,19 @@ Cloudflare Workers + D1 + Next.js のモノレポ構成。
   VITE_LIFF_ID / VITE_API_BASE / VITE_CALENDAR_CONNECTION_ID
 - デプロイ前に TypeScript のエラーがないことを確認する
 
+## CIルール
+- mainへのpush前に pnpm --filter worker test を実行してパスを確認する
+- CIが赤い状態でのpushは禁止
+
+## TDDルール
+- 新しい関数を実装したら必ず同名の .test.ts ファイルにテストを書く
+- テストは実装前に書く（RED → GREEN → REFACTOR）
+- pnpm --filter worker test がpassしない状態でコミットしない
+- テスト対象の優先順位：
+  1. ビジネスロジック（スロット計算、バリデーション）
+  2. サービス関数（google-calendar.ts, reminder処理）
+  3. APIルートは統合テストで対応（Phase 2以降）
+
 ## やらないこと
 - firebase / GCP 関連のコードを追加しない（Cloudflare統一）
 - R2は現時点では使わない（画像アップロード機能は未実装）

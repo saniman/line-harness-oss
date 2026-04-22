@@ -19,6 +19,12 @@ globs: "apps/worker/src/**/*.ts"
 - IDは必ず crypto.randomUUID() を使う
 - 日時は全て ISO 8601 形式で保存（JST変換はクライアント側で行う）
 
+## テストルール
+- src/services/*.ts を変更したら src/services/*.test.ts も更新する
+- テストファイルの命名：対象ファイルと同名で .test.ts 拡張子
+- describe名：機能名（日本語OK）
+- it名：「〜の場合〜になる」形式で日本語で書く
+
 ## 既知の落とし穴
 - friends テーブルに line_account_id カラムは存在しない（JOIN不可）
 - LINE push のトークンは line_accounts テーブルが空のため env.LINE_CHANNEL_ACCESS_TOKEN を使う

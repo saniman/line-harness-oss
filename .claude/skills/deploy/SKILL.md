@@ -29,3 +29,6 @@ curl https://api.walover-co.work/api/health
 - apps/liff/ は存在しない。LIFFは apps/worker/src/client/ でビルドし dist/client/ を Pages にデプロイ
 - GitHub Actions で自動デプロイされるが VITE_CALENDAR_CONNECTION_ID が vars 未設定だと空文字になる
   → 手動デプロイで上書きするか GitHub vars に設定する
+- mainへのpushでGitHub Actionsが自動テスト→デプロイを実行する
+- テストが失敗するとデプロイは実行されない
+- ローカルで pnpm --filter worker test を通してからpushすること

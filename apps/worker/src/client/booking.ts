@@ -197,6 +197,7 @@ function render(): void {
       </label>
       ${state.error ? `<div style="margin-bottom:12px;padding:10px;background:#fef2f2;border-radius:8px;color:#dc2626;font-size:13px;">${escapeHtml(state.error)}</div>` : ''}
       <button
+        id="booking-submit"
         onclick="window.__submit()"
         ${state.submitting || !state.userName.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(state.userEmail.trim()) ? 'disabled' : ''}
         style="display:block;width:100%;padding:16px;border-radius:10px;border:none;
@@ -223,6 +224,15 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+function updateSubmitButton(): void {
+  const btn = document.getElementById('booking-submit') as HTMLButtonElement | null;
+  if (!btn) return;
+  const disabled = state.submitting || !state.userName.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(state.userEmail.trim());
+  btn.disabled = disabled;
+  btn.style.background = disabled ? '#94a3b8' : '#06C755';
+  btn.style.cursor = disabled ? 'not-allowed' : 'pointer';
+}
+
 (window as unknown as Record<string, unknown>).__selectDate = async (date: string) => {
   if (state.selectedDate === date) return;
   state.selectedDate = date;
@@ -242,8 +252,8 @@ function escapeHtml(s: string): string {
   render();
 };
 
-(window as unknown as Record<string, unknown>).__setName = (v: string) => { state.userName = v; };
-(window as unknown as Record<string, unknown>).__setEmail = (v: string) => { state.userEmail = v; };
+(window as unknown as Record<string, unknown>).__setName = (v: string) => { state.userName = v; updateSubmitButton(); };
+(window as unknown as Record<string, unknown>).__setEmail = (v: string) => { state.userEmail = v; updateSubmitButton(); };
 (window as unknown as Record<string, unknown>).__setConsultation = (v: string) => { state.consultation = v; };
 (window as unknown as Record<string, unknown>).__submit = () => { submitBooking(); };
 
