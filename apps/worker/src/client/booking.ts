@@ -98,7 +98,7 @@ async function submitBooking(): Promise<void> {
       body: JSON.stringify({
         connectionId: CONNECTION_ID,
         lineUserId: state.lineUserId || undefined,
-        title: `${state.userName.trim()}様のご相談`,
+        title: `無料相談予約`,
         startAt: state.selectedSlot.startAt,
         endAt: state.selectedSlot.endAt,
         description: state.consultation.trim() || undefined,
@@ -183,7 +183,7 @@ function render(): void {
           style="display:block;width:100%;box-sizing:border-box;margin-top:4px;padding:10px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:15px;" />
       </label>
       <label style="display:block;margin-bottom:10px;">
-        <span style="font-size:13px;color:#334155;font-weight:bold;">メールアドレス（任意）</span>
+        <span style="font-size:13px;color:#334155;font-weight:bold;">メールアドレス <span style="color:#ef4444">※</span></span>
         <input id="booking-email" type="email" placeholder="example@mail.com" value="${escapeHtml(state.userEmail)}"
           oninput="window.__setEmail(this.value)"
           style="display:block;width:100%;box-sizing:border-box;margin-top:4px;padding:10px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:15px;" />
@@ -198,10 +198,10 @@ function render(): void {
       ${state.error ? `<div style="margin-bottom:12px;padding:10px;background:#fef2f2;border-radius:8px;color:#dc2626;font-size:13px;">${escapeHtml(state.error)}</div>` : ''}
       <button
         onclick="window.__submit()"
-        ${state.submitting || !state.userName.trim() ? 'disabled' : ''}
+        ${state.submitting || !state.userName.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(state.userEmail.trim()) ? 'disabled' : ''}
         style="display:block;width:100%;padding:16px;border-radius:10px;border:none;
-          background:${state.submitting || !state.userName.trim() ? '#94a3b8' : '#06C755'};color:#fff;
-          font-size:16px;font-weight:bold;cursor:${state.submitting || !state.userName.trim() ? 'not-allowed' : 'pointer'};"
+          background:${state.submitting || !state.userName.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(state.userEmail.trim()) ? '#94a3b8' : '#06C755'};color:#fff;
+          font-size:16px;font-weight:bold;cursor:${state.submitting || !state.userName.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(state.userEmail.trim()) ? 'not-allowed' : 'pointer'};"
       >${state.submitting ? '送信中...' : 'この日時で予約する'}</button>
     </div>` : '';
 
