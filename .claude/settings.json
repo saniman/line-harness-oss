@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pnpm *)",
+      "Bash(npx wrangler *)",
+      "Bash(npx wrangler@latest d1 execute * --local *)",
+      "Bash(npx wrangler tail *)",
+      "Bash(curl *)",
+      "Bash(git status)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push)",
+      "Bash(git diff *)",
+      "WebSearch",
+      "WebFetch"
+    ],
+    "deny": [
+      "Bash(git push --force*)",
+      "Bash(npx wrangler delete*)",
+      "Bash(rm -rf *)",
+      "Bash(npx wrangler d1 drop*)"
+    ]
+  }
+}
