@@ -618,3 +618,16 @@ CREATE TABLE IF NOT EXISTS pool_accounts (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(pool_id, line_account_id)
 );
+
+-- AI Diagnosis Sessions
+CREATE TABLE IF NOT EXISTS diagnosis_sessions (
+  id TEXT PRIMARY KEY,
+  friend_id TEXT NOT NULL,
+  step INTEGER NOT NULL DEFAULT 0,
+  answers TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'in_progress',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_diagnosis_sessions_friend_id ON diagnosis_sessions (friend_id);

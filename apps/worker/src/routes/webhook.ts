@@ -17,6 +17,16 @@ import {
 import { fireEvent } from '../services/event-bus.js';
 import { buildMessage, expandVariables } from '../services/step-delivery.js';
 import { getValidAccessToken, GoogleCalendarClient } from '../services/google-calendar.js';
+import {
+  startDiagnosis,
+  answerDiagnosis,
+  getActiveSession,
+  generateDiagnosisResult,
+  getNextQuestion,
+  isCompleted,
+  buildQuickReply,
+  DIAGNOSIS_QUESTIONS,
+} from '../services/diagnosis.js';
 import { toJstString } from '@line-crm/db';
 import type { Env } from '../index.js';
 
@@ -182,6 +192,23 @@ async function handleEvent(
 
     // イベントバス発火: friend_add（replyToken は Step 0 で使用済みの可能性あり）
     await fireEvent(db, 'friend_add', { friendId: friend.id, eventData: { displayName: friend.display_name } }, lineAccessToken, lineAccountId);
+
+    // 友だち追加特典: AI自動化診断の案内（シナリオ step 0 が使われていない場合のみ push で送る）
+    try {
+      const firstQ = getNextQuestion(0);
+      if (firstQ) {
+        await lineClient.pushMessage(userId, [
+          {
+            type: 'text',
+            text: `🎉 WALOVERのLINEへようこそ！\n沖縄発・AI活用支援のWALOVERです。\n\n🎁 友だち追加特典として\n「あなたの業務、AIでどこまで自動化できるか」\n無料診断をプレゼントします！\n\n5問に答えるだけ・所要時間1分`,
+            quickReply: buildQuickReply(['診断を受ける']),
+          } as unknown as Parameters<typeof lineClient.pushMessage>[1][number],
+        ]);
+      }
+    } catch (err) {
+      console.warn('[Diagnosis] Failed to send welcome push:', err);
+    }
+
     return;
   }
 
@@ -517,6 +544,103 @@ async function handleEvent(
 
     let matched = false;
     let replyTokenConsumed = false;
+
+    // 診断フロー: 「診断」キーワード or アクティブセッションへの回答
+    if (env) {
+      try {
+        // 「診断」「診断を受ける」で新規開始
+        if (incomingText === '診断' || incomingText === '診断を受ける') {
+          const session = await startDiagnosis(db, friend.id);
+          const firstQ = getNextQuestion(session.step)!;
+          await lineClient.replyMessage(event.replyToken, [{
+            type: 'text',
+            text: firstQ.text,
+            quickReply: buildQuickReply(firstQ.options),
+          } as unknown as Parameters<typeof lineClient.replyMessage>[1][number]]);
+          replyTokenConsumed = true;
+          matched = true;
+        } else {
+          // アクティブセッションがあれば回答として処理
+          const session = await getActiveSession(db, friend.id);
+          if (session) {
+            const updated = await answerDiagnosis(db, session.id, incomingText);
+
+            if (isCompleted(updated.step)) {
+              // 診断完了 → Claude API で結果生成
+              await lineClient.replyMessage(event.replyToken, [{
+                type: 'text',
+                text: '🔍 診断中... 少々お待ちください',
+              } as unknown as Parameters<typeof lineClient.replyMessage>[1][number]]);
+              replyTokenConsumed = true;
+
+              // replyToken は消費済みなので push で送る
+              try {
+                const resultText = await generateDiagnosisResult(env, updated.answers);
+                const liffUrl = env.LIFF_URL ?? '';
+                const bookUrl = liffUrl ? `${liffUrl}?page=book` : '';
+
+                await lineClient.pushMessage(userId, [
+                  { type: 'text', text: resultText } as unknown as Parameters<typeof lineClient.pushMessage>[1][number],
+                  buildMessage('flex', JSON.stringify({
+                    type: 'bubble',
+                    body: {
+                      type: 'box', layout: 'vertical', paddingAll: '20px', spacing: 'md',
+                      contents: [
+                        { type: 'text', text: '━━━━━━━━━━━━━━━', color: '#e2e8f0', size: 'xs', align: 'center' },
+                        { type: 'text', text: '💬 詳しく相談してみませんか？', weight: 'bold', size: 'md', color: '#1e293b' },
+                        { type: 'text', text: '診断結果をもとに、あなたのビジネスに合ったAI活用を一緒に考えます（初回無料・1時間）', size: 'sm', color: '#64748b', wrap: true, margin: 'sm' },
+                      ],
+                    },
+                    footer: {
+                      type: 'box', layout: 'vertical', paddingAll: '16px',
+                      contents: [
+                        ...(bookUrl ? [{
+                          type: 'button',
+                          action: { type: 'uri', label: '無料相談を予約する', uri: bookUrl },
+                          style: 'primary', color: '#06C755',
+                        }] : []),
+                      ],
+                    },
+                  })) as unknown as Parameters<typeof lineClient.pushMessage>[1][number],
+                ]);
+
+                // タグ付与: 「診断済み」と業種タグ
+                const { createTag, addTagToFriend, getTags } = await import('@line-crm/db');
+                const existingTags = await getTags(db);
+                const tagsToAdd = ['診断済み', updated.answers.q1].filter(Boolean);
+                for (const tagName of tagsToAdd) {
+                  let tag = existingTags.find(t => t.name === tagName);
+                  if (!tag) tag = await createTag(db, { name: tagName, color: tagName === '診断済み' ? '#06C755' : '#3B82F6' });
+                  await addTagToFriend(db, friend.id, tag.id);
+                }
+
+                console.log('[Diagnosis] completed for friend', friend.id, '| tags added:', tagsToAdd);
+              } catch (err) {
+                console.error('[Diagnosis] generateDiagnosisResult failed:', err);
+                await lineClient.pushMessage(userId, [{
+                  type: 'text',
+                  text: '診断結果の生成に失敗しました。しばらくしてから「診断」と送り直してください。',
+                } as unknown as Parameters<typeof lineClient.pushMessage>[1][number]]);
+              }
+            } else {
+              // 次の質問を送る
+              const nextQ = getNextQuestion(updated.step)!;
+              await lineClient.replyMessage(event.replyToken, [{
+                type: 'text',
+                text: nextQ.text,
+                quickReply: buildQuickReply(nextQ.options),
+              } as unknown as Parameters<typeof lineClient.replyMessage>[1][number]]);
+              replyTokenConsumed = true;
+            }
+            matched = true;
+          }
+        }
+      } catch (err) {
+        console.error('[Diagnosis] error:', err);
+      }
+    }
+
+    if (matched) return;
 
     // 予約キーワード検出 → LIFFページへ誘導
     if (incomingText.includes('予約') && env) {
