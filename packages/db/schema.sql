@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS friends (
   user_id          TEXT,
   ig_igsid         TEXT,
   score            INTEGER NOT NULL DEFAULT 0,
+  line_account_id  TEXT REFERENCES line_accounts(id),
   created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
@@ -112,6 +113,7 @@ CREATE TABLE IF NOT EXISTS broadcasts (
   aggregation_unit  TEXT,
   batch_offset    INTEGER NOT NULL DEFAULT 0,
   segment_conditions TEXT,
+  line_account_id TEXT REFERENCES line_accounts(id),
   created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 

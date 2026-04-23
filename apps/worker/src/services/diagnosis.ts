@@ -150,6 +150,13 @@ export async function getActiveSession(db: D1Database, friendId: string): Promis
 
 export async function generateDiagnosisResult(env: Env['Bindings'], answers: Record<string, string>): Promise<string> {
   const prompt = buildDiagnosisPrompt(answers);
+  const model = 'claude-haiku-4-5-20251001';
+
+  console.log('[診断] API呼び出し開始', {
+    hasApiKey: !!env.ANTHROPIC_API_KEY,
+    apiKeyLength: env.ANTHROPIC_API_KEY?.length ?? 0,
+    model,
+  });
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -159,17 +166,22 @@ export async function generateDiagnosisResult(env: Env['Bindings'], answers: Rec
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify({
-      model: 'claude-haiku-4-5-20251001',
+      model,
       max_tokens: 1000,
       messages: [{ role: 'user', content: prompt }],
     }),
   });
 
+  console.log('[診断] APIレスポンス', { status: response.status, ok: response.ok });
+
   if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`Anthropic API error ${response.status}: ${err}`);
+    const errorText = await response.text();
+    console.error('[診断] APIエラー詳細:', errorText);
+    throw new Error(`Anthropic API error ${response.status}: ${errorText}`);
   }
 
   const data = await response.json() as { content: Array<{ type: string; text: string }> };
-  return data.content.find(b => b.type === 'text')?.text ?? '診断結果の生成に失敗しました。';
+  const text = data.content.filter(b => b.type === 'text').map(b => b.text).join('');
+  console.log('[診断] 結果生成完了, length:', text.length);
+  return text || '診断結果の生成に失敗しました。';
 }
