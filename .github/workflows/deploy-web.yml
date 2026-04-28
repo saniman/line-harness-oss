@@ -26,6 +26,9 @@ jobs:
 
       - run: pnpm --filter @line-crm/shared build
 
+      - name: Type check
+        run: pnpm --filter web exec tsc --noEmit
+
       - run: pnpm --filter web run build
         env:
           NEXT_PUBLIC_API_URL: https://api.walover-co.work

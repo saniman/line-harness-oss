@@ -17,10 +17,15 @@ npx wrangler pages deploy apps/worker/dist/client \
   --branch=main \
   --commit-dirty=true
 
-## 管理画面ビルド
+## 管理画面デプロイ（ビルド → Pages）
 NEXT_PUBLIC_API_URL=https://api.walover-co.work \
-NEXT_PUBLIC_API_KEY=<API_KEY> \
+NEXT_PUBLIC_API_KEY=<apps/web/.env.local参照> \
 pnpm --filter web run build
+
+npx wrangler pages deploy apps/web/out \
+  --project-name=line-harness-web \
+  --branch=main \
+  --commit-dirty=true
 
 ## デプロイ後の確認
 curl https://api.walover-co.work/api/health
