@@ -25,6 +25,20 @@ globs: "apps/worker/src/**/*.ts"
 - describe名：機能名（日本語OK）
 - it名：「〜の場合〜になる」形式で日本語で書く
 
+### beforeEach/afterEachの返り値に注意
+- vi.useFakeTimers()などをアロー関数で直接returnするとTypeScriptの型エラーになる
+
+  ❌ 誤（VitestUtils が返される）
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  ✅ 正（波括弧で囲んでvoidにする）
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+- 症状：CI で以下のエラーが出る
+  Type 'VitestUtils' is not assignable to type 'Awaitable<HookCleanupCallback>'
+
 ## 既知の落とし穴
 - friends テーブルに line_account_id カラムは存在しない（JOIN不可）
 - LINE push のトークンは line_accounts テーブルが空のため env.LINE_CHANNEL_ACCESS_TOKEN を使う
