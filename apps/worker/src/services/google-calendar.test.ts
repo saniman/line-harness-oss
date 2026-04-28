@@ -136,7 +136,7 @@ describe('getValidAccessToken', () => {
     return { prepare } as unknown as D1Database
   }
 
-  afterEach(() => vi.restoreAllMocks())
+  afterEach(() => { vi.restoreAllMocks() })
 
   it('トークンが有効期限内ならリフレッシュしない', async () => {
     const futureDate = new Date(Date.now() + 60 * 60 * 1000).toISOString()

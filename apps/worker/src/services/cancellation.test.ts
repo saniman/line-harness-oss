@@ -35,7 +35,7 @@ function makeDb(...stmts: ReturnType<typeof makeStmt>[]) {
   return { prepare } as unknown as D1Database;
 }
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => { vi.clearAllMocks(); });
 
 describe('キャンセル処理', () => {
   describe('予約のキャンセル', () => {
