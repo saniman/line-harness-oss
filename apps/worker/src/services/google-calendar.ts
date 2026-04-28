@@ -147,6 +147,21 @@ export async function getValidAccessToken(
   return conn.access_token as string;
 }
 
+// getValidAccessToken でトークンを更新してから FreeBusy を取得する。
+// conn.access_token を直接使わないことでトークン期限切れを防ぐ。
+export async function getFreeBusyWithRefresh(
+  env: Env['Bindings'],
+  db: D1Database,
+  connectionId: string,
+  calendarId: string,
+  timeMin: string,
+  timeMax: string
+): Promise<BusyInterval[]> {
+  const accessToken = await getValidAccessToken(env, db, connectionId);
+  const gcal = new GoogleCalendarClient({ calendarId, accessToken });
+  return gcal.getFreeBusy(timeMin, timeMax);
+}
+
 // ── Event params builder ────────────────────────────────────────────────────
 
 export interface CreateEventParams {

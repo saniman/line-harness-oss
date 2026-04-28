@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { isTokenExpiringSoon, isSlotOverlapping, generateSlots, buildCreateEventParams, getValidAccessToken } from './google-calendar.js'
+import { isTokenExpiringSoon, isSlotOverlapping, generateSlots, buildCreateEventParams, getValidAccessToken, getFreeBusyWithRefresh } from './google-calendar.js'
 
 describe('スロット生成', () => {
   it('10:00〜18:00で8枠生成される', () => {
@@ -189,5 +189,65 @@ describe('getValidAccessToken', () => {
     await getValidAccessToken(ENV, db, CONN_ID)
     expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining('UPDATE google_calendar_connections'))
     expect(updateStmt.run).toHaveBeenCalled()
+  })
+})
+
+describe('getFreeBusyWithRefresh', () => {
+  const CONN_ID = 'conn-fb-1'
+  const ENV = { GOOGLE_CLIENT_ID: 'cid', GOOGLE_CLIENT_SECRET: 'csecret' } as unknown as Parameters<typeof getValidAccessToken>[0]
+
+  function makeStmt(firstVal: unknown) {
+    return {
+      bind: vi.fn().mockReturnThis(),
+      first: vi.fn().mockResolvedValue(firstVal),
+      run: vi.fn().mockResolvedValue({}),
+    }
+  }
+  function makeDb(...stmts: ReturnType<typeof makeStmt>[]) {
+    const prepare = vi.fn()
+    stmts.forEach(s => prepare.mockReturnValueOnce(s))
+    return { prepare } as unknown as D1Database
+  }
+
+  afterEach(() => { vi.restoreAllMocks() })
+
+  it('getValidAccessTokenを経由してFreeBusy APIを呼び出す', async () => {
+    const futureDate = new Date(Date.now() + 60 * 60 * 1000).toISOString()
+    const db = makeDb(makeStmt({ access_token: 'valid-token', refresh_token: 'rf', token_expires_at: futureDate }))
+
+    const freeBusyResponse = {
+      calendars: { 'primary': { busy: [{ start: '2026-05-01T10:00:00Z', end: '2026-05-01T11:00:00Z' }] } }
+    }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(freeBusyResponse),
+    }))
+
+    const result = await getFreeBusyWithRefresh(ENV, db, CONN_ID, 'primary', '2026-05-01T09:00:00+09:00', '2026-05-01T18:00:00+09:00')
+    expect(result).toHaveLength(1)
+    expect(result[0].start).toBe('2026-05-01T10:00:00Z')
+  })
+
+  it('トークンが期限切れでもリフレッシュしてFreeBusy APIを呼び出す', async () => {
+    const expiredDate = new Date(Date.now() - 1000).toISOString()
+    const updateStmt = makeStmt(null)
+    const db = makeDb(
+      makeStmt({ access_token: 'expired-token', refresh_token: 'rf', token_expires_at: expiredDate }),
+      updateStmt,
+    )
+
+    const fetchMock = vi.fn()
+      // 1回目: refresh token呼び出し
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ access_token: 'new-token', expires_in: 3600 }) })
+      // 2回目: FreeBusy API呼び出し
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ calendars: { 'primary': { busy: [] } } }) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await getFreeBusyWithRefresh(ENV, db, CONN_ID, 'primary', '2026-05-01T09:00:00+09:00', '2026-05-01T18:00:00+09:00')
+    expect(result).toEqual([])
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    // 1回目がトークンリフレッシュ、2回目がFreeBusy
+    expect(fetchMock.mock.calls[0][0]).toContain('oauth2.googleapis.com/token')
+    expect(fetchMock.mock.calls[1][0]).toContain('freeBusy')
   })
 })

@@ -21,6 +21,7 @@ import {
   getGoogleAuthUrl,
   exchangeCodeForTokens,
   getValidAccessToken,
+  getFreeBusyWithRefresh,
 } from '../services/google-calendar.js';
 import type { Env } from '../index.js';
 
@@ -182,22 +183,15 @@ calendar.get('/api/integrations/google-calendar/slots', async (c) => {
     // 既存D1予約を取得
     const bookings = await getBookingsInRange(c.env.DB, connectionId, dayStart, dayEnd);
 
-    // Google FreeBusy API から busy 区間を取得（access_token がある場合のみ）
+    // Google FreeBusy API から busy 区間を取得（getValidAccessToken経由でトークンを自動リフレッシュ）
     let googleBusyIntervals: { start: string; end: string }[] = [];
-    if (conn.access_token) {
-      try {
-        const gcal = new GoogleCalendarClient({
-          calendarId: conn.calendar_id,
-          accessToken: conn.access_token,
-        });
-        // タイムゾーンオフセットを付けて ISO 形式で渡す（Asia/Tokyo = +09:00）
-        const timeMin = `${date}T${String(startHour).padStart(2, '0')}:00:00+09:00`;
-        const timeMax = `${date}T${String(endHour).padStart(2, '0')}:00:00+09:00`;
-        googleBusyIntervals = await gcal.getFreeBusy(timeMin, timeMax);
-      } catch (err) {
-        // Google API 失敗はベストエフォート — D1 のみでフォールバック
-        console.warn('Google FreeBusy API error (falling back to D1 only):', err);
-      }
+    try {
+      const timeMin = `${date}T${String(startHour).padStart(2, '0')}:00:00+09:00`;
+      const timeMax = `${date}T${String(endHour).padStart(2, '0')}:00:00+09:00`;
+      googleBusyIntervals = await getFreeBusyWithRefresh(c.env, c.env.DB, connectionId, conn.calendar_id, timeMin, timeMax);
+    } catch (err) {
+      // Google API 失敗はベストエフォート — D1 のみでフォールバック
+      console.warn('Google FreeBusy API error (falling back to D1 only):', err);
     }
 
     // スロットを生成して空きを計算

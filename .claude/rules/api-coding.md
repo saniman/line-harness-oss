@@ -44,6 +44,12 @@ globs: "apps/worker/src/**/*.ts"
 - LINE push のトークンは line_accounts テーブルが空のため env.LINE_CHANNEL_ACCESS_TOKEN を使う
 - Google Calendar のアクセストークンは conn.access_token を直接使わず getValidAccessToken() を使う
 
+### access_tokenの直接参照禁止
+- conn.access_tokenを直接使うとトークン期限切れで無言で失敗する
+- 必ずgetValidAccessToken(env, db, connectionId)を経由すること
+- FreeBusy取得には getFreeBusyWithRefresh(env, db, connectionId, calendarId, timeMin, timeMax) を使う
+- 対象：createEvent・deleteEvent・FreeBusy・全てのGoogle Calendar API呼び出し
+
 ### Google Calendar OAuth
 - sendUpdates は URLクエリパラメータで渡す（ボディに入れても無視される）
   ✅ 正: POST .../events?sendUpdates=all
