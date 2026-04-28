@@ -29,3 +29,29 @@ globs: "apps/worker/src/**/*.ts"
 - friends テーブルに line_account_id カラムは存在しない（JOIN不可）
 - LINE push のトークンは line_accounts テーブルが空のため env.LINE_CHANNEL_ACCESS_TOKEN を使う
 - Google Calendar のアクセストークンは conn.access_token を直接使わず getValidAccessToken() を使う
+
+### Google Calendar OAuth
+- sendUpdates は URLクエリパラメータで渡す（ボディに入れても無視される）
+  ✅ 正: POST .../events?sendUpdates=all
+  ❌ 誤: body に sendUpdates: 'all' を含める
+
+- refresh_tokenを確実に取得するには認証URLに以下が必須：
+  access_type: 'offline'
+  prompt: 'consent'
+  どちらか欠けるとrefresh_tokenが返ってこない
+
+- getValidAccessToken()を使わずaccess_tokenを直接使うと
+  1時間でトークンが切れてAPIが動かなくなる
+
+- /auth と /callback は認証スキップリストに入れること
+  入れないと再認証時に {"error":"Unauthorized"} になる
+
+### トークン期限切れの症状と対処
+症状: Google Calendar APIが invalid_grant を返す
+原因: refresh_tokenが未保存 or 期限切れ
+対処:
+  1. https://api.walover-co.work/api/integrations/google-calendar/auth にアクセス
+  2. Googleアカウントで再認証
+  3. D1のrefresh_tokenが更新されたことを確認：
+     npx wrangler d1 execute line-harness --remote \
+       --command="SELECT refresh_token IS NOT NULL as has_refresh, token_expires_at FROM google_calendar_connections"

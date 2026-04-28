@@ -23,6 +23,14 @@ npx wrangler@latest d1 execute line-harness --remote \
 ### Google Calendar登録されない
 → access_token 期限切れ → getValidAccessToken() を使う（conn.access_token 直接使用はNG）
 
+### Google Calendar招待メールが届かない
+1. D1のrefresh_tokenを確認：
+   npx wrangler d1 execute line-harness --remote \
+     --command="SELECT refresh_token IS NOT NULL as has_refresh FROM google_calendar_connections"
+2. falseなら再認証が必要：
+   https://api.walover-co.work/api/integrations/google-calendar/auth
+3. wrangler tailで invalid_grant エラーが出ていないか確認
+
 ### リマインダーが届かない
 → friend_reminders の status が 'active' か確認
 → target_date + offset_minutes が現在時刻以前か確認

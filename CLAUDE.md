@@ -39,6 +39,15 @@ Cloudflare Workers + D1 + Next.js のモノレポ構成。
   2. サービス関数（google-calendar.ts, reminder処理）
   3. APIルートは統合テストで対応（Phase 2以降）
 
+## Google Calendar認証管理
+- OAuthトークンはgetValidAccessToken()経由で必ず取得する
+  （access_tokenを直接使わない）
+- refresh_tokenはOAuth初回認証時のみ取得できる
+  （prompt:'consent' + access_type:'offline' が必須）
+- トークン期限切れ時はADMIN_LINE_USER_IDに自動通知される
+- 再認証URL：https://api.walover-co.work/api/integrations/google-calendar/auth
+- Google Cloud ConsoleのOAuthアプリをテスト→本番に変更しないと7日で失効する
+
 ## やらないこと
 - firebase / GCP 関連のコードを追加しない（Cloudflare統一）
 - R2は現時点では使わない（画像アップロード機能は未実装）
