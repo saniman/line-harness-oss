@@ -17,15 +17,26 @@ npx wrangler pages deploy apps/worker/dist/client \
   --branch=main \
   --commit-dirty=true
 
-## 管理画面デプロイ（ビルド → Pages）
+## 管理画面デプロイ（Cloudflare Pages）
+
+### ビルド
 NEXT_PUBLIC_API_URL=https://api.walover-co.work \
-NEXT_PUBLIC_API_KEY=<apps/web/.env.local参照> \
+NEXT_PUBLIC_API_KEY=（API_KEY） \
 pnpm --filter web run build
 
+### デプロイ
 npx wrangler pages deploy apps/web/out \
   --project-name=line-harness-web \
-  --branch=main \
-  --commit-dirty=true
+  --branch=main
+
+### 本番URL
+https://admin.walover-co.work
+
+### 新規クライアントへの展開
+1. プロジェクト作成: npx wrangler pages project create {client}-web
+2. ビルド（NEXT_PUBLIC_API_URLを変更）
+3. デプロイ（project-nameを変更）
+4. カスタムドメイン設定: docs/setup/admin-deploy.md を参照
 
 ## デプロイ後の確認
 curl https://api.walover-co.work/api/health

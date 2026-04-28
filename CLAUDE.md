@@ -67,9 +67,13 @@ Cloudflare Workers + D1 + Next.js のモノレポ構成。
 ## 本番環境
 - Worker URL: https://api.walover-co.work
 - LIFF URL: https://liff.line.me/1661159603-5qlDj5wV
-- LIFF Pages: https://line-harness-liff-35k.pages.dev
-- 管理画面: https://admin.walover-co.work（Cloudflare Pages: line-harness-web）
+- 管理画面: https://admin.walover-co.work
 - D1: line-harness (b41a1c65-a224-41bc-a99a-3284b43ea440)
 - Google Calendar connectionId: 0ba404af-3184-4640-bb56-d24c37c1f230
+
+## セットアップ手順書
+- 管理画面デプロイ: docs/setup/admin-deploy.md
+- （今後追加予定）Worker初期セットアップ: docs/setup/worker-setup.md
+- （今後追加予定）LINE連携設定: docs/setup/line-setup.md
 
 @my-preferences.md
