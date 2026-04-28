@@ -28,7 +28,27 @@ import {
   DIAGNOSIS_QUESTIONS,
 } from '../services/diagnosis.js';
 import { toJstString } from '@line-crm/db';
+import { cancelBooking } from '../services/cancellation.js';
 import type { Env } from '../index.js';
+
+export function buildWelcomeMessages() {
+  return [
+    {
+      type: 'text' as const,
+      text: '🎉 WALOVERのLINEへようこそ！\n沖縄発・AI活用支援のWALOVERです。\nAkiが直接サポートします。\n🎁 友だち追加特典として\n「あなたの業務、AIでどこまで\n自動化できるか」無料診断を\nプレゼントします！\n5問・約1分で完了します👇',
+    },
+    {
+      type: 'text' as const,
+      text: '診断を受ける場合は「診断」と\n相談を予約する場合は「予約」と\n送ってください😊',
+      quickReply: {
+        items: [
+          { type: 'action' as const, action: { type: 'message' as const, label: '🎁 診断を受ける', text: '診断' } },
+          { type: 'action' as const, action: { type: 'message' as const, label: '📅 相談を予約する', text: '無料相談予約' } },
+        ],
+      },
+    },
+  ];
+}
 
 const webhook = new Hono<Env>();
 
@@ -193,20 +213,11 @@ async function handleEvent(
     // イベントバス発火: friend_add（replyToken は Step 0 で使用済みの可能性あり）
     await fireEvent(db, 'friend_add', { friendId: friend.id, eventData: { displayName: friend.display_name } }, lineAccessToken, lineAccountId);
 
-    // 友だち追加特典: AI自動化診断の案内（シナリオ step 0 が使われていない場合のみ push で送る）
+    // 友だち追加特典: ウェルカムメッセージ2通を送信
     try {
-      const firstQ = getNextQuestion(0);
-      if (firstQ) {
-        await lineClient.pushMessage(userId, [
-          {
-            type: 'text',
-            text: `🎉 WALOVERのLINEへようこそ！\n沖縄発・AI活用支援のWALOVERです。\n\n🎁 友だち追加特典として\n「あなたの業務、AIでどこまで自動化できるか」\n無料診断をプレゼントします！\n\n5問に答えるだけ・所要時間1分`,
-            quickReply: buildQuickReply(['診断を受ける']),
-          } as unknown as Parameters<typeof lineClient.pushMessage>[1][number],
-        ]);
-      }
+      await lineClient.pushMessage(userId, buildWelcomeMessages() as Parameters<typeof lineClient.pushMessage>[1]);
     } catch (err) {
-      console.warn('[Diagnosis] Failed to send welcome push:', err);
+      console.warn('[follow] Failed to send welcome push:', err);
     }
 
     return;
@@ -319,61 +330,57 @@ async function handleEvent(
       }
     }
 
-    // キャンセル postback: "cancel:{bookingId}"
-    if (postbackData.startsWith('cancel:') && env) {
+    // キャンセル確認 postback: "cancel:{bookingId}" → 確認メッセージを返す
+    if (postbackData.startsWith('cancel:') && !postbackData.startsWith('cancel_confirm:')) {
       const bookingId = postbackData.slice('cancel:'.length);
       try {
-        const booking = await db
-          .prepare("SELECT * FROM calendar_bookings WHERE id = ? AND friend_id = ? AND status = 'confirmed'")
-          .bind(bookingId, friend.id)
-          .first<{ id: string; connection_id: string; event_id: string | null; start_at: string; end_at: string }>();
-
-        if (!booking) {
-          await lineClient.replyMessage(event.replyToken, [buildMessage('text', '予約が見つかりませんでした。すでにキャンセル済みの可能性があります。')]);
-          return;
-        }
-
-        // D1 のステータスを cancelled に更新
-        await db
-          .prepare("UPDATE calendar_bookings SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?")
-          .bind(bookingId).run();
-
-        // Google Calendar のイベントを削除（ベストエフォート）
-        if (booking.event_id && booking.connection_id) {
-          try {
-            const accessToken = await getValidAccessToken(env, db, booking.connection_id);
-            const conn = await db
-              .prepare('SELECT calendar_id FROM google_calendar_connections WHERE id = ?')
-              .bind(booking.connection_id).first<{ calendar_id: string }>();
-            const gcal = new GoogleCalendarClient({ calendarId: conn?.calendar_id ?? 'primary', accessToken });
-            await gcal.deleteEvent(booking.event_id);
-          } catch (err) {
-            console.warn('Google Calendar deleteEvent failed (D1 status still cancelled):', err);
-          }
-        }
-
-        const startDt = new Date(booking.start_at);
-        const dateLabel = `${startDt.getFullYear()}年${startDt.getMonth() + 1}月${startDt.getDate()}日`;
-        const timeLabel = `${String(startDt.getHours()).padStart(2, '0')}:00〜${String(new Date(booking.end_at).getHours()).padStart(2, '0')}:00`;
-
-        await lineClient.replyMessage(event.replyToken, [buildMessage('flex', JSON.stringify({
-          type: 'bubble',
-          header: { type: 'box', layout: 'vertical', backgroundColor: '#6b7280', paddingAll: '20px',
-            contents: [{ type: 'text', text: '🗑️ 予約をキャンセルしました', color: '#ffffff', weight: 'bold', size: 'md' }],
-          },
-          body: { type: 'box', layout: 'vertical', paddingAll: '20px', spacing: 'md',
-            contents: [
-              { type: 'box', layout: 'horizontal', contents: [
-                { type: 'text', text: '日時', size: 'sm', color: '#8b8b8b', flex: 2 },
-                { type: 'text', text: `${dateLabel} ${timeLabel}`, size: 'sm', color: '#6b7280', flex: 5, wrap: true },
-              ]},
-              { type: 'separator' },
-              { type: 'text', text: '再度ご予約を希望される場合は「予約」とお送りください。', size: 'xs', color: '#8b8b8b', wrap: true },
+        await lineClient.replyMessage(event.replyToken, [{
+          type: 'text',
+          text: '予約をキャンセルしますか？\nキャンセルすると元に戻せません。',
+          quickReply: {
+            items: [
+              {
+                type: 'action',
+                action: {
+                  type: 'postback',
+                  label: 'キャンセルする',
+                  data: `cancel_confirm:${bookingId}`,
+                  displayText: 'キャンセルする',
+                },
+              },
+              {
+                type: 'action',
+                action: {
+                  type: 'message',
+                  label: 'やめる',
+                  text: 'キャンセルをやめました',
+                },
+              },
             ],
           },
-        }))]);
+        } as unknown as Parameters<typeof lineClient.replyMessage>[1][number]]);
       } catch (err) {
-        console.error('Cancel postback error:', err);
+        console.error('Cancel confirm prompt error:', err);
+      }
+      return;
+    }
+
+    // キャンセル実行 postback: "cancel_confirm:{bookingId}"
+    if (postbackData.startsWith('cancel_confirm:') && env) {
+      const bookingId = postbackData.slice('cancel_confirm:'.length);
+      try {
+        const result = await cancelBooking(db, bookingId, friend.id, env);
+        if (result.success) {
+          await lineClient.replyMessage(event.replyToken, [buildMessage('text',
+            '✅ 予約をキャンセルしました。\nまたのご利用をお待ちしております。\n\n新しい予約はメニューの「無料AI相談を予約する」からどうぞ。',
+          )]);
+        } else {
+          await lineClient.replyMessage(event.replyToken, [buildMessage('text',
+            `キャンセルできませんでした。\n${result.error ?? 'しばらくしてから再度お試しください。'}`,
+          )]);
+        }
+      } catch (err) {
+        console.error('Cancel confirm error:', err);
         await lineClient.replyMessage(event.replyToken, [buildMessage('text', 'キャンセル処理中にエラーが発生しました。')]);
       }
       return;

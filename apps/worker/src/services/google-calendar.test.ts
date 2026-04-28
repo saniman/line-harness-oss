@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { isTokenExpiringSoon, isSlotOverlapping, generateSlots } from './google-calendar.js'
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { isTokenExpiringSoon, isSlotOverlapping, generateSlots, buildCreateEventParams, getValidAccessToken } from './google-calendar.js'
 
 describe('スロット生成', () => {
   it('10:00〜18:00で8枠生成される', () => {
@@ -93,5 +93,101 @@ describe('token_expires_at の期限切れ判定', () => {
   it('トークンが既に期限切れならリフレッシュ対象', () => {
     const expired = new Date(Date.now() - 1000) // 1秒前
     expect(isTokenExpiringSoon(expired)).toBe(true)
+  })
+})
+
+describe('createEvent', () => {
+  it('guestEmailがある場合はattendeesに含まれる', () => {
+    const params = buildCreateEventParams({
+      title: 'テスト',
+      startAt: '2026-04-25T10:00:00+09:00',
+      endAt: '2026-04-25T11:00:00+09:00',
+      guestEmail: 'test@example.com',
+    })
+    expect(params.attendees).toEqual([{ email: 'test@example.com' }])
+    expect(params.sendUpdates).toBe('all')
+  })
+
+  it('guestEmailがない場合はattendeesはundefined', () => {
+    const params = buildCreateEventParams({
+      title: 'テスト',
+      startAt: '2026-04-25T10:00:00+09:00',
+      endAt: '2026-04-25T11:00:00+09:00',
+    })
+    expect(params.attendees).toBeUndefined()
+    expect(params.sendUpdates).toBeUndefined()
+  })
+})
+
+describe('getValidAccessToken', () => {
+  const CONN_ID = 'conn-test-1'
+  const ENV = { GOOGLE_CLIENT_ID: 'cid', GOOGLE_CLIENT_SECRET: 'csecret' } as unknown as Parameters<typeof getValidAccessToken>[0]
+
+  function makeStmt(firstVal: unknown) {
+    return {
+      bind: vi.fn().mockReturnThis(),
+      first: vi.fn().mockResolvedValue(firstVal),
+      run: vi.fn().mockResolvedValue({}),
+    }
+  }
+  function makeDb(...stmts: ReturnType<typeof makeStmt>[]) {
+    const prepare = vi.fn()
+    stmts.forEach(s => prepare.mockReturnValueOnce(s))
+    return { prepare } as unknown as D1Database
+  }
+
+  afterEach(() => vi.restoreAllMocks())
+
+  it('トークンが有効期限内ならリフレッシュしない', async () => {
+    const futureDate = new Date(Date.now() + 60 * 60 * 1000).toISOString()
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    const db = makeDb(makeStmt({ access_token: 'valid-token', refresh_token: 'rf', token_expires_at: futureDate }))
+    const result = await getValidAccessToken(ENV, db, CONN_ID)
+
+    expect(result).toBe('valid-token')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('トークンが5分以内に期限切れならリフレッシュする', async () => {
+    const soonDate = new Date(Date.now() + 3 * 60 * 1000).toISOString()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ access_token: 'new-token', expires_in: 3600 }),
+    }))
+
+    const updateStmt = makeStmt(null)
+    const db = makeDb(
+      makeStmt({ access_token: 'old-token', refresh_token: 'rf', token_expires_at: soonDate }),
+      updateStmt,
+    )
+
+    const result = await getValidAccessToken(ENV, db, CONN_ID)
+    expect(result).toBe('new-token')
+    expect(updateStmt.run).toHaveBeenCalled()
+  })
+
+  it('refresh_tokenがNULLなら再認証エラーを返す', async () => {
+    const db = makeDb(makeStmt({ access_token: 'token', refresh_token: null, token_expires_at: null }))
+    await expect(getValidAccessToken(ENV, db, CONN_ID)).rejects.toThrow('REAUTH_REQUIRED')
+  })
+
+  it('リフレッシュ成功後にD1のトークンが更新される', async () => {
+    const expiredDate = new Date(Date.now() - 1000).toISOString()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ access_token: 'refreshed-token', expires_in: 3600 }),
+    }))
+
+    const updateStmt = makeStmt(null)
+    const db = makeDb(
+      makeStmt({ access_token: 'expired-token', refresh_token: 'rf', token_expires_at: expiredDate }),
+      updateStmt,
+    )
+
+    await getValidAccessToken(ENV, db, CONN_ID)
+    expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining('UPDATE google_calendar_connections'))
+    expect(updateStmt.run).toHaveBeenCalled()
   })
 })

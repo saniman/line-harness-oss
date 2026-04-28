@@ -124,7 +124,10 @@ export async function getValidAccessToken(
     .first<Record<string, unknown>>();
 
   if (!conn) throw new Error('Connection not found');
-  if (!conn.refresh_token) throw new Error('No refresh token available');
+  if (!conn.refresh_token) {
+    console.error('[GCal] refresh_tokenが未設定 — 再認証が必要です');
+    throw new Error('REAUTH_REQUIRED');
+  }
 
   const expiresAt = conn.token_expires_at ? new Date(conn.token_expires_at as string) : null;
   const shouldRefresh = isTokenExpiringSoon(expiresAt);
@@ -142,6 +145,37 @@ export async function getValidAccessToken(
   }
 
   return conn.access_token as string;
+}
+
+// ── Event params builder ────────────────────────────────────────────────────
+
+export interface CreateEventParams {
+  summary: string;
+  description?: string;
+  start: { dateTime: string; timeZone: string };
+  end: { dateTime: string; timeZone: string };
+  attendees?: { email: string }[];
+  sendUpdates?: 'all';
+}
+
+export function buildCreateEventParams(input: {
+  title: string;
+  startAt: string;
+  endAt: string;
+  description?: string;
+  guestEmail?: string;
+}): CreateEventParams {
+  const params: CreateEventParams = {
+    summary: input.title,
+    description: input.description,
+    start: { dateTime: input.startAt, timeZone: TIMEZONE },
+    end: { dateTime: input.endAt, timeZone: TIMEZONE },
+  };
+  if (input.guestEmail) {
+    params.attendees = [{ email: input.guestEmail }];
+    params.sendUpdates = 'all';
+  }
+  return params;
 }
 
 // ── API client ─────────────────────────────────────────────────────────────
@@ -188,18 +222,24 @@ export class GoogleCalendarClient {
    * Returns the created event's ID.
    */
   async createEvent(event: CreateEventInput): Promise<{ eventId: string }> {
-    const url = `${GCAL_BASE}/calendars/${encodeURIComponent(this.config.calendarId)}/events`;
-
-    const body: Record<string, unknown> = {
-      summary: event.summary,
+    const params = buildCreateEventParams({
+      title: event.summary,
+      startAt: event.start,
+      endAt: event.end,
       description: event.description,
-      start: { dateTime: event.start, timeZone: TIMEZONE },
-      end: { dateTime: event.end, timeZone: TIMEZONE },
-    };
-    if (event.attendeeEmail) {
-      body.attendees = [{ email: event.attendeeEmail }];
-      body.sendUpdates = 'all';
-    }
+      guestEmail: event.attendeeEmail,
+    });
+
+    // sendUpdates は Google Calendar API のクエリパラメータ（ボディではない）
+    const { sendUpdates, ...bodyParams } = params;
+    const baseUrl = `${GCAL_BASE}/calendars/${encodeURIComponent(this.config.calendarId)}/events`;
+    const url = sendUpdates ? `${baseUrl}?sendUpdates=${sendUpdates}` : baseUrl;
+
+    console.log('[GCal] createEvent リクエスト', {
+      url,
+      attendees: bodyParams.attendees,
+      hasGuestEmail: !!bodyParams.attendees?.length,
+    });
 
     const res = await fetch(url, {
       method: 'POST',
@@ -207,7 +247,7 @@ export class GoogleCalendarClient {
         Authorization: `Bearer ${this.config.accessToken}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(bodyParams),
     });
 
     if (!res.ok) {
@@ -220,6 +260,7 @@ export class GoogleCalendarClient {
       throw new Error('Google Calendar createEvent: response missing event id');
     }
 
+    console.log('[GCal] createEvent レスポンス', { status: res.status, eventId: data.id });
     return { eventId: data.id };
   }
 

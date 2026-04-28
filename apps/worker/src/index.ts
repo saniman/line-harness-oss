@@ -65,6 +65,7 @@ export type Env = {
     GOOGLE_CLIENT_SECRET: string;
     GOOGLE_REDIRECT_URI?: string;
     ANTHROPIC_API_KEY: string;
+    ADMIN_LINE_USER_ID?: string;
   };
   Variables: {
     staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' };

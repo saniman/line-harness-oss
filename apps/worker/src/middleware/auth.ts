@@ -26,6 +26,7 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
     path.match(/^\/api\/forms\/[^/]+$/) || // GET form definition (public for LIFF)
     path === '/api/meet-callback' || // Meet Harness completion callback
     path === '/api/qr' || // Public QR proxy — used by desktop landing pages
+    path === '/api/integrations/google-calendar/auth' ||     // Google OAuth start (redirect=1 for re-auth)
     path === '/api/integrations/google-calendar/callback' || // Google OAuth callback
     path === '/api/integrations/google-calendar/slots' || // Public: called from LIFF booking UI
     path === '/api/integrations/google-calendar/book'     // Public: called from LIFF booking UI

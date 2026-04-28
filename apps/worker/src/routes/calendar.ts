@@ -43,8 +43,13 @@ const calendar = new Hono<Env>();
 
 calendar.get('/api/integrations/google-calendar/auth', async (c) => {
   try {
-    const state = crypto.randomUUID();
+    const connectionId = c.req.query('connectionId') ?? null;
+    const state = JSON.stringify({ csrf: crypto.randomUUID(), connectionId });
     const url = getGoogleAuthUrl(c.env, state);
+    // redirect=1 の場合はブラウザで直接開ける（LINE通知からのアクセス用）
+    if (c.req.query('redirect') === '1') {
+      return c.redirect(url);
+    }
     return c.json({ success: true, data: { url } });
   } catch (err) {
     console.error('GET /api/integrations/google-calendar/auth error:', err);
@@ -63,19 +68,40 @@ calendar.get('/api/integrations/google-calendar/callback', async (c) => {
   try {
     const tokens = await exchangeCodeForTokens(c.env, code);
     const expiresAt = new Date(Date.now() + tokens.expires_in * 1000).toISOString();
-    const id = crypto.randomUUID();
 
-    await c.env.DB.prepare(`
-      INSERT INTO google_calendar_connections
-        (id, calendar_id, auth_type, access_token, refresh_token, token_expires_at, created_at, updated_at)
-      VALUES (?, 'primary', 'oauth', ?, ?, ?, datetime('now'), datetime('now'))
-    `).bind(id, tokens.access_token, tokens.refresh_token, expiresAt).run();
+    // state は JSON({ csrf, connectionId }) または旧来の文字列
+    const stateStr = c.req.query('state') ?? null;
+    let parsedState: { csrf?: string; connectionId?: string | null } = {};
+    try { parsedState = JSON.parse(stateStr ?? '{}'); } catch { /* 旧形式は無視 */ }
+    const existingConnectionId = parsedState.connectionId ?? null;
+
+    let finalId: string;
+
+    if (existingConnectionId) {
+      // 既存接続のトークンを上書き更新（再認証フロー）
+      await c.env.DB.prepare(`
+        UPDATE google_calendar_connections
+        SET access_token = ?, refresh_token = ?, token_expires_at = ?, updated_at = datetime('now')
+        WHERE id = ?
+      `).bind(tokens.access_token, tokens.refresh_token, expiresAt, existingConnectionId).run();
+      finalId = existingConnectionId;
+      console.log('[GCal callback] 既存接続を更新:', finalId);
+    } else {
+      // 新規接続を作成
+      finalId = crypto.randomUUID();
+      await c.env.DB.prepare(`
+        INSERT INTO google_calendar_connections
+          (id, calendar_id, auth_type, access_token, refresh_token, token_expires_at, created_at, updated_at)
+        VALUES (?, 'primary', 'oauth', ?, ?, ?, datetime('now'), datetime('now'))
+      `).bind(finalId, tokens.access_token, tokens.refresh_token, expiresAt).run();
+      console.log('[GCal callback] 新規接続を作成:', finalId);
+    }
 
     return c.html(`
       <html><body style="font-family:sans-serif;padding:32px">
         <h1>✅ Google Calendar 連携完了</h1>
-        <p>接続ID: <code style="background:#f0f0f0;padding:4px 8px;border-radius:4px">${id}</code></p>
-        <p>このIDを管理画面の設定に保存してください。</p>
+        <p>接続ID: <code style="background:#f0f0f0;padding:4px 8px;border-radius:4px">${finalId}</code></p>
+        <p>${existingConnectionId ? 'トークンが更新されました。' : 'このIDを管理画面の設定に保存してください。'}</p>
       </body></html>
     `);
   } catch (err: unknown) {
@@ -256,9 +282,20 @@ calendar.post('/api/integrations/google-calendar/book', async (c) => {
       return c.json({ success: false, error: validationError }, 400);
     }
 
+    // lineUserId → friendId を解決して friend_id を保存
+    let resolvedFriendId = body.friendId;
+    if (!resolvedFriendId && body.lineUserId) {
+      const friendRow = await c.env.DB
+        .prepare('SELECT id FROM friends WHERE line_user_id = ? LIMIT 1')
+        .bind(body.lineUserId)
+        .first<{ id: string }>();
+      resolvedFriendId = friendRow?.id;
+    }
+
     // D1 に予約レコードを作成
     const booking = await createCalendarBooking(c.env.DB, {
       ...body,
+      friendId: resolvedFriendId,
       metadata: body.metadata ? JSON.stringify(body.metadata) : undefined,
     });
 
@@ -272,6 +309,11 @@ calendar.post('/api/integrations/google-calendar/book', async (c) => {
           accessToken,
         });
         const attendeeEmail = body.metadata?.email as string | undefined;
+        console.log('[booking] リクエストbody:', {
+          connectionId: body.connectionId,
+          guestEmail: attendeeEmail,
+          title: body.title,
+        });
         const { eventId } = await gcal.createEvent({
           summary: body.title,
           start: body.startAt,
@@ -283,6 +325,28 @@ calendar.post('/api/integrations/google-calendar/book', async (c) => {
         booking.event_id = eventId;
       } catch (err) {
         console.warn('Google Calendar createEvent error (booking still created in D1):', err);
+        // 再認証が必要な場合は管理者に LINE 通知
+        if (err instanceof Error && err.message === 'REAUTH_REQUIRED' && c.env.ADMIN_LINE_USER_ID) {
+          try {
+            const reauthUrl = `https://api.walover-co.work/api/integrations/google-calendar/auth?connectionId=${encodeURIComponent(body.connectionId)}&redirect=1`;
+            await fetch('https://api.line.me/v2/bot/message/push', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${c.env.LINE_CHANNEL_ACCESS_TOKEN}`,
+              },
+              body: JSON.stringify({
+                to: c.env.ADMIN_LINE_USER_ID,
+                messages: [{
+                  type: 'text',
+                  text: `⚠️ Google Calendar の再認証が必要です。\n以下のURLから再認証してください:\n${reauthUrl}`,
+                }],
+              }),
+            });
+          } catch (notifyErr) {
+            console.error('[REAUTH] 管理者通知失敗:', notifyErr);
+          }
+        }
       }
     }
 
