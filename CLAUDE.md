@@ -34,6 +34,10 @@ Cloudflare Workers + D1 + Next.js のモノレポ構成。
 - 新しい関数を実装したら必ず同名の .test.ts ファイルにテストを書く
 - テストは実装前に書く（RED → GREEN → REFACTOR）
 - pnpm --filter worker test がpassしない状態でコミットしない
+- テスト実行は必ず npx vitest run を使う
+  （pnpm --filter worker test はBunが起動してクラッシュする場合がある）
+- CI（GitHub Actions）では pnpm --filter worker test のままでOK
+  （CI環境ではBunクラッシュは発生しない）
 - テスト対象の優先順位：
   1. ビジネスロジック（スロット計算、バリデーション）
   2. サービス関数（google-calendar.ts, reminder処理）

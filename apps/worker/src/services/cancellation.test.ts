@@ -156,5 +156,48 @@ describe('キャンセル処理', () => {
       // prepare呼び出し回数は3回（reminder UPDATEは呼ばれない）
       expect(db.prepare).toHaveBeenCalledTimes(3);
     });
+
+    it('複数のリマインダー（前日・当日）が全て停止される', async () => {
+      const updateStmt1 = makeStmt(null);
+      const updateStmt2 = makeStmt(null);
+      const db = makeDb(
+        makeStmt(BASE_BOOKING),                                                         // SELECT booking
+        makeStmt(null),                                                                 // UPDATE calendar_bookings
+        makeStmt(null, { results: [{ id: 'reminder-day-before' }, { id: 'reminder-same-day' }] }), // SELECT reminders（2件）
+        updateStmt1,                                                                    // UPDATE friend_reminders（1件目）
+        updateStmt2,                                                                    // UPDATE friend_reminders（2件目）
+      );
+
+      const result = await cancelBooking(db, 'booking-1', 'friend-1');
+
+      expect(result.success).toBe(true);
+      expect(updateStmt1.run).toHaveBeenCalled();
+      expect(updateStmt2.run).toHaveBeenCalled();
+    });
+  });
+});
+
+describe('予約→キャンセルの統合シナリオ', () => {
+  it('キャンセル後はリマインダーのUPDATEが全件分呼ばれる', async () => {
+    const updateBookingStmt = makeStmt(null);
+    const updateReminder1 = makeStmt(null);
+    const updateReminder2 = makeStmt(null);
+    const db = makeDb(
+      makeStmt(BASE_BOOKING),
+      updateBookingStmt,
+      makeStmt(null, { results: [{ id: 'r-1' }, { id: 'r-2' }] }),
+      updateReminder1,
+      updateReminder2,
+    );
+
+    const result = await cancelBooking(db, 'booking-1', 'friend-1');
+
+    expect(result.success).toBe(true);
+    // calendar_bookings が cancelled に更新される
+    expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining("status = 'cancelled'"));
+    // friend_reminders が 2件分 UPDATE される
+    expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining("friend_reminders"));
+    expect(updateReminder1.run).toHaveBeenCalled();
+    expect(updateReminder2.run).toHaveBeenCalled();
   });
 });

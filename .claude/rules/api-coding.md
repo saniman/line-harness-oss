@@ -75,3 +75,11 @@ globs: "apps/worker/src/**/*.ts"
   3. D1のrefresh_tokenが更新されたことを確認：
      npx wrangler d1 execute line-harness --remote \
        --command="SELECT refresh_token IS NOT NULL as has_refresh, token_expires_at FROM google_calendar_connections"
+
+### テスト実行時のBunクラッシュ
+- ローカルで pnpm --filter worker test を実行すると
+  BunがSegmentation faultでクラッシュする場合がある
+- 症状：ターミナルが固まりCtrl+Cも効かなくなる
+- 対処：ターミナルを強制終了して npx vitest run で実行する
+- 根本原因：Claude CodeがデフォルトでBunを使おうとするため
+- 恒久対策：package.jsonのtestスクリプトをnpx vitest runに変更済み

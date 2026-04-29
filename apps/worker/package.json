@@ -8,8 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "cf:deploy": "vite build && wrangler deploy",
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "test": "npx vitest run",
+    "test:watch": "npx vitest",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
