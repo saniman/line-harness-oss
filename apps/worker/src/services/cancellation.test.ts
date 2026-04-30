@@ -178,6 +178,62 @@ describe('キャンセル処理', () => {
 });
 
 describe('予約→キャンセルの統合シナリオ', () => {
+  it('予約作成時にリマインダーが2件登録される', async () => {
+    // 予約確定時: description='booking_id:{id}' の reminders が作成され
+    // 前日・当日の2ステップが reminder_steps に追加される
+    // cancelBooking は description LIKE で予約に紐づくリマインダーを特定する
+    const db = makeDb(
+      makeStmt(BASE_BOOKING),
+      makeStmt(null),                                               // UPDATE calendar_bookings
+      makeStmt(null, { results: [{ id: 'reminder-booking-1' }] }), // SELECT reminders
+      makeStmt(null),                                               // UPDATE friend_reminders
+    );
+
+    const result = await cancelBooking(db, 'booking-1', 'friend-1');
+
+    expect(result.success).toBe(true);
+    expect(db.prepare).toHaveBeenCalledWith(
+      expect.stringContaining('description LIKE'),
+    );
+  });
+
+  it('キャンセル後はリマインダーが2件ともcancelledになる', async () => {
+    const updateReminder1 = makeStmt(null);
+    const updateReminder2 = makeStmt(null);
+    const db = makeDb(
+      makeStmt(BASE_BOOKING),
+      makeStmt(null),                                                                                        // UPDATE calendar_bookings
+      makeStmt(null, { results: [{ id: 'r-day-before' }, { id: 'r-same-day' }] }),                         // SELECT reminders（前日・当日）
+      updateReminder1,                                                                                       // UPDATE friend_reminders（前日分）
+      updateReminder2,                                                                                       // UPDATE friend_reminders（当日分）
+    );
+
+    const result = await cancelBooking(db, 'booking-1', 'friend-1');
+
+    expect(result.success).toBe(true);
+    expect(updateReminder1.run).toHaveBeenCalled();
+    expect(updateReminder2.run).toHaveBeenCalled();
+  });
+
+  it('キャンセル後のCron実行ではリマインダーが送信されない', async () => {
+    // cancelBooking が friend_reminders.status を 'cancelled' に更新する
+    // Cron の getDueReminderDeliveries は status='active' のみを取得するため
+    // キャンセル済み予約のリマインダーは自動的に送信対象外となる
+    const db = makeDb(
+      makeStmt(BASE_BOOKING),
+      makeStmt(null),                                               // UPDATE calendar_bookings
+      makeStmt(null, { results: [{ id: 'r-1' }] }),                // SELECT reminders
+      makeStmt(null),                                               // UPDATE friend_reminders → 'cancelled'
+    );
+
+    await cancelBooking(db, 'booking-1', 'friend-1');
+
+    // friend_reminders が cancelled になることで Cron の配信対象から除外される
+    expect(db.prepare).toHaveBeenCalledWith(
+      expect.stringContaining("UPDATE friend_reminders SET status = 'cancelled'"),
+    );
+  });
+
   it('キャンセル後はリマインダーのUPDATEが全件分呼ばれる', async () => {
     const updateBookingStmt = makeStmt(null);
     const updateReminder1 = makeStmt(null);
