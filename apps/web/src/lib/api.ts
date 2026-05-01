@@ -74,6 +74,24 @@ export async function fetchApi<T>(path: string, options?: RequestInit): Promise<
   return res.json() as Promise<T>
 }
 
+export type BusinessHoursRow = {
+  id: number
+  day_of_week: number
+  is_open: number
+  start_hour: number
+  end_hour: number
+  slot_minutes: number
+  created_at: string
+  updated_at: string
+}
+
+export type HolidayRow = {
+  id: number
+  date: string
+  reason: string | null
+  created_at: string
+}
+
 export type FriendListParams = {
   offset?: string
   limit?: string | number
@@ -112,6 +130,26 @@ export const api = {
       fetchApi<ApiResponse<null>>(`/api/friends/${friendId}/tags/${tagId}`, {
         method: 'DELETE',
       }),
+  },
+  businessHours: {
+    list: () =>
+      fetchApi<ApiResponse<BusinessHoursRow[]>>('/api/business-hours'),
+    update: (dayOfWeek: number, data: Partial<Omit<BusinessHoursRow, 'id' | 'day_of_week' | 'created_at' | 'updated_at'>>) =>
+      fetchApi<ApiResponse<BusinessHoursRow>>(`/api/business-hours/${dayOfWeek}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+    listHolidays: (params?: { from?: string; to?: string }) => {
+      const q = params?.from && params?.to ? `?from=${params.from}&to=${params.to}` : ''
+      return fetchApi<ApiResponse<HolidayRow[]>>('/api/business-hours/holidays' + q)
+    },
+    addHoliday: (data: { date: string; reason?: string }) =>
+      fetchApi<ApiResponse<HolidayRow>>('/api/business-hours/holidays', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    deleteHoliday: (date: string) =>
+      fetchApi<ApiResponse<null>>(`/api/business-hours/holidays/${date}`, { method: 'DELETE' }),
   },
   tags: {
     list: () =>

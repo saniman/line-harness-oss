@@ -10,7 +10,6 @@ import {
   updateCalendarBookingStatus,
   updateCalendarBookingEventId,
   getBookingsInRange,
-  toJstString,
   createReminder,
   updateReminder,
   createReminderStep,
@@ -23,7 +22,44 @@ import {
   getValidAccessToken,
   getFreeBusyWithRefresh,
 } from '../services/google-calendar.js';
+import { isBusinessDay, getBusinessHours } from '../services/business-hours.js';
 import type { Env } from '../index.js';
+
+export function buildSlots(
+  date: string,
+  startHour: number,
+  endHour: number,
+  slotMinutes: number,
+  d1Bookings: { start_at: string; end_at: string }[],
+  googleBusy: { start: string; end: string }[],
+): { startAt: string; endAt: string; available: boolean }[] {
+  const slots: { startAt: string; endAt: string; available: boolean }[] = [];
+  const baseDate = new Date(`${date}T${String(startHour).padStart(2, '0')}:00:00+09:00`);
+  const jstOffset = 9 * 60 * 60 * 1000;
+  const toJst = (d: Date) => new Date(d.getTime() + jstOffset).toISOString().slice(0, -1) + '+09:00';
+
+  for (let h = startHour; h < endHour; h += slotMinutes / 60) {
+    const slotStart = new Date(baseDate);
+    slotStart.setMinutes(slotStart.getMinutes() + (h - startHour) * 60);
+    const slotEnd = new Date(slotStart);
+    slotEnd.setMinutes(slotEnd.getMinutes() + slotMinutes);
+
+    const isBookedInD1 = d1Bookings.some((b) => {
+      const bStart = new Date(b.start_at).getTime();
+      const bEnd = new Date(b.end_at).getTime();
+      return slotStart.getTime() < bEnd && slotEnd.getTime() > bStart;
+    });
+
+    const isBookedInGoogle = googleBusy.some((interval) => {
+      const gStart = new Date(interval.start).getTime();
+      const gEnd = new Date(interval.end).getTime();
+      return slotStart.getTime() < gEnd && slotEnd.getTime() > gStart;
+    });
+
+    slots.push({ startAt: toJst(slotStart), endAt: toJst(slotEnd), available: !isBookedInD1 && !isBookedInGoogle });
+  }
+  return slots;
+}
 
 export function validateBookingRequest(body: {
   connectionId?: string;
@@ -164,13 +200,25 @@ calendar.get('/api/integrations/google-calendar/slots', async (c) => {
   try {
     const connectionId = c.req.query('connectionId');
     const date = c.req.query('date'); // YYYY-MM-DD
-    const slotMinutes = Number(c.req.query('slotMinutes') ?? '60');
-    const startHour = Number(c.req.query('startHour') ?? '9');
-    const endHour = Number(c.req.query('endHour') ?? '18');
 
     if (!connectionId || !date) {
       return c.json({ success: false, error: 'connectionId and date are required' }, 400);
     }
+
+    // 休業日・定休日チェック（DBの設定を優先）
+    const open = await isBusinessDay(c.env.DB, date);
+    if (!open) {
+      return c.json({ success: true, data: [] });
+    }
+
+    // DBから営業時間設定を取得（クエリパラメータより優先）
+    const dow = new Date(`${date}T12:00:00+09:00`).getUTCDay();
+    const bhRows = await getBusinessHours(c.env.DB, dow);
+    const bh = bhRows[0];
+
+    const slotMinutes = bh ? bh.slot_minutes : Number(c.req.query('slotMinutes') ?? '60');
+    const startHour = bh ? bh.start_hour : Number(c.req.query('startHour') ?? '9');
+    const endHour = bh ? bh.end_hour : Number(c.req.query('endHour') ?? '18');
 
     const conn = await getCalendarConnectionById(c.env.DB, connectionId);
     if (!conn) {
@@ -194,36 +242,7 @@ calendar.get('/api/integrations/google-calendar/slots', async (c) => {
       console.warn('Google FreeBusy API error (falling back to D1 only):', err);
     }
 
-    // スロットを生成して空きを計算
-    const slots: { startAt: string; endAt: string; available: boolean }[] = [];
-    const baseDate = new Date(`${date}T${String(startHour).padStart(2, '0')}:00:00+09:00`);
-
-    for (let h = startHour; h < endHour; h += slotMinutes / 60) {
-      const slotStart = new Date(baseDate);
-      slotStart.setMinutes(slotStart.getMinutes() + (h - startHour) * 60);
-      const slotEnd = new Date(slotStart);
-      slotEnd.setMinutes(slotEnd.getMinutes() + slotMinutes);
-
-      const startStr = toJstString(slotStart);
-      const endStr = toJstString(slotEnd);
-
-      // D1 予約との重複チェック
-      const isBookedInD1 = bookings.some((b) => {
-        const bStart = new Date(b.start_at).getTime();
-        const bEnd = new Date(b.end_at).getTime();
-        return slotStart.getTime() < bEnd && slotEnd.getTime() > bStart;
-      });
-
-      // Google busy 区間との重複チェック
-      const isBookedInGoogle = googleBusyIntervals.some((interval) => {
-        const gStart = new Date(interval.start).getTime();
-        const gEnd = new Date(interval.end).getTime();
-        return slotStart.getTime() < gEnd && slotEnd.getTime() > gStart;
-      });
-
-      slots.push({ startAt: startStr, endAt: endStr, available: !isBookedInD1 && !isBookedInGoogle });
-    }
-
+    const slots = buildSlots(date, startHour, endHour, slotMinutes, bookings, googleBusyIntervals);
     return c.json({ success: true, data: slots });
   } catch (err) {
     console.error('GET /api/integrations/google-calendar/slots error:', err);
