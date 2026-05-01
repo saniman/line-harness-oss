@@ -16,6 +16,7 @@
 
 import { initBooking } from './booking.js';
 import { initForm } from './form.js';
+import { initEventBooking } from './event-booking.js';
 
 declare const liff: {
   init(config: { liffId: string }): Promise<void>;
@@ -334,6 +335,8 @@ async function main() {
       const params = new URLSearchParams(window.location.search);
       const formId = params.get('id');
       await initForm(formId);
+    } else if (page === 'event') {
+      await initEventBooking();
     } else if (!page) {
       await linkAndAddFlow();
     } else {
