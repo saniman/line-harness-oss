@@ -39,7 +39,13 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
       ])
       if (res.success && res.data) {
         setBroadcast(res.data)
-        if (res.data.totalCount > 0) setTargetCount(res.data.totalCount)
+        if (res.data.totalCount > 0) {
+          setTargetCount(res.data.totalCount)
+        } else if (res.data.targetType === 'tag' && res.data.targetTagId) {
+          // draft broadcast has totalCount=0; fetch actual count from friends API
+          const countRes = await api.friends.list({ tagId: res.data.targetTagId, limit: '1' })
+          if (countRes.success) setTargetCount(countRes.data.total)
+        }
       } else {
         setError('配信が見つかりません')
       }
