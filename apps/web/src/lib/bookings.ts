@@ -43,3 +43,7 @@ export const STATUS_CLASS: Record<BookingStatus, string> = {
   confirmed: 'bg-green-100 text-green-800',
   cancelled: 'bg-gray-100 text-gray-500',
 }
+
+export function canCancel(booking: Pick<Booking, 'status'>): boolean {
+  return booking.status === 'confirmed'
+}
