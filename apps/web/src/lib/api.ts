@@ -600,6 +600,26 @@ export const api = {
     delete: (id: string) =>
       fetchApi<ApiResponse<null>>(`/api/integrations/google-calendar/${id}`, { method: 'DELETE' }),
   },
+  events: {
+    list: () =>
+      fetchApi<ApiResponse<EventItem[]>>('/api/events'),
+    get: (id: number) =>
+      fetchApi<ApiResponse<EventItem>>(`/api/events/${id}`),
+    create: (data: EventCreateInput) =>
+      fetchApi<ApiResponse<EventItem>>('/api/events', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    update: (id: number, data: Partial<EventCreateInput & { is_published: number }>) =>
+      fetchApi<ApiResponse<EventItem>>(`/api/events/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+    delete: (id: number) =>
+      fetchApi<ApiResponse<null>>(`/api/events/${id}`, { method: 'DELETE' }),
+    getBookings: (id: number) =>
+      fetchApi<ApiResponse<EventBookingItem[]>>(`/api/events/${id}/bookings`),
+  },
 }
 
 export type CalendarConnection = {
@@ -609,4 +629,38 @@ export type CalendarConnection = {
   isActive: boolean
   createdAt: string
   updatedAt: string
+}
+
+export type EventItem = {
+  id: number
+  title: string
+  description: string | null
+  start_at: string
+  end_at: string
+  capacity: number
+  is_published: number
+  participant_count: number
+  remaining: number
+  created_at: string
+  updated_at: string
+}
+
+export type EventCreateInput = {
+  title: string
+  description?: string
+  start_at: string
+  end_at: string
+  capacity: number
+  is_published?: number
+}
+
+export type EventBookingItem = {
+  id: number
+  event_id: number
+  friend_id: string | null
+  name: string
+  email: string
+  status: string
+  created_at: string
+  updated_at: string
 }

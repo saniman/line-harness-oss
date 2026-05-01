@@ -48,6 +48,7 @@ import {
   updateEvent,
   deleteEvent,
   getParticipantCount,
+  getEventBookings,
   createEventBooking,
 } from './events.js'
 
@@ -144,6 +145,16 @@ describe('getParticipantCount', () => {
     const count = await getParticipantCount(db, 1)
     const capacity = 10
     expect(count >= capacity).toBe(true)
+  })
+})
+
+describe('getEventBookings', () => {
+  it('指定イベントのconfirmed参加申込一覧を返す', async () => {
+    const db = makeDb(makeStmt(null, { results: [BOOKING1] }))
+    const result = await getEventBookings(db, 1)
+    expect(result).toHaveLength(1)
+    expect(result[0].name).toBe('山田太郎')
+    expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining("status = 'confirmed'"))
   })
 })
 

@@ -5,6 +5,7 @@ import {
   getEventById,
   updateEvent,
   deleteEvent,
+  getEventBookings,
   createEventBooking,
 } from '../services/events.js';
 import type { Env } from '../index.js';
@@ -93,6 +94,17 @@ events.get('/api/events/:id', async (c) => {
     return c.json({ success: true, data: { ...event, remaining: event.capacity - event.participant_count } });
   } catch (err) {
     console.error('GET /api/events/:id error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+events.get('/api/events/:id/bookings', async (c) => {
+  try {
+    const id = Number(c.req.param('id'));
+    const bookings = await getEventBookings(c.env.DB, id);
+    return c.json({ success: true, data: bookings });
+  } catch (err) {
+    console.error('GET /api/events/:id/bookings error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

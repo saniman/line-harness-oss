@@ -8,6 +8,7 @@ vi.mock('../services/events.js', () => ({
   updateEvent: vi.fn(),
   deleteEvent: vi.fn(),
   getParticipantCount: vi.fn(),
+  getEventBookings: vi.fn(),
   createEventBooking: vi.fn(),
 }))
 
@@ -114,6 +115,17 @@ describe('DELETE /api/events/:id', () => {
     expect(res.status).toBe(200)
     const json = await res.json() as { success: boolean }
     expect(json.success).toBe(true)
+  })
+})
+
+describe('GET /api/events/:id/bookings', () => {
+  it('参加申込一覧を返す', async () => {
+    vi.mocked(eventsService.getEventBookings).mockResolvedValue([BOOKING1])
+    const res = await app.request('/api/events/1/bookings', {}, { DB: mockDb })
+    expect(res.status).toBe(200)
+    const json = await res.json() as { success: boolean; data: unknown[] }
+    expect(json.success).toBe(true)
+    expect(json.data).toHaveLength(1)
   })
 })
 
