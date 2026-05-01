@@ -25,3 +25,27 @@ globs: ""
 - テストが失敗するとデプロイは実行されない
 - ローカルで `npx vitest run` を通してからpushすること（Bunクラッシュ対策）
 - Worker のローカルテストは `npx vitest run`（`pnpm --filter worker test` はBunクラッシュの恐れ）
+
+---
+
+## ⚠️ 二重デプロイ禁止
+
+`git push origin main` を実行すれば GitHub Actions が自動でデプロイする。
+以下のコマンドは CI/CD と重複するため、**絶対に手動実行してはいけない**：
+
+- `npx wrangler pages deploy`（管理画面）← git push で自動実行される
+- `npx wrangler deploy` / `pnpm deploy:worker`（Worker）← git push で自動実行される
+
+### 正しいデプロイ手順
+
+1. `npx vitest run` → 全テストグリーン確認
+2. `git add` （対象ファイルを明示的に指定）
+3. `git commit -m "..."`
+4. `git push origin main`
+5. GitHub Actions の完了を待つ（それだけ）
+
+### 手動 wrangler コマンドを使って良いケース
+
+- D1マイグレーション（`npx wrangler d1 execute ... --remote --file=...`）← CI に含まれないので手動 OK
+- `wrangler secret put` の設定 ← これも手動 OK
+- LIFF のデプロイ（`/deploy` スキル参照）← CI に含まれないので手動 OK
