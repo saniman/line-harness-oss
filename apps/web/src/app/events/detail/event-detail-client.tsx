@@ -118,25 +118,42 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
               <div className="p-8 text-center text-sm text-gray-400">参加申込はまだありません</div>
             ) : (
               <>
-                <div className="hidden sm:grid sm:grid-cols-[1fr_1fr_140px_80px] gap-4 px-4 py-2 bg-gray-50 border-b border-gray-100 text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                  <span>名前</span>
-                  <span>メールアドレス</span>
-                  <span>申込日時</span>
+                <div className="hidden sm:grid sm:grid-cols-[1fr_100px_100px_80px_140px] gap-4 px-4 py-2 bg-gray-50 border-b border-gray-100 text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                  <span>参加者</span>
                   <span>ステータス</span>
+                  <span>決済</span>
+                  <span>金額</span>
+                  <span>申込日時</span>
                 </div>
-                {bookings.map((b) => (
-                  <div
-                    key={b.id}
-                    className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_140px_80px] gap-1 sm:gap-4 px-4 py-3 border-b border-gray-100 last:border-0 hover:bg-gray-50 transition-colors"
-                  >
-                    <p className="text-sm font-medium text-gray-900">{b.name}</p>
-                    <p className="text-sm text-gray-600 truncate">{b.email}</p>
-                    <p className="text-xs text-gray-400">{formatJST(b.created_at)}</p>
-                    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700 w-fit">
-                      {b.status === 'confirmed' ? '確定' : 'キャンセル'}
-                    </span>
-                  </div>
-                ))}
+                {bookings.map((b) => {
+                  const paymentBadge = (() => {
+                    if (b.payment_status === 'paid') return { label: '💳 決済済', cls: 'bg-green-100 text-green-700' }
+                    if (b.payment_status === 'unpaid' && b.status === 'pending') return { label: '⏳ 未決済', cls: 'bg-yellow-100 text-yellow-700' }
+                    if (b.status === 'cancelled') return { label: '❌ キャンセル', cls: 'bg-gray-100 text-gray-500' }
+                    return { label: '確定', cls: 'bg-green-100 text-green-700' }
+                  })()
+                  return (
+                    <div
+                      key={b.id}
+                      className="grid grid-cols-1 sm:grid-cols-[1fr_100px_100px_80px_140px] gap-1 sm:gap-4 px-4 py-3 border-b border-gray-100 last:border-0 hover:bg-gray-50 transition-colors"
+                    >
+                      <div>
+                        <p className="text-sm font-medium text-gray-900">{b.name}</p>
+                        <p className="text-xs text-gray-400 truncate">{b.email}</p>
+                      </div>
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700 w-fit self-center">
+                        {b.status === 'confirmed' ? '確定' : b.status === 'pending' ? '保留' : 'キャンセル'}
+                      </span>
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium w-fit self-center ${paymentBadge.cls}`}>
+                        {paymentBadge.label}
+                      </span>
+                      <p className="text-sm text-gray-700 self-center">
+                        {b.amount != null ? `¥${b.amount.toLocaleString()}` : '—'}
+                      </p>
+                      <p className="text-xs text-gray-400 self-center">{formatJST(b.created_at)}</p>
+                    </div>
+                  )
+                })}
               </>
             )}
           </div>

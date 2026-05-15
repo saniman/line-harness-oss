@@ -7,6 +7,7 @@ import {
   updateEvent,
   deleteEvent,
   getEventBookings,
+  getEventBookingsAdmin,
   createEventBooking,
   createPendingBooking,
   updateBookingStripeSessionId,
@@ -104,7 +105,7 @@ events.get('/api/events/:id', async (c) => {
 events.get('/api/events/:id/bookings', async (c) => {
   try {
     const id = Number(c.req.param('id'));
-    const bookings = await getEventBookings(c.env.DB, id);
+    const bookings = await getEventBookingsAdmin(c.env.DB, id);
     return c.json({ success: true, data: bookings });
   } catch (err) {
     console.error('GET /api/events/:id/bookings error:', err);

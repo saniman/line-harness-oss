@@ -97,6 +97,13 @@ export async function getEventBookings(db: D1Database, eventId: number): Promise
   return result.results
 }
 
+export async function getEventBookingsAdmin(db: D1Database, eventId: number): Promise<EventBookingRow[]> {
+  const result = await db.prepare(
+    'SELECT * FROM event_bookings WHERE event_id = ? ORDER BY created_at',
+  ).bind(eventId).all<EventBookingRow>()
+  return result.results
+}
+
 export async function createEventBooking(
   db: D1Database,
   data: { event_id: number; friend_id?: string | null; name: string; email: string },

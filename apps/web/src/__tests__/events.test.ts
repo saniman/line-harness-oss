@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import type { EventItem } from '../lib/api'
+import type { EventItem, EventBookingItem } from '../lib/api'
 
 // ロジック関数
 function getRemaining(event: Pick<EventItem, 'capacity' | 'participant_count'>): number {
@@ -136,5 +136,42 @@ describe('イベントソート・フィルタ', () => {
     const published = filterPublished(events)
     expect(published).toHaveLength(1)
     expect(published[0].id).toBe(1)
+  })
+})
+
+// 決済ステータス表示ロジック
+function getPaymentBadge(b: Pick<EventBookingItem, 'payment_status' | 'status'>): string {
+  if (b.payment_status === 'paid') return '💳 決済済'
+  if (b.payment_status === 'unpaid' && b.status === 'pending') return '⏳ 未決済'
+  if (b.status === 'cancelled') return '❌ キャンセル'
+  return '確定'
+}
+
+describe('決済ステータス表示', () => {
+  it('payment_status=paid のとき「💳 決済済」と表示される', () => {
+    const b = { payment_status: 'paid', status: 'confirmed' } as EventBookingItem
+    expect(getPaymentBadge(b)).toBe('💳 決済済')
+  })
+
+  it('payment_status=unpaid かつ status=pending のとき「⏳ 未決済」と表示される', () => {
+    const b = { payment_status: 'unpaid', status: 'pending' } as EventBookingItem
+    expect(getPaymentBadge(b)).toBe('⏳ 未決済')
+  })
+
+  it('status=cancelled のとき「❌ キャンセル」と表示される', () => {
+    const b = { payment_status: 'unpaid', status: 'cancelled' } as EventBookingItem
+    expect(getPaymentBadge(b)).toBe('❌ キャンセル')
+  })
+
+  it('amount が null でなければ金額を表示できる', () => {
+    const b = { amount: 3000 } as EventBookingItem
+    const label = b.amount != null ? `¥${b.amount.toLocaleString()}` : '—'
+    expect(label).toBe('¥3,000')
+  })
+
+  it('amount が null のときは「—」を表示する', () => {
+    const b = { amount: null } as EventBookingItem
+    const label = b.amount != null ? `¥${b.amount.toLocaleString()}` : '—'
+    expect(label).toBe('—')
   })
 })

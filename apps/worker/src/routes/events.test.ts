@@ -19,9 +19,12 @@ vi.mock('../services/events.js', () => ({
   deleteEvent: vi.fn(),
   getParticipantCount: vi.fn(),
   getEventBookings: vi.fn(),
+  getEventBookingsAdmin: vi.fn(),
   createEventBooking: vi.fn(),
   createPendingBooking: vi.fn(),
   updateBookingStripeSessionId: vi.fn(),
+  getEventBookingById: vi.fn(),
+  confirmEventBooking: vi.fn(),
 }))
 
 import * as eventsService from '../services/events.js'
@@ -139,13 +142,23 @@ describe('DELETE /api/events/:id', () => {
 })
 
 describe('GET /api/events/:id/bookings', () => {
-  it('参加申込一覧を返す', async () => {
-    vi.mocked(eventsService.getEventBookings).mockResolvedValue([BOOKING1])
+  it('参加申込一覧にpayment_status・paid_at・amountが含まれる', async () => {
+    const paidBooking = {
+      ...BOOKING1,
+      status: 'confirmed',
+      payment_status: 'paid',
+      paid_at: '2026-06-01T10:00:00',
+      amount: 3000,
+    }
+    vi.mocked(eventsService.getEventBookingsAdmin).mockResolvedValue([paidBooking])
     const res = await app.request('/api/events/1/bookings', {}, { DB: mockDb })
     expect(res.status).toBe(200)
-    const json = await res.json() as { success: boolean; data: unknown[] }
+    const json = await res.json() as { success: boolean; data: typeof paidBooking[] }
     expect(json.success).toBe(true)
     expect(json.data).toHaveLength(1)
+    expect(json.data[0].payment_status).toBe('paid')
+    expect(json.data[0].paid_at).toBe('2026-06-01T10:00:00')
+    expect(json.data[0].amount).toBe(3000)
   })
 })
 

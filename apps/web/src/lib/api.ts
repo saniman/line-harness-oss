@@ -661,6 +661,9 @@ export type EventBookingItem = {
   name: string
   email: string
   status: string
+  payment_status: string
+  paid_at: string | null
+  amount: number | null
   created_at: string
   updated_at: string
 }
