@@ -77,6 +77,7 @@ events.get('/api/events/public', async (c) => {
         start_at: e.start_at,
         end_at: e.end_at,
         capacity: e.capacity,
+        price: e.price,
         participant_count: e.participant_count,
         remaining: e.capacity - e.participant_count,
         available: e.participant_count < e.capacity,

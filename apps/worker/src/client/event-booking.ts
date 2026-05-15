@@ -56,18 +56,50 @@ export function buildEventListHtml(events: EventPublic[]): string {
 
 export function buildEventDetailHtml(event: EventPublic): string {
   const full = !event.available || event.remaining === 0
+  const isPaid = event.price != null && event.price > 0
+  const priceHtml = isPaid
+    ? `<p class="event-price">参加費: ¥${event.price!.toLocaleString()}</p>`
+    : `<p class="event-price">参加費: 無料</p>`
+  const actionHtml = isPaid
+    ? `<button id="checkout-btn" class="checkout-btn" ${full ? 'disabled' : ''}>
+        ${full ? '満席' : '申込・決済へ進む 💳'}
+       </button>`
+    : `<form id="free-join-form">
+        <input id="join-name" type="text" placeholder="お名前" required class="join-input" />
+        <input id="join-email" type="email" placeholder="メールアドレス" required class="join-input" />
+        <button type="submit" ${full ? 'disabled' : ''}>
+          ${full ? '満席' : '申し込む（無料）'}
+        </button>
+       </form>`
   return `
     <div class="event-detail">
       <h2 class="event-title">${escapeHtml(event.title)}</h2>
       <p class="event-date">${formatJST(event.start_at)} 〜 ${formatJST(event.end_at)}</p>
       ${event.description ? `<p class="event-description">${escapeHtml(event.description)}</p>` : ''}
       <p class="event-remaining">残席: ${event.remaining}名</p>
-      ${event.price != null ? `<p class="event-price">参加費: ¥${event.price.toLocaleString()}</p>` : ''}
-      <button id="checkout-btn" class="checkout-btn" ${full ? 'disabled' : ''}>
-        ${full ? '満席' : '申込・決済へ進む 💳'}
-      </button>
+      ${priceHtml}
+      ${actionHtml}
     </div>
   `
+}
+
+export async function joinFreeEvent(
+  eventId: number,
+  lineUserId: string,
+  name: string,
+  email: string,
+): Promise<{ success: boolean; error?: string }> {
+  const res = await fetch(`${API_BASE}/api/events/${eventId}/join`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, email, lineUserId: lineUserId || undefined }),
+  })
+
+  if (!res.ok) {
+    if (res.status === 409) return { success: false, error: 'このイベントは満席です' }
+    return { success: false, error: '申し込みに失敗しました' }
+  }
+  return { success: true }
 }
 
 export async function startCheckoutSession(
@@ -156,6 +188,15 @@ export async function initEventBooking(options: {
     })
   }
 
+  const showError = (anchor: Element | null, message: string) => {
+    const existing = app.querySelector('.form-error')
+    existing?.remove()
+    const errEl = document.createElement('p')
+    errEl.className = 'form-error'
+    errEl.textContent = message
+    anchor?.parentElement?.insertBefore(errEl, anchor)
+  }
+
   const renderDetail = (event: EventPublic) => {
     app.innerHTML = `
       <div>
@@ -165,24 +206,44 @@ export async function initEventBooking(options: {
     `
     document.getElementById('back-btn')?.addEventListener('click', renderList)
 
+    // 有料フロー
     const checkoutBtn = document.getElementById('checkout-btn') as HTMLButtonElement | null
     checkoutBtn?.addEventListener('click', async () => {
       if (!checkoutBtn) return
       checkoutBtn.disabled = true
       checkoutBtn.textContent = '処理中...'
-
       const result = await startCheckoutSession(event.id, lineUserId ?? '', openWindow)
       if (!result.success) {
         checkoutBtn.disabled = false
         checkoutBtn.textContent = '申込・決済へ進む 💳'
-        const existing = app.querySelector('.form-error')
-        existing?.remove()
-        const errEl = document.createElement('p')
-        errEl.className = 'form-error'
-        errEl.textContent = result.error || 'エラーが発生しました'
-        checkoutBtn.parentElement?.insertBefore(errEl, checkoutBtn)
+        showError(checkoutBtn, result.error || 'エラーが発生しました')
       }
-      // 成功時は openWindow で Stripe ページへ遷移済み
+    })
+
+    // 無料フロー
+    const freeForm = document.getElementById('free-join-form') as HTMLFormElement | null
+    freeForm?.addEventListener('submit', async (e) => {
+      e.preventDefault()
+      const submitBtn = freeForm.querySelector('button[type="submit"]') as HTMLButtonElement
+      const name = (document.getElementById('join-name') as HTMLInputElement)?.value.trim()
+      const email = (document.getElementById('join-email') as HTMLInputElement)?.value.trim()
+      if (!name || !email) return
+      submitBtn.disabled = true
+      submitBtn.textContent = '処理中...'
+      const result = await joinFreeEvent(event.id, lineUserId ?? '', name, email)
+      if (result.success) {
+        app.innerHTML = `
+          <div class="done-card">
+            <div class="check-icon">✓</div>
+            <h2>申込が完了しました！</h2>
+            <p>ご登録のメールアドレスにご連絡します。</p>
+          </div>
+        `
+      } else {
+        submitBtn.disabled = false
+        submitBtn.textContent = '申し込む（無料）'
+        showError(submitBtn, result.error || 'エラーが発生しました')
+      }
     })
   }
 
