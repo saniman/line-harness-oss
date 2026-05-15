@@ -29,6 +29,10 @@ database_id = "b41a1c65-a224-41bc-a99a-3284b43ea440"
 [triggers]
 crons = ["*/5 * * * *"]
 
+# Stripe シークレット（wrangler secret put で設定する）
+# STRIPE_SECRET_KEY        - Stripe ダッシュボード > APIキー
+# STRIPE_WEBHOOK_SECRET    - Stripe ダッシュボード > Webhook > エンドポイントの署名シークレット
+
 # ═══════════════════════════════════════════════════════════════
 # 本番環境 (aiagent.mini@)
 # 使い方: npx wrangler deploy --env production --name your-worker-name
