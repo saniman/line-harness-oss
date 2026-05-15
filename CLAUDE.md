@@ -36,10 +36,16 @@ Cloudflare Workers + D1 + Next.js のモノレポ構成。
 
 ## CI/CDに関する既知の問題と対処
 
-### wrangler-action の Node.js 24 非互換（2026-05-15 対応済み）
-`cloudflare/wrangler-action@v3` は Node.js 20 ランタイムで動作するが、
-GitHub のランナーが Node.js 24 に移行中のため CI が失敗する。
-→ **対処**: wrangler-actionは使わず `pnpm exec wrangler deploy` の `run` ステップで代替
+### Node.js 20 アクションの非互換問題（2026-05-15 対応済み）
+GitHub のランナーが Node.js 24 に移行中のため、Node.js 20 ランタイムで動作する
+GitHub Actions が CI で失敗する。対象アクション:
+- `cloudflare/wrangler-action@v3` → `pnpm exec wrangler` の run ステップで代替
+- `pnpm/action-setup@v4` → `corepack enable pnpm` の run ステップで代替
+
+→ **原則**: アクション (uses:) は Node.js バージョン依存するため、
+  代わりに `run:` ステップで直接コマンドを実行する
+
+→ **deploy-liff.yml も注意**: wrangler-action@v3 が残っていたため同様に修正が必要
 
 ### wrangler 4系での破壊的変更
 - `wrangler pages deploy` に `--account-id` フラグは存在しない

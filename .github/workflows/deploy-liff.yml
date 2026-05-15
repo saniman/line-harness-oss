@@ -16,7 +16,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
+      - name: Enable corepack (pnpm/action-setup@v4 の Node.js 24 非互換対応)
+        run: corepack enable pnpm
 
       - uses: actions/setup-node@v4
         with:
@@ -34,8 +35,9 @@ jobs:
           VITE_CALENDAR_CONNECTION_ID: ${{ vars.VITE_CALENDAR_CONNECTION_ID }}
           VITE_API_BASE: https://api.walover-co.work
 
-      - uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy apps/worker/dist/client --project-name=line-harness-liff
+      - name: Deploy to Cloudflare Pages
+        working-directory: apps/worker
+        run: pnpm exec wrangler pages deploy ./dist/client --project-name=line-harness-liff
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: aa7b3de8b8dc8dd263572893aa4f652e
