@@ -155,27 +155,39 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+
+      # pnpm/action-setup@v4 は Node.js 20 ランタイム依存のため使わない
+      # GitHub ランナーの Node.js 24 移行（2026-06-02〜）で動作しなくなるため
+      - name: Enable corepack
+        run: corepack enable pnpm      # package.json の packageManager フィールドからバージョン取得
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
+
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @line-crm/shared --filter @line-crm/line-sdk --filter @line-crm/db build
-      - uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: apps/worker
-          command: deploy
+
+      # cloudflare/wrangler-action@v3 も Node.js 20 依存のため使わない
+      - name: Deploy to Cloudflare Workers
+        working-directory: apps/worker
+        run: pnpm exec wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 ```
+
+> **注意**: `cloudflare/wrangler-action@v3` および `pnpm/action-setup@v4` は
+> Node.js 20 ランタイムで動作するため、GitHub ランナーの Node.js 24 移行により
+> CI が失敗する。代わりに `run:` ステップで直接コマンドを実行すること。
+> 詳細は[トラブルシューティング](#トラブルシューティング)を参照。
 
 ### 必要な GitHub Secrets
 
 | シークレット名 | 取得方法 |
 |--------------|----------|
 | `CLOUDFLARE_API_TOKEN` | Cloudflare Dashboard > My Profile > API Tokens > Create Token |
-| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare Dashboard > Workers > Account ID |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare Dashboard > Workers > Account ID（deploy-web.yml はハードコード済み）|
 
 ---
 
@@ -386,3 +398,47 @@ VITE_LIFF_ID=xxx VITE_BOT_BASIC_ID=@xxx pnpm deploy:worker
 ```bash
 npx wrangler pages project delete lh-liff-xxxxx
 ```
+
+---
+
+## トラブルシューティング
+
+### CI が "Process completed with exit code 1" で失敗する
+
+**原因**: GitHub Actions のランナーが Node.js 24 に移行中（2026-06-02 から強制）のため、
+Node.js 20 ランタイムで動作するアクションが失敗する。
+
+**対象アクション（使用禁止）**:
+- `cloudflare/wrangler-action@v3` — Node.js 20 ランタイム
+- `pnpm/action-setup@v4` — Node.js 20 ランタイム
+
+**正しい書き方**:
+
+```yaml
+steps:
+  - uses: actions/checkout@v4
+
+  # ✅ corepack は Node.js 組み込みのため影響なし
+  - run: corepack enable pnpm
+
+  - uses: actions/setup-node@v4
+    with:
+      node-version: 22
+      cache: pnpm
+
+  - run: pnpm install --frozen-lockfile
+
+  # ✅ pnpm exec wrangler は run ステップなので Node.js バージョンに依存しない
+  - working-directory: apps/worker
+    run: pnpm exec wrangler deploy
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+```
+
+**wrangler 4 系の注意点**:
+- `wrangler pages deploy` に `--account-id` フラグは存在しない → `CLOUDFLARE_ACCOUNT_ID` 環境変数で渡す
+- `pnpm exec wrangler` は実行ディレクトリが `working-directory` になる → Pages の出力パスに注意
+  - deploy-web.yml: `working-directory: apps/worker` → パスは `../web/out`
+  - deploy-liff.yml: `working-directory: apps/worker` → パスは `./dist/client`
+- `CLOUDFLARE_ACCOUNT_ID` GitHub Secret が未設定だと空文字列で wrangler.toml の値を上書きしてしまう
+  → deploy-web.yml / deploy-liff.yml では account ID をハードコード

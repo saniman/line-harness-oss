@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased] (2026-05-15)
+
+### CI/CD
+- `pnpm/action-setup@v4` を `corepack enable pnpm` に置き換え（Node.js 24 移行対応）
+- `cloudflare/wrangler-action@v3` を `pnpm exec wrangler` の run ステップに置き換え
+- deploy-liff.yml に残っていた wrangler-action@v3 を修正（初回修正時の漏れ）
+- 対象ワークフロー: deploy-web.yml / deploy-worker.yml / deploy-liff.yml / test.yml
+
+### Features
+- イベント管理: 参加費（price）フィールドの保存バグを修正（POST/PUT）
+- イベント詳細ページに編集モーダルを追加（全フィールドをインライン編集可能に）
+
 ## v0.2.0 (2026-03-25)
 
 ### Breaking Changes
