@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Enable corepack (pnpm/action-setup@v4 の Node.js 24 非互換対応)
+      - name: Enable corepack
         run: corepack enable pnpm
 
       - uses: actions/setup-node@v4
