@@ -164,6 +164,43 @@ describe('PUT /api/events/:id', () => {
     const json = await res.json() as { success: boolean; data: typeof updated }
     expect(json.data.title).toBe('更新済みセミナー')
   })
+
+  it('price: 2000 を渡すとupdateEventにprice: 2000が渡されレスポンスにprice: 2000が返る', async () => {
+    const updated = { ...EVENT1, price: 2000 }
+    vi.mocked(eventsService.updateEvent).mockResolvedValue(updated)
+    const res = await app.request('/api/events/1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ price: 2000 }),
+    }, { DB: mockDb })
+    expect(res.status).toBe(200)
+    const json = await res.json() as { success: boolean; data: { price: number } }
+    expect(json.data.price).toBe(2000)
+    expect(eventsService.updateEvent).toHaveBeenCalledWith(mockDb, 1, expect.objectContaining({ price: 2000 }))
+  })
+
+  it('タイトル・日時・定員・説明を同時に渡すとupdateEventに全フィールドが渡される', async () => {
+    const updated = { ...EVENT1, title: '新タイトル', capacity: 20, description: '説明文' }
+    vi.mocked(eventsService.updateEvent).mockResolvedValue(updated)
+    const body = {
+      title: '新タイトル',
+      start_at: '2026-07-01T10:00:00.000Z',
+      end_at: '2026-07-01T12:00:00.000Z',
+      capacity: 20,
+      description: '説明文',
+    }
+    const res = await app.request('/api/events/1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }, { DB: mockDb })
+    expect(res.status).toBe(200)
+    expect(eventsService.updateEvent).toHaveBeenCalledWith(mockDb, 1, expect.objectContaining({
+      title: '新タイトル',
+      capacity: 20,
+      description: '説明文',
+    }))
+  })
 })
 
 describe('DELETE /api/events/:id', () => {

@@ -652,7 +652,7 @@ export type EventCreateInput = {
   start_at: string
   end_at: string
   capacity: number
-  price?: number
+  price?: number | null
   is_published?: number
 }
 

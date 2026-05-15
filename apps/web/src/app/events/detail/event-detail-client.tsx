@@ -6,6 +6,14 @@ import { api } from '@/lib/api'
 import type { EventItem, EventBookingItem } from '@/lib/api'
 import Header from '@/components/layout/header'
 
+const FIELD_CLASS = 'text-sm border border-gray-300 rounded-lg px-3 py-2 w-full focus:outline-none focus:ring-2 focus:ring-green-500'
+
+function isoToDatetimeLocal(iso: string): string {
+  const d = new Date(iso)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
 function formatJST(iso: string): string {
   const d = new Date(iso)
   const jst = new Date(d.getTime() + 9 * 60 * 60 * 1000)
@@ -26,6 +34,13 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
   const [error, setError] = useState('')
   const [toggling, setToggling] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [editForm, setEditForm] = useState({
+    title: '', description: '', start_at: '', end_at: '',
+    capacity: 10, price: '', is_published: false,
+  })
+  const [saving, setSaving] = useState(false)
+  const [editError, setEditError] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -57,6 +72,51 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
       setError('更新に失敗しました')
     } finally {
       setToggling(false)
+    }
+  }
+
+  const handleEditOpen = () => {
+    if (!event) return
+    setEditForm({
+      title: event.title,
+      description: event.description ?? '',
+      start_at: isoToDatetimeLocal(event.start_at),
+      end_at: isoToDatetimeLocal(event.end_at),
+      capacity: event.capacity,
+      price: event.price != null && event.price > 0 ? String(event.price) : '',
+      is_published: event.is_published === 1,
+    })
+    setEditError('')
+    setEditing(true)
+  }
+
+  const handleEditSave = async (e: React.FormEvent) => {
+    e.preventDefault()
+    const cap = Number(editForm.capacity)
+    const priceVal = editForm.price === '' ? null : Number(editForm.price)
+    if (!editForm.title.trim()) { setEditError('タイトルを入力してください'); return }
+    if (!editForm.start_at || !editForm.end_at) { setEditError('日時を入力してください'); return }
+    if (new Date(editForm.start_at) >= new Date(editForm.end_at)) { setEditError('終了日時は開始日時より後にしてください'); return }
+    if (!Number.isInteger(cap) || cap < 1) { setEditError('定員は1以上の整数で入力してください'); return }
+    if (priceVal !== null && (!Number.isInteger(priceVal) || priceVal < 0)) { setEditError('参加費は0以上の整数で入力してください'); return }
+    setSaving(true)
+    setEditError('')
+    try {
+      await api.events.update(eventId, {
+        title: editForm.title.trim(),
+        description: editForm.description.trim() || undefined,
+        start_at: new Date(editForm.start_at).toISOString(),
+        end_at: new Date(editForm.end_at).toISOString(),
+        capacity: cap,
+        price: priceVal != null && priceVal > 0 ? priceVal : null,
+        is_published: editForm.is_published ? 1 : 0,
+      })
+      setEditing(false)
+      await load()
+    } catch {
+      setEditError('保存に失敗しました')
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -204,6 +264,12 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
           <div className="bg-white rounded-lg border border-gray-200 p-4 space-y-3">
             <h2 className="text-sm font-semibold text-gray-700">操作</h2>
             <button
+              onClick={handleEditOpen}
+              className="w-full py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+            >
+              編集
+            </button>
+            <button
               onClick={handleTogglePublish}
               disabled={toggling}
               className="w-full py-2 text-sm font-medium border rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
@@ -230,6 +296,124 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
           </div>
         </div>
       </div>
+
+      {/* 編集モーダル */}
+      {editing && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+            <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-gray-800">イベントを編集</h2>
+              <button
+                onClick={() => setEditing(false)}
+                className="text-gray-400 hover:text-gray-600 text-lg leading-none"
+                aria-label="閉じる"
+              >
+                ×
+              </button>
+            </div>
+            <form onSubmit={handleEditSave} className="p-6 space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">
+                  タイトル <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={editForm.title}
+                  onChange={(e) => setEditForm((f) => ({ ...f, title: e.target.value }))}
+                  className={FIELD_CLASS}
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">説明（任意）</label>
+                <textarea
+                  value={editForm.description}
+                  onChange={(e) => setEditForm((f) => ({ ...f, description: e.target.value }))}
+                  rows={3}
+                  className={FIELD_CLASS}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">
+                  開始日時 <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="datetime-local"
+                  value={editForm.start_at}
+                  onChange={(e) => setEditForm((f) => ({ ...f, start_at: e.target.value }))}
+                  className={FIELD_CLASS}
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">
+                  終了日時 <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="datetime-local"
+                  value={editForm.end_at}
+                  onChange={(e) => setEditForm((f) => ({ ...f, end_at: e.target.value }))}
+                  className={FIELD_CLASS}
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">
+                  定員 <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="number"
+                  value={editForm.capacity}
+                  onChange={(e) => setEditForm((f) => ({ ...f, capacity: Number(e.target.value) }))}
+                  min={1}
+                  className={FIELD_CLASS}
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">参加費（円）</label>
+                <input
+                  type="number"
+                  value={editForm.price}
+                  onChange={(e) => setEditForm((f) => ({ ...f, price: e.target.value }))}
+                  min={0}
+                  placeholder="空欄 = 無料"
+                  className={FIELD_CLASS}
+                />
+              </div>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setEditForm((f) => ({ ...f, is_published: !f.is_published }))}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${editForm.is_published ? 'bg-green-500' : 'bg-gray-300'}`}
+                  aria-label="公開設定"
+                >
+                  <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${editForm.is_published ? 'translate-x-6' : 'translate-x-1'}`} />
+                </button>
+                <span className="text-sm text-gray-600">{editForm.is_published ? '公開' : '非公開'}</span>
+              </div>
+              {editError && <p className="text-xs text-red-600">{editError}</p>}
+              <div className="flex gap-3 pt-2">
+                <button
+                  type="submit"
+                  disabled={saving}
+                  className="flex-1 py-2.5 text-sm font-medium text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
+                  style={{ backgroundColor: '#06C755' }}
+                >
+                  {saving ? '保存中...' : '保存する'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEditing(false)}
+                  className="flex-1 py-2.5 text-sm font-medium text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                >
+                  キャンセル
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

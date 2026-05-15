@@ -162,6 +162,28 @@ describe('updateEvent', () => {
     expect(result?.title).toBe('更新済みセミナー')
     expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining('UPDATE events'))
   })
+
+  it('price: 2000 を渡すとUPDATE文にprice = ?が含まれる', async () => {
+    const updated: EventWithCount = { ...EVENT1, price: 2000 }
+    const db = makeDb(makeStmt(null), makeStmt(updated))
+    const result = await updateEvent(db, 1, { price: 2000 })
+    expect(result?.price).toBe(2000)
+    const updateSql = (db.prepare as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
+    expect(updateSql).toContain('price = ?')
+  })
+
+  it('タイトル・定員・説明を同時に更新できる', async () => {
+    const updated: EventWithCount = { ...EVENT1, title: '新タイトル', capacity: 20, description: '新しい説明' }
+    const db = makeDb(makeStmt(null), makeStmt(updated))
+    const result = await updateEvent(db, 1, { title: '新タイトル', capacity: 20, description: '新しい説明' })
+    expect(result?.title).toBe('新タイトル')
+    expect(result?.capacity).toBe(20)
+    expect(result?.description).toBe('新しい説明')
+    const updateSql = (db.prepare as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
+    expect(updateSql).toContain('title = ?')
+    expect(updateSql).toContain('capacity = ?')
+    expect(updateSql).toContain('description = ?')
+  })
 })
 
 describe('deleteEvent', () => {
