@@ -35,6 +35,7 @@ jobs:
           NEXT_PUBLIC_API_KEY: ${{ secrets.API_KEY }}
 
       - name: Deploy to Cloudflare Pages
-        run: pnpm --filter worker exec wrangler pages deploy apps/web/out --project-name=line-harness-web --account-id=aa7b3de8b8dc8dd263572893aa4f652e
+        run: pnpm --filter worker exec wrangler pages deploy apps/web/out --project-name=line-harness-web
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: aa7b3de8b8dc8dd263572893aa4f652e
