@@ -649,6 +649,35 @@ async function handleEvent(
 
     if (matched) return;
 
+    // イベントキーワード検出 → イベント一覧LIFFへ誘導
+    if (incomingText.includes('イベント') && env) {
+      const liffUrl = env.LIFF_URL ?? 'https://liff.line.me/dummy';
+      try {
+        await lineClient.replyMessage(event.replyToken, [buildMessage('flex', JSON.stringify({
+          type: 'bubble',
+          body: {
+            type: 'box', layout: 'vertical', paddingAll: '20px',
+            contents: [
+              { type: 'text', text: '開催中のイベント一覧はこちらからご確認ください 🎪', size: 'sm', color: '#1e293b', wrap: true },
+            ],
+          },
+          footer: {
+            type: 'box', layout: 'vertical', paddingAll: '16px',
+            contents: [
+              { type: 'button', action: { type: 'uri', label: 'イベント一覧を見る', uri: `${liffUrl}?page=event` }, style: 'primary', color: '#06C755' },
+            ],
+          },
+        }))]);
+        replyTokenConsumed = true;
+      } catch (err) {
+        console.error('Failed to send event LIFF button:', err);
+      }
+      if (replyTokenConsumed) {
+        await fireEvent(db, 'message_received', { friendId: friend.id, eventData: { text: incomingText, matched: true } }, lineAccessToken, lineAccountId);
+        return;
+      }
+    }
+
     // 予約キーワード検出 → LIFFページへ誘導
     if (incomingText.includes('予約') && env) {
       const liffUrl = env.LIFF_URL ?? 'https://liff.line.me/dummy';
