@@ -31,8 +31,9 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
     path === '/api/integrations/google-calendar/callback' || // Google OAuth callback
     path === '/api/integrations/google-calendar/slots' || // Public: called from LIFF booking UI
     path === '/api/integrations/google-calendar/book' ||  // Public: called from LIFF booking UI
-    path === '/api/events/public' ||                      // Public: LIFF event list
-    path.match(/^\/api\/events\/\d+\/join$/) !== null     // Public: LIFF event join
+    path === '/api/events/public' ||                              // Public: LIFF event list
+    path.match(/^\/api\/events\/\d+\/join$/) !== null ||          // Public: LIFF event join
+    path.match(/^\/api\/events\/\d+\/checkout-session$/) !== null // Public: LIFF Stripe checkout
   ) {
     return next();
   }
