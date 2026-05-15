@@ -23,12 +23,15 @@ GitHub Secrets に以下を追加：
 | Secret名 | 値 |
 |---|---|
 | CLOUDFLARE_API_TOKEN | Cloudflare APIトークン |
-| CLOUDFLARE_ACCOUNT_ID | CloudflareアカウントID |
 | API_KEY | WALOVERのAPIキー |
 
 ※ Cloudflare APIトークンの作成：
 https://dash.cloudflare.com/profile/api-tokens
 →「Edit Cloudflare Workers」テンプレートで作成
+
+**注意**: `CLOUDFLARE_ACCOUNT_ID` は不要。  
+`account_id` は `wrangler.toml` にハードコード済みのため、
+GitHub Secretsへの登録は不要（設定しても問題ない）。
 
 ### 3. 初回手動デプロイ
 ```bash

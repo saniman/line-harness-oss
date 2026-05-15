@@ -11,6 +11,7 @@ Cloudflare Workers + D1 + Next.js のモノレポ構成。
 - 管理画面: Next.js 15 App Router (apps/web)
 - 予約UI: Vite + vanilla TS (apps/worker/src/client/ → dist/client/)
 - LINE SDK: 自作型付きラッパー (packages/line-sdk)
+- 決済: Stripe Checkout（stripe@22系, apiVersion: '2026-04-22.dahlia'）
 
 ## ディレクトリ構成の原則
 - APIルート追加 → apps/worker/src/routes/
@@ -25,10 +26,37 @@ Cloudflare Workers + D1 + Next.js のモノレポ構成。
 - LIFFビルド時は必ず3つの環境変数を指定する：
   VITE_LIFF_ID / VITE_API_BASE / VITE_CALENDAR_CONNECTION_ID
 - デプロイ前に TypeScript のエラーがないことを確認する
+- Stripe関連のsecretは wrangler secret put で設定する：
+  STRIPE_SECRET_KEY / STRIPE_WEBHOOK_SECRET
+  （セットアップ手順書: docs/setup/stripe-setup.md）
 
 ## CIルール
 - mainへのpush前に pnpm --filter worker test を実行してパスを確認する
 - CIが赤い状態でのpushは禁止
+
+## CI/CDに関する既知の問題と対処
+
+### wrangler-action の Node.js 24 非互換（2026-05-15 対応済み）
+`cloudflare/wrangler-action@v3` は Node.js 20 ランタイムで動作するが、
+GitHub のランナーが Node.js 24 に移行中のため CI が失敗する。
+→ **対処**: wrangler-actionは使わず `pnpm exec wrangler deploy` の `run` ステップで代替
+
+### wrangler 4系での破壊的変更
+- `wrangler pages deploy` に `--account-id` フラグは存在しない
+  → `CLOUDFLARE_ACCOUNT_ID` 環境変数で渡す
+- `pnpm --filter worker exec wrangler` はワーキングディレクトリが `apps/worker` になる
+  → Pages deploy の出力パスは `../web/out`（リポジトリルートからの `apps/web/out` ではない）
+- GitHub Secrets の `CLOUDFLARE_ACCOUNT_ID` が未設定だと空文字列になり
+  `wrangler.toml` の `account_id` を上書きしてしまう
+  → 対処: deploy-worker.yml では env に渡さない、deploy-web.yml では値をハードコード
+
+### SQLite ALTER TABLE 制約
+CHECK 制約はALTER TABLEで変更不可。
+既存のCHECK制約を変えたい場合はテーブル再作成が必要：
+  1. 新テーブル作成（v2）
+  2. INSERT INTO v2 SELECT * FROM 旧テーブル
+  3. DROP TABLE 旧テーブル
+  4. ALTER TABLE v2 RENAME TO 旧テーブル名
 
 ## TDDルール
 - 新しい関数を実装したら必ず同名の .test.ts ファイルにテストを書く
@@ -77,6 +105,7 @@ Cloudflare Workers + D1 + Next.js のモノレポ構成。
 
 ## セットアップ手順書
 - 管理画面デプロイ: docs/setup/admin-deploy.md
+- Stripe決済統合: docs/setup/stripe-setup.md
 - （今後追加予定）Worker初期セットアップ: docs/setup/worker-setup.md
 - （今後追加予定）LINE連携設定: docs/setup/line-setup.md
 
