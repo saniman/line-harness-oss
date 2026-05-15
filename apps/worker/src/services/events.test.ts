@@ -7,6 +7,7 @@ interface EventRow {
   start_at: string
   end_at: string
   capacity: number
+  price: number | null
   is_published: number
   created_at: string
   updated_at: string
@@ -23,6 +24,10 @@ interface EventBookingRow {
   name: string
   email: string
   status: string
+  payment_status: string
+  stripe_session_id: string | null
+  paid_at: string | null
+  amount: number | null
   created_at: string
   updated_at: string
 }
@@ -52,6 +57,8 @@ import {
   createEventBooking,
   createPendingBooking,
   updateBookingStripeSessionId,
+  getEventBookingById,
+  confirmEventBooking,
 } from './events.js'
 
 const EVENT1: EventWithCount = {
@@ -195,5 +202,29 @@ describe('updateBookingStripeSessionId', () => {
     const db = makeDb(makeStmt(null))
     await updateBookingStripeSessionId(db, 1, 'cs_test_xxx')
     expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining('stripe_session_id'))
+  })
+})
+
+describe('getEventBookingById', () => {
+  it('IDでbookingを1件取得する', async () => {
+    const db = makeDb(makeStmt(BOOKING1))
+    const result = await getEventBookingById(db, 1)
+    expect(result).not.toBeNull()
+    expect(result?.id).toBe(1)
+    expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining('SELECT'))
+  })
+
+  it('存在しないIDはnullを返す', async () => {
+    const db = makeDb(makeStmt(null))
+    const result = await getEventBookingById(db, 999)
+    expect(result).toBeNull()
+  })
+})
+
+describe('confirmEventBooking', () => {
+  it("status='confirmed', payment_status='paid' に更新する", async () => {
+    const db = makeDb(makeStmt(null))
+    await confirmEventBooking(db, 1, 3000)
+    expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining("status = 'confirmed'"))
   })
 })

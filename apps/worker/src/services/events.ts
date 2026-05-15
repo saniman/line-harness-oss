@@ -132,3 +132,19 @@ export async function updateBookingStripeSessionId(
     "UPDATE event_bookings SET stripe_session_id = ?, updated_at = datetime('now') WHERE id = ?",
   ).bind(sessionId, bookingId).run()
 }
+
+export async function getEventBookingById(db: D1Database, id: number): Promise<EventBookingRow | null> {
+  const row = await db.prepare('SELECT * FROM event_bookings WHERE id = ?')
+    .bind(id).first<EventBookingRow>()
+  return row ?? null
+}
+
+export async function confirmEventBooking(
+  db: D1Database,
+  bookingId: number,
+  amountTotal: number | null,
+): Promise<void> {
+  await db.prepare(
+    "UPDATE event_bookings SET status = 'confirmed', payment_status = 'paid', paid_at = datetime('now'), amount = ?, updated_at = datetime('now') WHERE id = ?",
+  ).bind(amountTotal, bookingId).run()
+}

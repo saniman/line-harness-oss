@@ -70,6 +70,7 @@ export type Env = {
     ADMIN_LINE_USER_ID?: string;
     STRIPE_SECRET_KEY: string;
     STRIPE_WEBHOOK_SECRET: string;
+    LIFF_BASE_URL: string;
   };
   Variables: {
     staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' };

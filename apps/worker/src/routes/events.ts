@@ -217,11 +217,11 @@ events.post('/api/events/:id/checkout-session', async (c) => {
 
     // 5. Stripe Checkout Session 作成
     const stripe = new Stripe(c.env.STRIPE_SECRET_KEY, {
-      apiVersion: '2024-06-20',
+      apiVersion: '2026-04-22.dahlia',
       httpClient: Stripe.createFetchHttpClient(),
     });
 
-    const liffBase = (c.env as unknown as Record<string, string>).LIFF_BASE_URL ?? '';
+    const liffBase = c.env.LIFF_BASE_URL ?? '';
     let session: { id: string; url: string | null };
     try {
       session = await stripe.checkout.sessions.create({

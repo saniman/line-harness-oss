@@ -1,10 +1,17 @@
 import { Hono } from 'hono';
+import Stripe from 'stripe';
+import { LineClient } from '@line-crm/line-sdk';
 import {
   getStripeEvents,
   getStripeEventByStripeId,
   createStripeEvent,
   jstNow,
 } from '@line-crm/db';
+import {
+  getEventById,
+  getEventBookingById,
+  confirmEventBooking,
+} from '../services/events.js';
 import type { Env } from '../index.js';
 
 const stripe = new Hono<Env>();
@@ -170,6 +177,107 @@ stripe.post('/api/integrations/stripe/webhook', async (c) => {
     console.error('POST /api/integrations/stripe/webhook error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
+});
+
+// ========== Stripe Checkout Webhook（イベント決済確定） ==========
+
+stripe.post('/api/stripe/webhook', async (c) => {
+  // 1. rawボディ取得（署名検証前に text() で読む）
+  const rawBody = await c.req.text();
+  const signature = c.req.header('stripe-signature') ?? '';
+
+  const stripeClient = new Stripe(c.env.STRIPE_SECRET_KEY, {
+    apiVersion: '2026-04-22.dahlia',
+    httpClient: Stripe.createFetchHttpClient(),
+  });
+
+  // 2. 署名検証
+  let event: Stripe.Event;
+  try {
+    event = await stripeClient.webhooks.constructEventAsync(
+      rawBody,
+      signature,
+      c.env.STRIPE_WEBHOOK_SECRET,
+    );
+  } catch (err) {
+    console.error('Stripe webhook signature verification failed:', err);
+    return c.json({ success: false, error: 'Invalid signature' }, 400);
+  }
+
+  // 3. checkout.session.completed のみ処理
+  if (event.type !== 'checkout.session.completed') {
+    return c.json({ received: true });
+  }
+
+  const session = event.data.object as Stripe.Checkout.Session;
+  const bookingId = Number(session.metadata?.bookingId);
+  const lineUserId = session.metadata?.lineUserId ?? '';
+  const eventId = Number(session.metadata?.eventId);
+
+  // 4. booking 取得（冪等性: 存在しなければ無視）
+  const booking = await getEventBookingById(c.env.DB, bookingId);
+  if (!booking) {
+    return c.json({ received: true });
+  }
+
+  // 5. booking 確定
+  await confirmEventBooking(c.env.DB, bookingId, session.amount_total);
+
+  // 6. LINE Push通知（ベストエフォート）
+  if (lineUserId) {
+    try {
+      const eventRow = await getEventById(c.env.DB, eventId);
+      const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
+      const liffBase = c.env.LIFF_BASE_URL ?? '';
+
+      const flex = {
+        type: 'bubble',
+        header: {
+          type: 'box', layout: 'vertical', paddingAll: '16px',
+          backgroundColor: '#2DD4BF',
+          contents: [{
+            type: 'text', text: '✅ お申込みが確定しました',
+            color: '#ffffff', weight: 'bold', size: 'md',
+          }],
+        },
+        body: {
+          type: 'box', layout: 'vertical', paddingAll: '16px', spacing: 'sm',
+          contents: [
+            {
+              type: 'text',
+              text: eventRow?.title ?? 'イベント',
+              weight: 'bold', size: 'md', wrap: true,
+            },
+            {
+              type: 'text',
+              text: `日時：${eventRow?.start_at ?? ''}`,
+              size: 'sm', color: '#666666', wrap: true,
+            },
+          ],
+        },
+        footer: {
+          type: 'box', layout: 'vertical', paddingAll: '12px',
+          contents: [{
+            type: 'button',
+            action: {
+              type: 'uri',
+              label: 'キャンセルはこちら',
+              uri: `${liffBase}?page=event&payment=cancel&bookingId=${bookingId}`,
+            },
+            style: 'secondary', height: 'sm',
+          }],
+        },
+      };
+
+      await lineClient.pushMessage(lineUserId, [
+        { type: 'flex', altText: '✅ お申込みが確定しました', contents: flex as never },
+      ]);
+    } catch (e) {
+      console.error('LINE push notification failed:', e);
+    }
+  }
+
+  return c.json({ received: true });
 });
 
 export { stripe };
