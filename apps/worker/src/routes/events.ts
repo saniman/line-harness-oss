@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import Stripe from 'stripe';
 import {
   createEvent,
   getEvents,
@@ -7,6 +8,8 @@ import {
   deleteEvent,
   getEventBookings,
   createEventBooking,
+  createPendingBooking,
+  updateBookingStripeSessionId,
 } from '../services/events.js';
 import type { Env } from '../index.js';
 
@@ -175,6 +178,82 @@ events.post('/api/events/:id/join', async (c) => {
     return c.json({ success: true, data: booking }, 201);
   } catch (err) {
     console.error('POST /api/events/:id/join error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+events.post('/api/events/:id/checkout-session', async (c) => {
+  try {
+    const id = Number(c.req.param('id'));
+    const lineUserId = c.req.header('x-line-user-id');
+
+    // 1. イベント取得・存在チェック・公開チェック
+    const event = await getEventById(c.env.DB, id);
+    if (!event || event.is_published !== 1) {
+      return c.json({ success: false, error: 'Event not found' }, 404);
+    }
+
+    // 2. 定員チェック（participant_count は confirmed のみカウント済み）
+    if (event.participant_count >= event.capacity) {
+      return c.json({ success: false, error: 'Event is full' }, 409);
+    }
+
+    // 3. lineUserId → friendId 解決（ベストエフォート）
+    let friendId: string | null = null;
+    if (lineUserId) {
+      try {
+        const row = await c.env.DB
+          .prepare('SELECT id FROM friends WHERE line_user_id = ? LIMIT 1')
+          .bind(lineUserId)
+          .first<{ id: string }>();
+        friendId = row?.id ?? null;
+      } catch {
+        // フォールバック: friend_id なしで続行
+      }
+    }
+
+    // 4. 仮登録（pending / unpaid）
+    const booking = await createPendingBooking(c.env.DB, { event_id: id, friend_id: friendId });
+
+    // 5. Stripe Checkout Session 作成
+    const stripe = new Stripe(c.env.STRIPE_SECRET_KEY, {
+      apiVersion: '2024-06-20',
+      httpClient: Stripe.createFetchHttpClient(),
+    });
+
+    const liffBase = (c.env as unknown as Record<string, string>).LIFF_BASE_URL ?? '';
+    let session: { id: string; url: string | null };
+    try {
+      session = await stripe.checkout.sessions.create({
+        mode: 'payment',
+        line_items: [{
+          price_data: {
+            currency: 'jpy',
+            unit_amount: event.price ?? 0,
+            product_data: { name: event.title },
+          },
+          quantity: 1,
+        }],
+        success_url: `${liffBase}?page=event&payment=success&bookingId=${booking.id}`,
+        cancel_url:  `${liffBase}?page=event&payment=cancel&bookingId=${booking.id}`,
+        metadata: {
+          bookingId: String(booking.id),
+          lineUserId: lineUserId ?? '',
+          eventId: String(id),
+        },
+        expires_at: Math.floor(Date.now() / 1000) + 1800,
+      });
+    } catch (stripeErr) {
+      console.error('Stripe checkout.sessions.create error:', stripeErr);
+      return c.json({ success: false, error: 'Stripe API error' }, 500);
+    }
+
+    // 6. stripe_session_id を更新
+    await updateBookingStripeSessionId(c.env.DB, booking.id, session.id);
+
+    return c.json({ success: true, data: { url: session.url } });
+  } catch (err) {
+    console.error('POST /api/events/:id/checkout-session error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

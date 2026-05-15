@@ -5,6 +5,7 @@ export interface EventRow {
   start_at: string
   end_at: string
   capacity: number
+  price: number | null
   is_published: number
   created_at: string
   updated_at: string
@@ -21,6 +22,10 @@ export interface EventBookingRow {
   name: string
   email: string
   status: string
+  payment_status: string
+  stripe_session_id: string | null
+  paid_at: string | null
+  amount: number | null
   created_at: string
   updated_at: string
 }
@@ -103,4 +108,27 @@ export async function createEventBooking(
   const row = await db.prepare('SELECT * FROM event_bookings WHERE id = ?')
     .bind(lastId).first<EventBookingRow>()
   return row!
+}
+
+export async function createPendingBooking(
+  db: D1Database,
+  data: { event_id: number; friend_id?: string | null; name?: string; email?: string },
+): Promise<EventBookingRow> {
+  const result = await db.prepare(
+    "INSERT INTO event_bookings (event_id, friend_id, name, email, status, payment_status) VALUES (?, ?, ?, ?, 'pending', 'unpaid')",
+  ).bind(data.event_id, data.friend_id ?? null, data.name ?? '', data.email ?? '').run()
+  const lastId = (result as { meta?: { last_row_id?: number } }).meta?.last_row_id
+  const row = await db.prepare('SELECT * FROM event_bookings WHERE id = ?')
+    .bind(lastId).first<EventBookingRow>()
+  return row!
+}
+
+export async function updateBookingStripeSessionId(
+  db: D1Database,
+  bookingId: number,
+  sessionId: string,
+): Promise<void> {
+  await db.prepare(
+    "UPDATE event_bookings SET stripe_session_id = ?, updated_at = datetime('now') WHERE id = ?",
+  ).bind(sessionId, bookingId).run()
 }

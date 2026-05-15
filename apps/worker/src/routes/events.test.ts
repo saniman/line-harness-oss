@@ -1,6 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { Hono } from 'hono'
 
+const mockCheckoutSessionCreate = vi.hoisted(() => vi.fn())
+
+vi.mock('stripe', () => {
+  const MockStripe: any = vi.fn().mockImplementation(() => ({
+    checkout: { sessions: { create: mockCheckoutSessionCreate } },
+  }))
+  MockStripe.createFetchHttpClient = vi.fn().mockReturnValue({})
+  return { default: MockStripe }
+})
+
 vi.mock('../services/events.js', () => ({
   createEvent: vi.fn(),
   getEvents: vi.fn(),
@@ -10,6 +20,8 @@ vi.mock('../services/events.js', () => ({
   getParticipantCount: vi.fn(),
   getEventBookings: vi.fn(),
   createEventBooking: vi.fn(),
+  createPendingBooking: vi.fn(),
+  updateBookingStripeSessionId: vi.fn(),
 }))
 
 import * as eventsService from '../services/events.js'
@@ -22,11 +34,19 @@ app.route('/', events)
 const EVENT1 = {
   id: 1, title: '無料セミナー', description: null,
   start_at: '2026-06-01T10:00:00+09:00', end_at: '2026-06-01T12:00:00+09:00',
-  capacity: 10, is_published: 1, created_at: '', updated_at: '', participant_count: 2,
+  capacity: 10, is_published: 1, price: 3000, created_at: '', updated_at: '', participant_count: 2,
 }
 const BOOKING1 = {
   id: 1, event_id: 1, friend_id: null, name: '山田太郎',
-  email: 'yamada@example.com', status: 'confirmed', created_at: '', updated_at: '',
+  email: 'yamada@example.com', status: 'confirmed',
+  payment_status: 'unpaid', stripe_session_id: null, paid_at: null, amount: null,
+  created_at: '', updated_at: '',
+}
+const PENDING_BOOKING = {
+  id: 2, event_id: 1, friend_id: null, name: '', email: '',
+  status: 'pending', payment_status: 'unpaid',
+  stripe_session_id: null, paid_at: null, amount: null,
+  created_at: '', updated_at: '',
 }
 
 beforeEach(() => { vi.clearAllMocks() })
@@ -163,5 +183,69 @@ describe('POST /api/events/:id/join', () => {
       body: JSON.stringify({ name: '山田太郎', email: 'yamada@example.com' }),
     }, { DB: mockDb })
     expect(res.status).toBe(404)
+  })
+})
+
+const MOCK_ENV = {
+  DB: mockDb,
+  STRIPE_SECRET_KEY: 'sk_test_xxx',
+  LIFF_BASE_URL: 'https://liff.line.me/1661159603-5qlDj5wV',
+}
+
+describe('POST /api/events/:id/checkout-session', () => {
+  it('正常系：Checkout Session URLが返る', async () => {
+    vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 2 })
+    vi.mocked(eventsService.createPendingBooking).mockResolvedValue(PENDING_BOOKING)
+    vi.mocked(eventsService.updateBookingStripeSessionId).mockResolvedValue(undefined)
+    mockCheckoutSessionCreate.mockResolvedValue({
+      id: 'cs_test_xxx',
+      url: 'https://checkout.stripe.com/pay/test',
+    })
+    const res = await app.request('/api/events/1/checkout-session', {
+      method: 'POST',
+      headers: { 'x-line-user-id': 'U123' },
+    }, MOCK_ENV)
+    expect(res.status).toBe(200)
+    const json = await res.json() as { success: boolean; data: { url: string } }
+    expect(json.success).toBe(true)
+    expect(json.data.url).toBe('https://checkout.stripe.com/pay/test')
+  })
+
+  it('異常系：存在しないイベントID → 404', async () => {
+    vi.mocked(eventsService.getEventById).mockResolvedValue(null)
+    const res = await app.request('/api/events/999/checkout-session', {
+      method: 'POST',
+      headers: { 'x-line-user-id': 'U123' },
+    }, MOCK_ENV)
+    expect(res.status).toBe(404)
+  })
+
+  it('異常系：非公開イベント → 404', async () => {
+    vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, is_published: 0 })
+    const res = await app.request('/api/events/1/checkout-session', {
+      method: 'POST',
+      headers: { 'x-line-user-id': 'U123' },
+    }, MOCK_ENV)
+    expect(res.status).toBe(404)
+  })
+
+  it('異常系：定員満席（confirmedのみカウント） → 409', async () => {
+    vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 10, capacity: 10 })
+    const res = await app.request('/api/events/1/checkout-session', {
+      method: 'POST',
+      headers: { 'x-line-user-id': 'U123' },
+    }, MOCK_ENV)
+    expect(res.status).toBe(409)
+  })
+
+  it('異常系：Stripe APIエラー → 500', async () => {
+    vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 2 })
+    vi.mocked(eventsService.createPendingBooking).mockResolvedValue(PENDING_BOOKING)
+    mockCheckoutSessionCreate.mockRejectedValue(new Error('Stripe API error'))
+    const res = await app.request('/api/events/1/checkout-session', {
+      method: 'POST',
+      headers: { 'x-line-user-id': 'U123' },
+    }, MOCK_ENV)
+    expect(res.status).toBe(500)
   })
 })

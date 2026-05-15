@@ -644,6 +644,7 @@ CREATE TABLE IF NOT EXISTS events (
   start_at TEXT NOT NULL,
   end_at TEXT NOT NULL,
   capacity INTEGER NOT NULL,
+  price INTEGER,
   is_published INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -655,8 +656,8 @@ CREATE TABLE IF NOT EXISTS event_bookings (
   friend_id TEXT REFERENCES friends(id) ON DELETE SET NULL,
   name TEXT NOT NULL,
   email TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'confirmed' CHECK(status IN ('confirmed','cancelled')),
-  -- Stripe決済: pending=決済待ち / confirmed=決済確認済み / cancelled=キャンセル済み
+  -- status: pending=決済待ち / confirmed=決済確認済み / cancelled=キャンセル済み
+  status TEXT NOT NULL DEFAULT 'confirmed' CHECK(status IN ('pending','confirmed','cancelled')),
   stripe_session_id TEXT,
   payment_status TEXT NOT NULL DEFAULT 'unpaid',
   paid_at DATETIME,

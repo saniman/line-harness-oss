@@ -50,18 +50,22 @@ import {
   getParticipantCount,
   getEventBookings,
   createEventBooking,
+  createPendingBooking,
+  updateBookingStripeSessionId,
 } from './events.js'
 
 const EVENT1: EventWithCount = {
   id: 1, title: '無料セミナー', description: null,
   start_at: '2026-06-01T10:00:00+09:00', end_at: '2026-06-01T12:00:00+09:00',
-  capacity: 10, is_published: 1, created_at: '', updated_at: '',
+  capacity: 10, is_published: 1, price: 3000, created_at: '', updated_at: '',
   participant_count: 0,
 }
 
 const BOOKING1: EventBookingRow = {
   id: 1, event_id: 1, friend_id: null, name: '山田太郎',
-  email: 'yamada@example.com', status: 'confirmed', created_at: '', updated_at: '',
+  email: 'yamada@example.com', status: 'confirmed',
+  payment_status: 'unpaid', stripe_session_id: null, paid_at: null, amount: null,
+  created_at: '', updated_at: '',
 }
 
 beforeEach(() => { vi.clearAllMocks() })
@@ -169,5 +173,27 @@ describe('createEventBooking', () => {
     expect(result.name).toBe('山田太郎')
     expect(result.event_id).toBe(1)
     expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO event_bookings'))
+  })
+})
+
+describe('createPendingBooking', () => {
+  it("status='pending', payment_status='unpaid' のbookingを作成する", async () => {
+    const pendingBooking: EventBookingRow = {
+      ...BOOKING1, id: 2, name: '', email: '',
+      status: 'pending', payment_status: 'unpaid',
+    }
+    const db = makeDb(makeStmt(null), makeStmt(pendingBooking))
+    const result = await createPendingBooking(db, { event_id: 1 })
+    expect(result.status).toBe('pending')
+    expect(result.payment_status).toBe('unpaid')
+    expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO event_bookings'))
+  })
+})
+
+describe('updateBookingStripeSessionId', () => {
+  it('stripe_session_id を更新する', async () => {
+    const db = makeDb(makeStmt(null))
+    await updateBookingStripeSessionId(db, 1, 'cs_test_xxx')
+    expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining('stripe_session_id'))
   })
 })

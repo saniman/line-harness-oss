@@ -29,6 +29,9 @@ database_id = "b41a1c65-a224-41bc-a99a-3284b43ea440"
 [triggers]
 crons = ["*/5 * * * *"]
 
+[vars]
+LIFF_BASE_URL = "https://liff.line.me/1661159603-5qlDj5wV"
+
 # Stripe シークレット（wrangler secret put で設定する）
 # STRIPE_SECRET_KEY        - Stripe ダッシュボード > APIキー
 # STRIPE_WEBHOOK_SECRET    - Stripe ダッシュボード > Webhook > エンドポイントの署名シークレット
