@@ -27,18 +27,30 @@ function validateCapacity(capacity: number): string | null {
   return null
 }
 
-function validateEventForm(data: { title: string; start_at: string; end_at: string; capacity: number }): string | null {
+function validatePrice(price: number | null): string | null {
+  if (price === null) return null
+  if (!Number.isInteger(price) || price < 0) return '参加費は0以上の整数で入力してください'
+  return null
+}
+
+function validateEventForm(data: { title: string; start_at: string; end_at: string; capacity: number; price?: number | null }): string | null {
   if (!data.title.trim()) return 'タイトルを入力してください'
   if (!data.start_at) return '開始日時を入力してください'
   if (!data.end_at) return '終了日時を入力してください'
   if (new Date(data.start_at) >= new Date(data.end_at)) return '終了日時は開始日時より後にしてください'
-  return validateCapacity(data.capacity)
+  const capErr = validateCapacity(data.capacity)
+  if (capErr) return capErr
+  return validatePrice(data.price ?? null)
+}
+
+function formatPrice(price: number | null): string {
+  return price != null && price > 0 ? `¥${price.toLocaleString()}` : '無料'
 }
 
 const BASE_EVENT: EventItem = {
   id: 1, title: '無料セミナー', description: null,
   start_at: '2026-06-01T10:00:00+09:00', end_at: '2026-06-01T12:00:00+09:00',
-  capacity: 10, is_published: 1, participant_count: 3, remaining: 7,
+  capacity: 10, price: null, is_published: 1, participant_count: 3, remaining: 7,
   created_at: '', updated_at: '',
 }
 
@@ -102,6 +114,51 @@ describe('イベント作成', () => {
       start_at: '2026-06-01T12:00:00',
       end_at: '2026-06-01T10:00:00',
       capacity: 10,
+    })
+    expect(result).toBeTruthy()
+  })
+})
+
+describe('参加費バリデーション・表示', () => {
+  it('参加費が null のとき「無料」と表示される', () => {
+    expect(formatPrice(null)).toBe('無料')
+  })
+
+  it('参加費が 0 のとき「無料」と表示される', () => {
+    expect(formatPrice(0)).toBe('無料')
+  })
+
+  it('参加費が 1000 のとき「¥1,000」と表示される', () => {
+    expect(formatPrice(1000)).toBe('¥1,000')
+  })
+
+  it('参加費が負の数ならバリデーションエラー', () => {
+    expect(validatePrice(-1)).toBeTruthy()
+  })
+
+  it('参加費が 0 以上の整数ならバリデーション通過', () => {
+    expect(validatePrice(0)).toBeNull()
+    expect(validatePrice(500)).toBeNull()
+  })
+
+  it('参加費を指定したイベント作成フォームのバリデーションが通過する', () => {
+    const result = validateEventForm({
+      title: '有料セミナー',
+      start_at: '2026-06-01T10:00:00',
+      end_at: '2026-06-01T12:00:00',
+      capacity: 10,
+      price: 1000,
+    })
+    expect(result).toBeNull()
+  })
+
+  it('参加費が負ならフォームバリデーションエラー', () => {
+    const result = validateEventForm({
+      title: '有料セミナー',
+      start_at: '2026-06-01T10:00:00',
+      end_at: '2026-06-01T12:00:00',
+      capacity: 10,
+      price: -1,
     })
     expect(result).toBeTruthy()
   })

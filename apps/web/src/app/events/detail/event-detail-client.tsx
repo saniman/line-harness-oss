@@ -186,6 +186,12 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
                   {full ? '満席' : `${event.remaining} 名`}
                 </dd>
               </div>
+              <div className="flex items-center gap-2">
+                <dt className="text-gray-500 w-16 shrink-0">参加費</dt>
+                <dd className="text-gray-900">
+                  {event.price != null && event.price > 0 ? `¥${event.price.toLocaleString()}` : '無料'}
+                </dd>
+              </div>
               {event.description && (
                 <div className="pt-2 border-t border-gray-100">
                   <dt className="text-gray-500 mb-1">説明</dt>

@@ -18,12 +18,13 @@ function formatJST(iso: string): string {
   return `${mm}/${dd}(${dow}) ${hh}:${min}`
 }
 
-function validateForm(data: { title: string; start_at: string; end_at: string; capacity: number }): string | null {
+function validateForm(data: { title: string; start_at: string; end_at: string; capacity: number; price: number | null }): string | null {
   if (!data.title.trim()) return 'タイトルを入力してください'
   if (!data.start_at) return '開始日時を入力してください'
   if (!data.end_at) return '終了日時を入力してください'
   if (new Date(data.start_at) >= new Date(data.end_at)) return '終了日時は開始日時より後にしてください'
   if (!Number.isInteger(data.capacity) || data.capacity < 1) return '定員は1以上の整数で入力してください'
+  if (data.price !== null && (!Number.isInteger(data.price) || data.price < 0)) return '参加費は0以上の整数で入力してください'
   return null
 }
 
@@ -42,6 +43,7 @@ export default function EventsPage() {
   const [startAt, setStartAt] = useState('')
   const [endAt, setEndAt] = useState('')
   const [capacity, setCapacity] = useState(10)
+  const [price, setPrice] = useState<string>('')
   const [isPublished, setIsPublished] = useState(false)
   const [creating, setCreating] = useState(false)
   const [formError, setFormError] = useState('')
@@ -65,7 +67,8 @@ export default function EventsPage() {
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault()
     const cap = Number(capacity)
-    const err = validateForm({ title, start_at: startAt, end_at: endAt, capacity: cap })
+    const priceVal = price === '' ? null : Number(price)
+    const err = validateForm({ title, start_at: startAt, end_at: endAt, capacity: cap, price: priceVal })
     if (err) { setFormError(err); return }
     setCreating(true)
     setFormError('')
@@ -76,6 +79,7 @@ export default function EventsPage() {
         start_at: new Date(startAt).toISOString(),
         end_at: new Date(endAt).toISOString(),
         capacity: cap,
+        price: priceVal ?? undefined,
         is_published: isPublished ? 1 : 0,
       })
       setTitle('')
@@ -83,6 +87,7 @@ export default function EventsPage() {
       setStartAt('')
       setEndAt('')
       setCapacity(10)
+      setPrice('')
       setIsPublished(false)
       await load()
     } catch {
@@ -163,6 +168,7 @@ export default function EventsPage() {
                           <span className={full ? 'text-red-500 font-medium' : 'text-green-600'}>
                             残席 {ev.remaining}名
                           </span>
+                          <span>{ev.price != null && ev.price > 0 ? `¥${ev.price.toLocaleString()}` : '無料'}</span>
                         </div>
                       </div>
                       <div className="flex items-center gap-2 shrink-0">
@@ -256,6 +262,19 @@ export default function EventsPage() {
                   className={FIELD_CLASS}
                   required
                 />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">参加費（円）</label>
+                <input
+                  type="number"
+                  value={price}
+                  onChange={(e) => setPrice(e.target.value)}
+                  min={0}
+                  placeholder="空欄 = 無料"
+                  className={FIELD_CLASS}
+                />
+                <p className="text-xs text-gray-400 mt-1">Stripe決済が必要な場合は金額を入力してください</p>
               </div>
 
               <div className="flex items-center gap-3">

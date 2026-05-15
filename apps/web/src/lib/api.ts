@@ -638,6 +638,7 @@ export type EventItem = {
   start_at: string
   end_at: string
   capacity: number
+  price: number | null
   is_published: number
   participant_count: number
   remaining: number
@@ -651,6 +652,7 @@ export type EventCreateInput = {
   start_at: string
   end_at: string
   capacity: number
+  price?: number
   is_published?: number
 }
 
