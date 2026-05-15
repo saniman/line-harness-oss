@@ -656,6 +656,11 @@ CREATE TABLE IF NOT EXISTS event_bookings (
   name TEXT NOT NULL,
   email TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'confirmed' CHECK(status IN ('confirmed','cancelled')),
+  -- Stripe決済: pending=決済待ち / confirmed=決済確認済み / cancelled=キャンセル済み
+  stripe_session_id TEXT,
+  payment_status TEXT NOT NULL DEFAULT 'unpaid',
+  paid_at DATETIME,
+  amount INTEGER,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
