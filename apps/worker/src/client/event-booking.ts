@@ -10,6 +10,7 @@ export interface EventPublic {
   participant_count: number
   remaining: number
   available: boolean
+  price?: number | null
 }
 
 function escapeHtml(str: string): string {
@@ -54,48 +55,29 @@ export function buildEventListHtml(events: EventPublic[]): string {
 }
 
 export function buildEventDetailHtml(event: EventPublic): string {
+  const full = !event.available || event.remaining === 0
   return `
     <div class="event-detail">
       <h2 class="event-title">${escapeHtml(event.title)}</h2>
       <p class="event-date">${formatJST(event.start_at)} 〜 ${formatJST(event.end_at)}</p>
       ${event.description ? `<p class="event-description">${escapeHtml(event.description)}</p>` : ''}
       <p class="event-remaining">残席: ${event.remaining}名</p>
-      <form class="join-form">
-        <div class="form-field">
-          <label for="join-name">お名前</label>
-          <input type="text" id="join-name" name="name" placeholder="山田太郎" />
-        </div>
-        <div class="form-field">
-          <label for="join-email">メールアドレス</label>
-          <input type="email" id="join-email" name="email" placeholder="you@example.com" />
-        </div>
-        <button type="submit" id="join-submit">申し込む</button>
-      </form>
+      ${event.price != null ? `<p class="event-price">参加費: ¥${event.price.toLocaleString()}</p>` : ''}
+      <button id="checkout-btn" class="checkout-btn" ${full ? 'disabled' : ''}>
+        ${full ? '満席' : '申込・決済へ進む 💳'}
+      </button>
     </div>
   `
 }
 
-function isValidEmail(email: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
-}
-
-export async function submitJoin(
+export async function startCheckoutSession(
   eventId: number,
-  name: string,
-  email: string,
-  lineUserId?: string,
+  lineUserId: string,
+  openWindow: (params: { url: string; external: boolean }) => void,
 ): Promise<{ success: boolean; error?: string }> {
-  if (!name.trim()) {
-    return { success: false, error: 'お名前を入力してください' }
-  }
-  if (!isValidEmail(email)) {
-    return { success: false, error: '正しいメールアドレスを入力してください' }
-  }
-
-  const res = await fetch(`${API_BASE}/api/events/${eventId}/join`, {
+  const res = await fetch(`${API_BASE}/api/events/${eventId}/checkout-session`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: name.trim(), email, lineUserId }),
+    headers: { 'x-line-user-id': lineUserId },
   })
 
   if (!res.ok) {
@@ -105,13 +87,46 @@ export async function submitJoin(
     return { success: false, error: '申し込みに失敗しました' }
   }
 
+  const json = await res.json() as { success: boolean; data: { url: string } }
+  openWindow({ url: json.data.url, external: true })
   return { success: true }
 }
 
-export async function initEventBooking(): Promise<void> {
+export async function initEventBooking(options: {
+  lineUserId?: string
+  payment?: string | null
+  openWindow?: (params: { url: string; external: boolean }) => void
+} = {}): Promise<void> {
+  const { lineUserId, payment, openWindow = () => {} } = options
   const app = document.getElementById('app')
   if (!app) return
 
+  // 決済結果画面
+  if (payment === 'success') {
+    app.innerHTML = `
+      <div class="done-card">
+        <div class="check-icon">✓</div>
+        <h2>申込が完了しました！</h2>
+        <p>決済確認後にLINEにご連絡します。</p>
+      </div>
+    `
+    return
+  }
+
+  if (payment === 'cancel') {
+    app.innerHTML = `
+      <div class="cancel-card">
+        <h2>お申込みをキャンセルしました。</h2>
+        <button id="back-to-list-btn">イベント一覧に戻る</button>
+      </div>
+    `
+    document.getElementById('back-to-list-btn')?.addEventListener('click', () => {
+      initEventBooking({ lineUserId, openWindow })
+    })
+    return
+  }
+
+  // 通常フロー: イベント一覧
   app.innerHTML = '<p class="loading">読み込み中...</p>'
 
   let events: EventPublic[] = []
@@ -150,32 +165,24 @@ export async function initEventBooking(): Promise<void> {
     `
     document.getElementById('back-btn')?.addEventListener('click', renderList)
 
-    const form = app.querySelector('.join-form')
-    form?.addEventListener('submit', async (e) => {
-      e.preventDefault()
-      const nameEl = document.getElementById('join-name') as HTMLInputElement
-      const emailEl = document.getElementById('join-email') as HTMLInputElement
-      const submitBtn = document.getElementById('join-submit') as HTMLButtonElement
-      submitBtn.disabled = true
-      submitBtn.textContent = '送信中...'
+    const checkoutBtn = document.getElementById('checkout-btn') as HTMLButtonElement | null
+    checkoutBtn?.addEventListener('click', async () => {
+      if (!checkoutBtn) return
+      checkoutBtn.disabled = true
+      checkoutBtn.textContent = '処理中...'
 
-      const result = await submitJoin(event.id, nameEl.value, emailEl.value)
-      if (result.success) {
-        app.innerHTML = `
-          <div class="done-card">
-            <div class="check-icon">✓</div>
-            <h2>申し込み完了！</h2>
-            <p>ご登録のメールアドレスに確認メールをお送りします。</p>
-          </div>
-        `
-      } else {
-        submitBtn.disabled = false
-        submitBtn.textContent = '申し込む'
+      const result = await startCheckoutSession(event.id, lineUserId ?? '', openWindow)
+      if (!result.success) {
+        checkoutBtn.disabled = false
+        checkoutBtn.textContent = '申込・決済へ進む 💳'
+        const existing = app.querySelector('.form-error')
+        existing?.remove()
         const errEl = document.createElement('p')
         errEl.className = 'form-error'
         errEl.textContent = result.error || 'エラーが発生しました'
-        form.insertBefore(errEl, form.firstChild)
+        checkoutBtn.parentElement?.insertBefore(errEl, checkoutBtn)
       }
+      // 成功時は openWindow で Stripe ページへ遷移済み
     })
   }
 

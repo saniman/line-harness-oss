@@ -11,12 +11,13 @@ interface EventPublic {
   participant_count: number
   remaining: number
   available: boolean
+  price?: number | null
 }
 
 const EVENT1: EventPublic = {
   id: 1, title: '無料セミナー', description: '初心者歓迎です',
   start_at: '2026-06-01T10:00:00+09:00', end_at: '2026-06-01T12:00:00+09:00',
-  capacity: 10, participant_count: 3, remaining: 7, available: true,
+  capacity: 10, participant_count: 3, remaining: 7, available: true, price: 3000,
 }
 const EVENT_FULL: EventPublic = {
   id: 2, title: '満席イベント', description: null,
@@ -24,7 +25,7 @@ const EVENT_FULL: EventPublic = {
   capacity: 5, participant_count: 5, remaining: 0, available: false,
 }
 
-import { buildEventListHtml, buildEventDetailHtml, submitJoin } from './event-booking.js'
+import { buildEventListHtml, buildEventDetailHtml, startCheckoutSession, initEventBooking } from './event-booking.js'
 
 afterEach(() => { vi.unstubAllGlobals() })
 
@@ -58,50 +59,55 @@ describe('renderEventDetail', () => {
     expect(html).toContain('7')
   })
 
-  it('参加フォーム（名前・メール）が表示される', () => {
+  it('申込・決済ボタンが表示される', () => {
     const html = buildEventDetailHtml(EVENT1)
-    expect(html).toContain('join-name')
-    expect(html).toContain('join-email')
-    expect(html).toContain('join-submit')
+    expect(html).toContain('checkout-btn')
+    expect(html).toContain('申込・決済へ進む')
   })
 })
 
-describe('submitJoin', () => {
-  it('名前・メール入力後に申込できる', async () => {
+describe('startCheckoutSession', () => {
+  it('checkout-session成功時にopenWindowが呼ばれる', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true, status: 201,
-      json: async () => ({ success: true, data: {} }),
+      ok: true, status: 200,
+      json: async () => ({ success: true, data: { url: 'https://checkout.stripe.com/pay/test' } }),
     }))
-    const result = await submitJoin(1, '山田太郎', 'test@example.com')
+    const mockOpenWindow = vi.fn()
+    const result = await startCheckoutSession(1, 'U123', mockOpenWindow)
     expect(result.success).toBe(true)
+    expect(mockOpenWindow).toHaveBeenCalledWith({
+      url: 'https://checkout.stripe.com/pay/test',
+      external: true,
+    })
   })
 
-  it('名前が空の場合バリデーションエラー', async () => {
-    const result = await submitJoin(1, '', 'test@example.com')
-    expect(result.success).toBe(false)
-    expect(result.error).toBeTruthy()
-  })
-
-  it('メール形式が不正の場合バリデーションエラー', async () => {
-    const result = await submitJoin(1, '山田太郎', 'invalid-email')
-    expect(result.success).toBe(false)
-    expect(result.error).toBeTruthy()
-  })
-
-  it('満席（409）の場合エラーメッセージを表示', async () => {
+  it('409（満席）の場合エラーを返しopenWindowは呼ばれない', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 409 }))
-    const result = await submitJoin(1, '山田太郎', 'test@example.com')
+    const mockOpenWindow = vi.fn()
+    const result = await startCheckoutSession(1, 'U123', mockOpenWindow)
     expect(result.success).toBe(false)
     expect(result.error).toContain('満席')
+    expect(mockOpenWindow).not.toHaveBeenCalled()
   })
 
-  it('申込成功後に完了画面を表示（success=trueを返す）', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true, status: 201,
-      json: async () => ({ success: true, data: {} }),
-    }))
-    const result = await submitJoin(1, '山田太郎', 'test@example.com')
-    expect(result.success).toBe(true)
-    expect(result.error).toBeUndefined()
+  it('その他のエラーの場合汎用エラーを返す', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 500 }))
+    const result = await startCheckoutSession(1, 'U123', vi.fn())
+    expect(result.success).toBe(false)
+    expect(result.error).toBeTruthy()
+  })
+})
+
+describe('payment routing', () => {
+  it('payment=success で完了画面が表示される', async () => {
+    document.body.innerHTML = '<div id="app"></div>'
+    await initEventBooking({ payment: 'success' })
+    expect(document.getElementById('app')?.innerHTML).toContain('完了')
+  })
+
+  it('payment=cancel でキャンセル画面が表示される', async () => {
+    document.body.innerHTML = '<div id="app"></div>'
+    await initEventBooking({ payment: 'cancel' })
+    expect(document.getElementById('app')?.innerHTML).toContain('キャンセル')
   })
 })

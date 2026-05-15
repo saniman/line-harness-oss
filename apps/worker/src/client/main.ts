@@ -336,7 +336,15 @@ async function main() {
       const formId = params.get('id');
       await initForm(formId);
     } else if (page === 'event') {
-      await initEventBooking();
+      const eventParams = new URLSearchParams(window.location.search);
+      const payment = eventParams.get('payment');
+      let lineUserId: string | undefined;
+      try { lineUserId = (await liff.getProfile()).userId; } catch { /* フォールバック */ }
+      await initEventBooking({
+        lineUserId,
+        payment,
+        openWindow: (p) => liff.openWindow(p),
+      });
     } else if (!page) {
       await linkAndAddFlow();
     } else {
