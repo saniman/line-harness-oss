@@ -86,6 +86,41 @@ describe('POST /api/events', () => {
     }, { DB: mockDb })
     expect(res.status).toBe(400)
   })
+
+  it('price: 1000 を渡すとcreateEventにprice: 1000が渡される', async () => {
+    vi.mocked(eventsService.createEvent).mockResolvedValue({ ...EVENT1, price: 1000 })
+    const res = await app.request('/api/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: '有料セミナー', start_at: '2026-06-01T10:00:00+09:00', end_at: '2026-06-01T12:00:00+09:00', capacity: 10, price: 1000 }),
+    }, { DB: mockDb })
+    expect(res.status).toBe(201)
+    const json = await res.json() as { success: boolean; data: { price: number } }
+    expect(json.data.price).toBe(1000)
+    expect(eventsService.createEvent).toHaveBeenCalledWith(mockDb, expect.objectContaining({ price: 1000 }))
+  })
+
+  it('priceを渡さないとcreateEventにprice: nullが渡される', async () => {
+    vi.mocked(eventsService.createEvent).mockResolvedValue({ ...EVENT1, price: null })
+    const res = await app.request('/api/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: '無料セミナー', start_at: '2026-06-01T10:00:00+09:00', end_at: '2026-06-01T12:00:00+09:00', capacity: 10 }),
+    }, { DB: mockDb })
+    expect(res.status).toBe(201)
+    expect(eventsService.createEvent).toHaveBeenCalledWith(mockDb, expect.objectContaining({ price: null }))
+  })
+
+  it('price: 0 はnullとして扱われcreateEventにprice: nullが渡される', async () => {
+    vi.mocked(eventsService.createEvent).mockResolvedValue({ ...EVENT1, price: null })
+    const res = await app.request('/api/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: '無料セミナー', start_at: '2026-06-01T10:00:00+09:00', end_at: '2026-06-01T12:00:00+09:00', capacity: 10, price: 0 }),
+    }, { DB: mockDb })
+    expect(res.status).toBe(201)
+    expect(eventsService.createEvent).toHaveBeenCalledWith(mockDb, expect.objectContaining({ price: null }))
+  })
 })
 
 describe('GET /api/events/public', () => {

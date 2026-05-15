@@ -42,6 +42,7 @@ events.post('/api/events', async (c) => {
       start_at?: string;
       end_at?: string;
       capacity?: number;
+      price?: number | null;
       is_published?: number;
     }>();
     if (!body.title || !body.start_at || !body.end_at || !body.capacity) {
@@ -53,6 +54,7 @@ events.post('/api/events', async (c) => {
       start_at: body.start_at,
       end_at: body.end_at,
       capacity: body.capacity,
+      price: body.price != null && body.price > 0 ? body.price : null,
       is_published: body.is_published,
     });
     return c.json({ success: true, data: { ...event, remaining: event.capacity - event.participant_count } }, 201);
@@ -123,6 +125,7 @@ events.put('/api/events/:id', async (c) => {
       start_at?: string;
       end_at?: string;
       capacity?: number;
+      price?: number | null;
       is_published?: number;
     }>();
     const event = await updateEvent(c.env.DB, id, body);

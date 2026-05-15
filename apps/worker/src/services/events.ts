@@ -34,12 +34,12 @@ const PARTICIPANT_COUNT_SQL = `(SELECT COUNT(*) FROM event_bookings WHERE event_
 
 export async function createEvent(
   db: D1Database,
-  data: { title: string; description?: string; start_at: string; end_at: string; capacity: number; is_published?: number },
+  data: { title: string; description?: string; start_at: string; end_at: string; capacity: number; price?: number | null; is_published?: number },
 ): Promise<EventWithCount> {
   if (!data.title) throw new Error('title is required')
   const result = await db.prepare(
-    'INSERT INTO events (title, description, start_at, end_at, capacity, is_published) VALUES (?, ?, ?, ?, ?, ?)',
-  ).bind(data.title, data.description ?? null, data.start_at, data.end_at, data.capacity, data.is_published ?? 0).run()
+    'INSERT INTO events (title, description, start_at, end_at, capacity, price, is_published) VALUES (?, ?, ?, ?, ?, ?, ?)',
+  ).bind(data.title, data.description ?? null, data.start_at, data.end_at, data.capacity, data.price ?? null, data.is_published ?? 0).run()
   const lastId = (result as { meta?: { last_row_id?: number } }).meta?.last_row_id
   const row = await db.prepare(
     `SELECT e.*, ${PARTICIPANT_COUNT_SQL} FROM events e WHERE e.id = ?`,
@@ -64,7 +64,7 @@ export async function getEventById(db: D1Database, id: number): Promise<EventWit
 export async function updateEvent(
   db: D1Database,
   id: number,
-  updates: Partial<Pick<EventRow, 'title' | 'description' | 'start_at' | 'end_at' | 'capacity' | 'is_published'>>,
+  updates: Partial<Pick<EventRow, 'title' | 'description' | 'start_at' | 'end_at' | 'capacity' | 'price' | 'is_published'>>,
 ): Promise<EventWithCount | null> {
   const sets: string[] = ["updated_at = datetime('now')"]
   const binds: unknown[] = []
@@ -73,6 +73,7 @@ export async function updateEvent(
   if (updates.start_at !== undefined) { sets.push('start_at = ?'); binds.push(updates.start_at) }
   if (updates.end_at !== undefined) { sets.push('end_at = ?'); binds.push(updates.end_at) }
   if (updates.capacity !== undefined) { sets.push('capacity = ?'); binds.push(updates.capacity) }
+  if (updates.price !== undefined) { sets.push('price = ?'); binds.push(updates.price) }
   if (updates.is_published !== undefined) { sets.push('is_published = ?'); binds.push(updates.is_published) }
   binds.push(id)
   await db.prepare(`UPDATE events SET ${sets.join(', ')} WHERE id = ?`).bind(...binds).run()

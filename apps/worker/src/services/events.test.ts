@@ -97,6 +97,35 @@ describe('createEvent', () => {
       createEvent(db, { title: '', start_at: '2026-06-01T10:00:00+09:00', end_at: '2026-06-01T12:00:00+09:00', capacity: 10 })
     ).rejects.toThrow()
   })
+
+  it('price: 1000 を渡すとINSERT文にpriceが含まれる', async () => {
+    const eventWithPrice: EventWithCount = { ...EVENT1, price: 1000 }
+    const db = makeDb(makeStmt(null), makeStmt(eventWithPrice))
+    const result = await createEvent(db, {
+      title: '有料セミナー',
+      start_at: '2026-06-01T10:00:00+09:00',
+      end_at: '2026-06-01T12:00:00+09:00',
+      capacity: 10,
+      price: 1000,
+    })
+    expect(result.price).toBe(1000)
+    const insertSql = (db.prepare as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
+    expect(insertSql).toContain('price')
+  })
+
+  it('priceを省略するとINSERT文にprice列が含まれnullで保存される', async () => {
+    const eventFree: EventWithCount = { ...EVENT1, price: null }
+    const db = makeDb(makeStmt(null), makeStmt(eventFree))
+    const result = await createEvent(db, {
+      title: '無料セミナー',
+      start_at: '2026-06-01T10:00:00+09:00',
+      end_at: '2026-06-01T12:00:00+09:00',
+      capacity: 10,
+    })
+    expect(result.price).toBeNull()
+    const insertSql = (db.prepare as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
+    expect(insertSql).toContain('price')
+  })
 })
 
 describe('getEvents', () => {
