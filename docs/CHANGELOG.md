@@ -1,16 +1,41 @@
 # Changelog
 
-## [Unreleased] (2026-05-15)
+## v0.3.0 (2026-05-16)
 
-### CI/CD
+### SP6: Stripe決済統合 + イベント予約フルフロー
+
+#### DBマイグレーション（030〜032）
+- `event_bookings` に `stripe_session_id / payment_status / paid_at / amount` カラム追加（030）
+- `events` に `price` カラム追加（031）
+- `event_bookings.status` CHECK制約に `pending` を追加（テーブル再作成）（032）
+
+#### Worker API
+- `POST /api/events/:id/checkout-session` — Stripe Checkout Session作成・仮登録
+- `POST /api/stripe/webhook` — 署名検証 → booking確定 → LINE通知（全TDD）
+- 両エンドポイントを認証スキップリストに追加（LIFF/Stripeから直接呼ばれるため）
+- `confirmEventBooking` に `name / email` 保存を追加（customer_detailsから取得・COALESCE）
+
+#### LIFFクライアント
+- 有料イベント: `/checkout-session` → Stripe Checkout → `?payment=success/cancel` 画面遷移
+- 無料イベント: 名前・メール入力フォームで直接申込（`/join` エンドポイント）
+- 「イベント」キーワードでイベント一覧LIFFボタンを返す自動応答を追加
+
+#### 管理画面
+- イベント参加者一覧に `payment_status / paid_at / amount` カラムを追加
+- イベント詳細ページに編集モーダルを追加（全フィールドをインライン編集可能に）
+
+#### CI/CD
 - `pnpm/action-setup@v4` を `corepack enable pnpm` に置き換え（Node.js 24 移行対応）
 - `cloudflare/wrangler-action@v3` を `pnpm exec wrangler` の run ステップに置き換え
-- deploy-liff.yml に残っていた wrangler-action@v3 を修正（初回修正時の漏れ）
 - 対象ワークフロー: deploy-web.yml / deploy-worker.yml / deploy-liff.yml / test.yml
 
-### Features
-- イベント管理: 参加費（price）フィールドの保存バグを修正（POST/PUT）
-- イベント詳細ページに編集モーダルを追加（全フィールドをインライン編集可能に）
+#### バグ修正
+- Stripe Webhookで `customer_details` の `name/email` が booking に保存されないバグを修正
+- イベント作成時に `price` が保存されないバグを修正（POST/PUT）
+- `checkout-session` エンドポイントの認証スキップ漏れを修正
+
+#### テスト
+- 全テスト: 170件グリーン（stripe.test.ts 新規追加含む）
 
 ## v0.2.0 (2026-03-25)
 

@@ -56,6 +56,25 @@ L社/U社代替。AI（CC）ネイティブ設計。
 - [x] エントリールート — 流入元トラッキング
 - [x] friends.scoreカラム追加 — マイグレーション漏れ修正
 
+### SP5 (営業時間・休業日設定) ✅ 完了 2026-03-25
+- [x] 営業時間・休業日設定機能（予約スロット生成に反映）
+
+### SP6 (Stripeイベント決済) ✅ 完了 2026-05-16
+- [x] イベント予約システム DB基盤・管理API（#5-1）
+- [x] イベント管理画面（#5-2）
+- [x] LIFF イベント参加UI（#5-3）
+- [x] Stripe決済カラム追加（030_stripe.sql / event_bookings）
+- [x] eventsテーブルにpriceカラム追加（031_events_price.sql）
+- [x] event_bookingsのstatus CHECK制約にpendingを追加（032_event_bookings_pending.sql）
+- [x] POST /api/events/:id/checkout-session（Stripe Session作成・仮登録）
+- [x] POST /api/stripe/webhook（署名検証・booking確定・LINE通知）
+- [x] LIFF: 有料フロー（Stripe Checkout遷移） / 無料フロー（直接申込フォーム）
+- [x] 管理画面: 参加者一覧に決済ステータス・金額カラム追加
+- [x] イベント詳細ページに編集モーダル追加（TDD）
+- [x] 「イベント」キーワード自動応答でLIFFボタン送信
+- [x] Webhook: customer_details（name/email）をbookingに保存するバグ修正
+- [x] 本番動作確認: 決済→DB確定（id=6）→LINE通知、全フロー成功
+
 ### Round 4 (予定)
 - [ ] メール配信連携 (SendGrid/SES)
 - [ ] SMS連携
