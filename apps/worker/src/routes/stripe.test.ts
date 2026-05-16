@@ -67,6 +67,7 @@ const MOCK_SESSION = {
   id: 'cs_test_xxx',
   amount_total: 3000,
   metadata: { bookingId: '1', lineUserId: 'U123', eventId: '1' },
+  customer_details: { name: '山田太郎', email: 'yamada@example.com' },
 }
 
 beforeEach(() => { vi.clearAllMocks() })
@@ -91,7 +92,7 @@ describe('POST /api/stripe/webhook', () => {
     expect(res.status).toBe(200)
     const json = await res.json() as { received: boolean }
     expect(json.received).toBe(true)
-    expect(eventsService.confirmEventBooking).toHaveBeenCalledWith(mockDb, 1, 3000)
+    expect(eventsService.confirmEventBooking).toHaveBeenCalledWith(mockDb, 1, 3000, '山田太郎', 'yamada@example.com')
     expect(mockPushMessage).toHaveBeenCalledOnce()
   })
 
@@ -123,6 +124,27 @@ describe('POST /api/stripe/webhook', () => {
 
     expect(res.status).toBe(200)
     expect(eventsService.confirmEventBooking).not.toHaveBeenCalled()
+  })
+
+  it('正常系：customer_detailsがない場合もbooking確定される', async () => {
+    const sessionWithoutDetails = { ...MOCK_SESSION, customer_details: null }
+    mockConstructEventAsync.mockResolvedValue({
+      type: 'checkout.session.completed',
+      data: { object: sessionWithoutDetails },
+    })
+    vi.mocked(eventsService.getEventBookingById).mockResolvedValue(PENDING_BOOKING)
+    vi.mocked(eventsService.confirmEventBooking).mockResolvedValue(undefined)
+    vi.mocked(eventsService.getEventById).mockResolvedValue(EVENT1)
+    mockPushMessage.mockResolvedValue({})
+
+    const res = await app.request('/api/stripe/webhook', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'stripe-signature': 't=123,v1=abc' },
+      body: JSON.stringify({}),
+    }, MOCK_ENV)
+
+    expect(res.status).toBe(200)
+    expect(eventsService.confirmEventBooking).toHaveBeenCalledWith(mockDb, 1, 3000, null, null)
   })
 
   it('正常系：checkout.session.completed以外のイベント → 200（無視）', async () => {

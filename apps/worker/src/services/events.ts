@@ -151,8 +151,10 @@ export async function confirmEventBooking(
   db: D1Database,
   bookingId: number,
   amountTotal: number | null,
+  name?: string | null,
+  email?: string | null,
 ): Promise<void> {
   await db.prepare(
-    "UPDATE event_bookings SET status = 'confirmed', payment_status = 'paid', paid_at = datetime('now'), amount = ?, updated_at = datetime('now') WHERE id = ?",
-  ).bind(amountTotal, bookingId).run()
+    "UPDATE event_bookings SET status = 'confirmed', payment_status = 'paid', paid_at = datetime('now'), amount = ?, name = COALESCE(?, name), email = COALESCE(?, email), updated_at = datetime('now') WHERE id = ?",
+  ).bind(amountTotal, name ?? null, email ?? null, bookingId).run()
 }

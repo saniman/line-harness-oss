@@ -220,8 +220,14 @@ stripe.post('/api/stripe/webhook', async (c) => {
     return c.json({ received: true });
   }
 
-  // 5. booking 確定
-  await confirmEventBooking(c.env.DB, bookingId, session.amount_total);
+  // 5. booking 確定（customer_detailsからname/emailを保存）
+  await confirmEventBooking(
+    c.env.DB,
+    bookingId,
+    session.amount_total,
+    session.customer_details?.name ?? null,
+    session.customer_details?.email ?? null,
+  );
 
   // 6. LINE Push通知（ベストエフォート）
   if (lineUserId) {
