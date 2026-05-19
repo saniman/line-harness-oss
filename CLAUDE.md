@@ -56,6 +56,24 @@ GitHub Actions が CI で失敗する。対象アクション:
   `wrangler.toml` の `account_id` を上書きしてしまう
   → 対処: deploy-worker.yml では env に渡さない、deploy-web.yml では値をハードコード
 
+### Cloudflare Pages API が日本語コミットメッセージを拒否する問題（2026-05-19 対応済み）
+`wrangler pages deploy` はデフォルトで git のコミットメッセージを
+Cloudflare Pages API に送信するが、日本語などの非ASCII文字を含むと
+API 側が `Invalid commit message, it must be a valid UTF-8 string [code: 8000111]`
+で拒否する（日本語は有効な UTF-8 だが Cloudflare 側のバグ）。
+
+→ **対処**: `--commit-message` に ASCII のみのコミットハッシュを渡して上書きする
+```yaml
+run: |
+  COMMIT_HASH=$(git log -1 --format=%H)
+  pnpm exec wrangler pages deploy ./dist/client \
+    --project-name=line-harness-liff \
+    --commit-message="$COMMIT_HASH"
+```
+
+→ `deploy-liff.yml` に適用済み。他の Pages デプロイでも同様に対処すること。
+`LC_ALL: C.UTF-8` 環境変数では解決しない（API 側の問題のため）。
+
 ### SQLite ALTER TABLE 制約
 CHECK 制約はALTER TABLEで変更不可。
 既存のCHECK制約を変えたい場合はテーブル再作成が必要：
