@@ -107,11 +107,11 @@ export async function getEventBookingsAdmin(db: D1Database, eventId: number): Pr
 
 export async function createEventBooking(
   db: D1Database,
-  data: { event_id: number; friend_id?: string | null; name: string; email: string },
+  data: { event_id: number; friend_id?: string | null; name: string; email?: string },
 ): Promise<EventBookingRow> {
   const result = await db.prepare(
     'INSERT INTO event_bookings (event_id, friend_id, name, email) VALUES (?, ?, ?, ?)',
-  ).bind(data.event_id, data.friend_id ?? null, data.name, data.email).run()
+  ).bind(data.event_id, data.friend_id ?? null, data.name, data.email ?? '').run()
   const lastId = (result as { meta?: { last_row_id?: number } }).meta?.last_row_id
   const row = await db.prepare('SELECT * FROM event_bookings WHERE id = ?')
     .bind(lastId).first<EventBookingRow>()

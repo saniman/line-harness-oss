@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import Stripe from 'stripe';
+import { LineClient } from '@line-crm/line-sdk';
 import {
   createEvent,
   getEvents,
@@ -151,7 +152,7 @@ events.delete('/api/events/:id', async (c) => {
 events.post('/api/events/:id/join', async (c) => {
   try {
     const id = Number(c.req.param('id'));
-    const body = await c.req.json<{ name: string; email: string; lineUserId?: string }>();
+    const body = await c.req.json<{ name?: string; lineUserId?: string }>();
 
     const event = await getEventById(c.env.DB, id);
     if (!event) return c.json({ success: false, error: 'Event not found' }, 404);
@@ -176,9 +177,23 @@ events.post('/api/events/:id/join', async (c) => {
     const booking = await createEventBooking(c.env.DB, {
       event_id: id,
       friend_id: friendId,
-      name: body.name,
-      email: body.email,
+      name: body.name ?? '',
     });
+
+    // LINE push通知（ベストエフォート）
+    if (body.lineUserId && c.env.LINE_CHANNEL_ACCESS_TOKEN) {
+      try {
+        const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
+        const d = new Date(new Date(event.start_at).getTime() + 9 * 60 * 60 * 1000);
+        const dateStr = `${d.getUTCMonth() + 1}/${d.getUTCDate()} ${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`;
+        await lineClient.pushTextMessage(
+          body.lineUserId,
+          `「${event.title}」のお申込みを受け付けました！\n\n📅 ${dateStr}\n\n当日お会いできることを楽しみにしています。`,
+        );
+      } catch {
+        // ベストエフォート
+      }
+    }
 
     return c.json({ success: true, data: booking }, 201);
   } catch (err) {

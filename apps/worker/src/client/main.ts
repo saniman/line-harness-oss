@@ -340,9 +340,15 @@ async function main() {
       const payment = eventParams.get('payment');
       const eventId = eventParams.get('id') ? Number(eventParams.get('id')) : undefined;
       let lineUserId: string | undefined;
-      try { lineUserId = (await liff.getProfile()).userId; } catch { /* フォールバック */ }
+      let displayName: string | undefined;
+      try {
+        const profile = await liff.getProfile();
+        lineUserId = profile.userId;
+        displayName = profile.displayName;
+      } catch { /* フォールバック */ }
       await initEventBooking({
         lineUserId,
+        displayName,
         payment,
         eventId,
         openWindow: (p) => liff.openWindow(p),

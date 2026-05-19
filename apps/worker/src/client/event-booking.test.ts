@@ -73,11 +73,11 @@ describe('renderEventDetail', () => {
     expect(html).not.toContain('free-join-form')
   })
 
-  it('無料イベント（price=null）は名前・メール入力フォームが表示される', () => {
+  it('無料イベント（price=null）はワンクリック申し込みボタンが表示される', () => {
     const html = buildEventDetailHtml(EVENT_FREE)
-    expect(html).toContain('free-join-form')
-    expect(html).toContain('join-name')
-    expect(html).toContain('join-email')
+    expect(html).toContain('free-join-btn')
+    expect(html).not.toContain('join-name')
+    expect(html).not.toContain('join-email')
     expect(html).not.toContain('checkout-btn')
   })
 
@@ -130,20 +130,20 @@ describe('joinFreeEvent', () => {
       ok: true, status: 201,
       json: async () => ({ success: true, data: { id: 10 } }),
     }))
-    const result = await joinFreeEvent(2, 'U123', '山田太郎', 'taro@example.com')
+    const result = await joinFreeEvent(2, 'U123', '山田太郎')
     expect(result.success).toBe(true)
   })
 
   it('409（満席）の場合エラーを返す', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 409 }))
-    const result = await joinFreeEvent(2, '', '山田太郎', 'taro@example.com')
+    const result = await joinFreeEvent(2, '', '山田太郎')
     expect(result.success).toBe(false)
     expect(result.error).toContain('満席')
   })
 
   it('その他のエラーの場合汎用エラーを返す', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 500 }))
-    const result = await joinFreeEvent(2, '', '山田太郎', 'taro@example.com')
+    const result = await joinFreeEvent(2, '', '山田太郎')
     expect(result.success).toBe(false)
     expect(result.error).toBeTruthy()
   })

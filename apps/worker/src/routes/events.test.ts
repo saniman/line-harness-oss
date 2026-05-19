@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { Hono } from 'hono'
 
 const mockCheckoutSessionCreate = vi.hoisted(() => vi.fn())
+const mockPushTextMessage = vi.hoisted(() => vi.fn().mockResolvedValue({}))
 
 vi.mock('stripe', () => {
   const MockStripe: any = vi.fn().mockImplementation(() => ({
@@ -10,6 +11,12 @@ vi.mock('stripe', () => {
   MockStripe.createFetchHttpClient = vi.fn().mockReturnValue({})
   return { default: MockStripe }
 })
+
+vi.mock('@line-crm/line-sdk', () => ({
+  LineClient: vi.fn().mockImplementation(() => ({
+    pushTextMessage: mockPushTextMessage,
+  })),
+}))
 
 vi.mock('../services/events.js', () => ({
   createEvent: vi.fn(),
@@ -242,11 +249,25 @@ describe('POST /api/events/:id/join', () => {
     const res = await app.request('/api/events/1/join', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: '山田太郎', email: 'yamada@example.com' }),
+      body: JSON.stringify({ lineUserId: 'U123' }),
     }, { DB: mockDb })
     expect(res.status).toBe(201)
     const json = await res.json() as { success: boolean }
     expect(json.success).toBe(true)
+  })
+
+  it('lineUserId と LINE_CHANNEL_ACCESS_TOKEN があれば push通知を送る', async () => {
+    const event = { ...EVENT1, participant_count: 2 }
+    vi.mocked(eventsService.getEventById).mockResolvedValue(event)
+    vi.mocked(eventsService.createEventBooking).mockResolvedValue(BOOKING1)
+    mockPushTextMessage.mockResolvedValue({})
+    const res = await app.request('/api/events/1/join', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lineUserId: 'U123' }),
+    }, { DB: mockDb, LINE_CHANNEL_ACCESS_TOKEN: 'test-token' })
+    expect(res.status).toBe(201)
+    expect(mockPushTextMessage).toHaveBeenCalledWith('U123', expect.stringContaining('お申込みを受け付けました'))
   })
 
   it('定員超過は409を返す', async () => {
@@ -255,7 +276,7 @@ describe('POST /api/events/:id/join', () => {
     const res = await app.request('/api/events/1/join', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: '山田太郎', email: 'yamada@example.com' }),
+      body: JSON.stringify({ lineUserId: 'U123' }),
     }, { DB: mockDb })
     expect(res.status).toBe(409)
   })
@@ -265,7 +286,7 @@ describe('POST /api/events/:id/join', () => {
     const res = await app.request('/api/events/999/join', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: '山田太郎', email: 'yamada@example.com' }),
+      body: JSON.stringify({ lineUserId: 'U123' }),
     }, { DB: mockDb })
     expect(res.status).toBe(404)
   })

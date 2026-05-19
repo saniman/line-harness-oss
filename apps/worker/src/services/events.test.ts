@@ -221,12 +221,11 @@ describe('getEventBookings', () => {
 })
 
 describe('createEventBooking', () => {
-  it('参加申込を作成して返す', async () => {
+  it('参加申込を作成して返す（email省略可）', async () => {
     const db = makeDb(makeStmt(null), makeStmt(BOOKING1))
     const result = await createEventBooking(db, {
       event_id: 1,
       name: '山田太郎',
-      email: 'yamada@example.com',
     })
     expect(result.name).toBe('山田太郎')
     expect(result.event_id).toBe(1)

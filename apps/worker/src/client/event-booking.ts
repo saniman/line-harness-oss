@@ -64,13 +64,9 @@ export function buildEventDetailHtml(event: EventPublic): string {
     ? `<button id="checkout-btn" class="checkout-btn" ${full ? 'disabled' : ''}>
         ${full ? '満席' : '申込・決済へ進む 💳'}
        </button>`
-    : `<form id="free-join-form">
-        <input id="join-name" type="text" placeholder="お名前" required class="join-input" />
-        <input id="join-email" type="email" placeholder="メールアドレス" required class="join-input" />
-        <button type="submit" ${full ? 'disabled' : ''}>
-          ${full ? '満席' : '申し込む（無料）'}
-        </button>
-       </form>`
+    : `<button id="free-join-btn" class="join-btn" ${full ? 'disabled' : ''}>
+        ${full ? '満席' : '申し込む（無料）'}
+       </button>`
   return `
     <div class="event-detail">
       <h2 class="event-title">${escapeHtml(event.title)}</h2>
@@ -87,12 +83,11 @@ export async function joinFreeEvent(
   eventId: number,
   lineUserId: string,
   name: string,
-  email: string,
 ): Promise<{ success: boolean; error?: string }> {
   const res = await fetch(`${API_BASE}/api/events/${eventId}/join`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, email, lineUserId: lineUserId || undefined }),
+    body: JSON.stringify({ name, lineUserId: lineUserId || undefined }),
   })
 
   if (!res.ok) {
@@ -126,11 +121,12 @@ export async function startCheckoutSession(
 
 export async function initEventBooking(options: {
   lineUserId?: string
+  displayName?: string
   payment?: string | null
   eventId?: number
   openWindow?: (params: { url: string; external: boolean }) => void
 } = {}): Promise<void> {
-  const { lineUserId, payment, eventId, openWindow = () => {} } = options
+  const { lineUserId, displayName, payment, eventId, openWindow = () => {} } = options
   const app = document.getElementById('app')
   if (!app) return
 
@@ -222,28 +218,24 @@ export async function initEventBooking(options: {
     })
 
     // 無料フロー
-    const freeForm = document.getElementById('free-join-form') as HTMLFormElement | null
-    freeForm?.addEventListener('submit', async (e) => {
-      e.preventDefault()
-      const submitBtn = freeForm.querySelector('button[type="submit"]') as HTMLButtonElement
-      const name = (document.getElementById('join-name') as HTMLInputElement)?.value.trim()
-      const email = (document.getElementById('join-email') as HTMLInputElement)?.value.trim()
-      if (!name || !email) return
-      submitBtn.disabled = true
-      submitBtn.textContent = '処理中...'
-      const result = await joinFreeEvent(event.id, lineUserId ?? '', name, email)
+    const freeBtn = document.getElementById('free-join-btn') as HTMLButtonElement | null
+    freeBtn?.addEventListener('click', async () => {
+      if (!freeBtn) return
+      freeBtn.disabled = true
+      freeBtn.textContent = '処理中...'
+      const result = await joinFreeEvent(event.id, lineUserId ?? '', displayName ?? '')
       if (result.success) {
         app.innerHTML = `
           <div class="done-card">
             <div class="check-icon">✓</div>
             <h2>申込が完了しました！</h2>
-            <p>ご登録のメールアドレスにご連絡します。</p>
+            <p>LINEにご連絡します。</p>
           </div>
         `
       } else {
-        submitBtn.disabled = false
-        submitBtn.textContent = '申し込む（無料）'
-        showError(submitBtn, result.error || 'エラーが発生しました')
+        freeBtn.disabled = false
+        freeBtn.textContent = '申し込む（無料）'
+        showError(freeBtn, result.error || 'エラーが発生しました')
       }
     })
   }
