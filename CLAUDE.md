@@ -29,6 +29,9 @@ Cloudflare Workers + D1 + Next.js のモノレポ構成。
 - Stripe関連のsecretは wrangler secret put で設定する：
   STRIPE_SECRET_KEY / STRIPE_WEBHOOK_SECRET
   （セットアップ手順書: docs/setup/stripe-setup.md）
+- STRIPE_SECRET_KEY は必ず `sk_` で始まるシークレットキーを使う
+  `pk_` で始まる公開可能キーを誤って設定すると checkout-session が 500 になる
+  症状: "This API call cannot be made with a publishable API key"
 
 ## CIルール
 - mainへのpush前に pnpm --filter worker test を実行してパスを確認する
