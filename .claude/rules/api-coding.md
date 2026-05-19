@@ -39,6 +39,30 @@ globs: "apps/worker/src/**/*.ts"
 - 症状：CI で以下のエラーが出る
   Type 'VitestUtils' is not assignable to type 'Awaitable<HookCleanupCallback>'
 
+## Stripe Webhook
+
+- rawボディは必ず `req.text()` で取得してから `constructEventAsync()` に渡す
+  ❌ 誤: req.json() → 署名検証が失敗する
+  ✅ 正: const rawBody = await c.req.text(); await stripe.webhooks.constructEventAsync(rawBody, sig, secret)
+
+- Cloudflare Workers では `Stripe.createFetchHttpClient()` を渡す（Node.js の http モジュール非対応のため）
+  ```ts
+  new Stripe(env.STRIPE_SECRET_KEY, { apiVersion: '2026-04-22.dahlia', httpClient: Stripe.createFetchHttpClient() })
+  ```
+
+- 以下のエンドポイントは LIFF / Stripe から直接呼ばれるため auth skipリストに追加必須：
+  - `/api/events/:id/checkout-session`（LIFF → Stripe）
+  - `/api/stripe/webhook`（Stripe → Worker）
+  追加忘れると LIFF ユーザーが 401 を受け取る（症状が分かりにくい）
+
+## イベント価格・決済フロー設計
+
+- `price` が null または 0 → 無料フロー: `POST /api/events/:id/join`（name/email で即確定）
+- `price` が 1 以上 → 有料フロー: `POST /api/events/:id/checkout-session` → Stripe Checkout
+- 定員カウント（`participant_count`）は `status = 'confirmed'` のみ集計する
+  - `pending`（仮登録）は Stripe セッション期限（30分）でexpireするため含めない
+  - 含めると「仮登録が多いと残席0になる」問題が発生する
+
 ## 既知の落とし穴
 - friends テーブルに line_account_id カラムは存在しない（JOIN不可）
 - LINE push のトークンは line_accounts テーブルが空のため env.LINE_CHANNEL_ACCESS_TOKEN を使う
