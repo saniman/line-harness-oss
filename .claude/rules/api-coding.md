@@ -72,6 +72,26 @@ globs: "apps/worker/src/**/*.ts"
 - `GET /api/events/public` は `GET /api/events/:id` より前に登録すること
   - Hono のルートマッチは登録順優先のため、後ろに置くと `/public` が `:id` に吸収される
 
+## 日時フォーマット
+
+D1 に保存される日時は UTC の ISO 8601 形式（例: `2026-06-13T05:00:00.000Z`）。
+**LINE push メッセージなど人目に触れる場所では必ず JST に変換すること。**
+
+❌ 誤（DB の値をそのまま埋め込む）
+```ts
+text: `日時：${eventRow?.start_at ?? ''}`
+// → 日時：2026-06-13T05:00:00.000Z
+```
+
+✅ 正（`formatJST()` で変換する）
+```ts
+text: `日時：${eventRow?.start_at ? formatJST(eventRow.start_at) : ''}`
+// → 日時：06/13(土) 14:00
+```
+
+Worker 内で使う `formatJST()` は `stripe.ts` に定義済み。
+LIFF クライアント側の同名関数は `event-booking.ts` にある（共有はしていない）。
+
 ## 既知の落とし穴
 - friends テーブルに line_account_id カラムは存在しない（JOIN不可）
 - LINE push のトークンは line_accounts テーブルが空のため env.LINE_CHANNEL_ACCESS_TOKEN を使う

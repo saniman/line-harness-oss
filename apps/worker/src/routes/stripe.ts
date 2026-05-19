@@ -16,6 +16,18 @@ import type { Env } from '../index.js';
 
 const stripe = new Hono<Env>();
 
+function formatJST(iso: string): string {
+  const d = new Date(iso);
+  const jst = new Date(d.getTime() + 9 * 60 * 60 * 1000);
+  const mm = String(jst.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(jst.getUTCDate()).padStart(2, '0');
+  const hh = String(jst.getUTCHours()).padStart(2, '0');
+  const min = String(jst.getUTCMinutes()).padStart(2, '0');
+  const weekdays = ['日', '月', '火', '水', '木', '金', '土'];
+  const dow = weekdays[jst.getUTCDay()];
+  return `${mm}/${dd}(${dow}) ${hh}:${min}`;
+}
+
 interface StripeWebhookBody {
   id: string;
   type: string;
@@ -256,7 +268,7 @@ stripe.post('/api/stripe/webhook', async (c) => {
             },
             {
               type: 'text',
-              text: `日時：${eventRow?.start_at ?? ''}`,
+              text: `日時：${eventRow?.start_at ? formatJST(eventRow.start_at) : ''}`,
               size: 'sm', color: '#666666', wrap: true,
             },
           ],
