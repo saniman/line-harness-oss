@@ -40,12 +40,12 @@ export function buildEventListHtml(events: EventPublic[]): string {
   return events.map((ev) => {
     const full = !ev.available || ev.remaining === 0
     return `
-      <div class="event-card" data-id="${ev.id}">
+      <div class="event-card panel" data-id="${ev.id}">
         <h3 class="event-title">${escapeHtml(ev.title)}</h3>
         <p class="event-date">${formatJST(ev.start_at)} 〜 ${formatJST(ev.end_at)}</p>
         <p class="event-remaining">残席: ${ev.remaining}名</p>
         <button
-          class="event-join-btn"
+          class="event-join-btn btn-pink"
           data-event-id="${ev.id}"
           ${full ? 'disabled' : ''}
         >${full ? '満席' : '申し込む'}</button>
@@ -61,14 +61,14 @@ export function buildEventDetailHtml(event: EventPublic): string {
     ? `<p class="event-price">参加費: ¥${event.price!.toLocaleString()}</p>`
     : `<p class="event-price">参加費: 無料</p>`
   const actionHtml = isPaid
-    ? `<button id="checkout-btn" class="checkout-btn" ${full ? 'disabled' : ''}>
+    ? `<button id="checkout-btn" class="btn-pink" ${full ? 'disabled' : ''}>
         ${full ? '満席' : '申込・決済へ進む 💳'}
        </button>`
-    : `<button id="free-join-btn" class="checkout-btn" ${full ? 'disabled' : ''}>
+    : `<button id="free-join-btn" class="btn-pink" ${full ? 'disabled' : ''}>
         ${full ? '満席' : '申し込む（無料）'}
        </button>`
   return `
-    <div class="event-detail">
+    <div class="event-detail panel">
       <h2 class="event-title">${escapeHtml(event.title)}</h2>
       <p class="event-date">${formatJST(event.start_at)} 〜 ${formatJST(event.end_at)}</p>
       ${event.description ? `<p class="event-description">${escapeHtml(event.description)}</p>` : ''}
@@ -133,7 +133,7 @@ export async function initEventBooking(options: {
   // 決済結果画面
   if (payment === 'success') {
     app.innerHTML = `
-      <div class="done-card">
+      <div class="done-card panel">
         <div class="check-icon">✓</div>
         <h2>申込が完了しました！</h2>
         <p>決済確認後にLINEにご連絡します。</p>
@@ -144,7 +144,7 @@ export async function initEventBooking(options: {
 
   if (payment === 'cancel') {
     app.innerHTML = `
-      <div class="cancel-card">
+      <div class="cancel-card panel">
         <h2>お申込みをキャンセルしました。</h2>
         <button id="back-to-list-btn">イベント一覧に戻る</button>
       </div>
@@ -226,7 +226,7 @@ export async function initEventBooking(options: {
       const result = await joinFreeEvent(event.id, lineUserId ?? '', displayName ?? '')
       if (result.success) {
         app.innerHTML = `
-          <div class="done-card">
+          <div class="done-card panel">
             <div class="check-icon">✓</div>
             <h2>申込が完了しました！</h2>
             <p>LINEにご連絡します。</p>

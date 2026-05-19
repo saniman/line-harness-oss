@@ -411,6 +411,47 @@
       background: #e8faf0;
     }
 
+    /* ========== 共通ユーティリティ ========== */
+
+    /* ピンクグラデーション CTA ボタン（全幅）
+       使用: .event-join-btn, #checkout-btn, #free-join-btn */
+    .btn-pink {
+      display: block;
+      width: 100%;
+      padding: 16px;
+      border: none;
+      border-radius: 12px;
+      background: linear-gradient(135deg, #ff6b9d 0%, #ff4176 100%);
+      color: #fff;
+      font-size: 17px;
+      font-weight: 700;
+      cursor: pointer;
+      font-family: inherit;
+      letter-spacing: 0.5px;
+      box-shadow: 0 6px 20px rgba(255, 65, 118, 0.4);
+      transition: all 0.2s;
+    }
+    .btn-pink:active {
+      opacity: 0.85;
+      transform: scale(0.98);
+      box-shadow: 0 2px 8px rgba(255, 65, 118, 0.3);
+    }
+    .btn-pink:disabled {
+      background: #ddd;
+      color: #aaa;
+      box-shadow: none;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    /* 白カードコンテナ
+       使用: .event-card, .event-detail, .done-card, .cancel-card */
+    .panel {
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    }
+
     /* ========== Event Page ========== */
     .event-list {
       animation: fadeIn 0.3s ease;
@@ -424,11 +465,8 @@
       border-bottom: 2px solid #f0f0f0;
     }
     .event-card {
-      background: #fff;
-      border-radius: 12px;
       padding: 16px;
       margin-bottom: 12px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
     }
     .event-card .event-title {
       font-size: 17px;
@@ -448,30 +486,12 @@
       font-weight: 600;
       margin-bottom: 12px;
     }
+    /* .btn-pink の上書き（リスト用の小さめサイズ） */
     .event-join-btn {
-      width: 100%;
       padding: 14px;
-      border: none;
       border-radius: 10px;
-      background: linear-gradient(135deg, #ff6b9d 0%, #ff4176 100%);
-      color: #fff;
       font-size: 16px;
-      font-weight: 700;
-      cursor: pointer;
-      font-family: inherit;
-      letter-spacing: 0.5px;
       box-shadow: 0 4px 12px rgba(255, 65, 118, 0.35);
-      transition: all 0.15s;
-    }
-    .event-join-btn:active {
-      opacity: 0.85;
-      transform: scale(0.98);
-    }
-    .event-join-btn:disabled {
-      background: #ddd;
-      color: #aaa;
-      box-shadow: none;
-      cursor: not-allowed;
     }
 
     /* Event Detail */
@@ -489,11 +509,10 @@
       margin-bottom: 12px;
     }
     #back-btn:active { color: #333; }
+    /* .panel の上書き */
     .event-detail {
-      background: #fff;
       border-radius: 16px;
       padding: 24px 20px;
-      box-shadow: 0 2px 12px rgba(0,0,0,0.08);
       animation: fadeIn 0.3s ease;
     }
     .event-detail .event-title {
@@ -533,91 +552,10 @@
       border-bottom: 1px solid #f0f0f0;
     }
 
-    /* Join Form */
-    #free-join-form {
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-    }
-    .join-input {
-      width: 100%;
-      padding: 14px 16px;
-      border: 1.5px solid #e0e0e0;
-      border-radius: 10px;
-      font-size: 16px;
-      font-family: inherit;
-      color: #333;
-      background: #fafafa;
-      transition: border-color 0.15s;
-      -webkit-appearance: none;
-    }
-    .join-input:focus {
-      outline: none;
-      border-color: #ff6b9d;
-      background: #fff;
-    }
-    .join-input::placeholder { color: #bbb; }
-    #free-join-form button[type="submit"] {
-      width: 100%;
-      padding: 16px;
-      border: none;
-      border-radius: 12px;
-      background: linear-gradient(135deg, #ff6b9d 0%, #ff4176 100%);
-      color: #fff;
-      font-size: 17px;
-      font-weight: 700;
-      cursor: pointer;
-      font-family: inherit;
-      letter-spacing: 0.5px;
-      box-shadow: 0 6px 20px rgba(255, 65, 118, 0.4);
-      transition: all 0.2s;
-      margin-top: 4px;
-    }
-    #free-join-form button[type="submit"]:active {
-      opacity: 0.85;
-      transform: scale(0.98);
-      box-shadow: 0 2px 8px rgba(255, 65, 118, 0.3);
-    }
-    #free-join-form button[type="submit"]:disabled {
-      background: #ddd;
-      color: #aaa;
-      box-shadow: none;
-      cursor: not-allowed;
-    }
-
-    /* Checkout Button */
-    .checkout-btn {
-      width: 100%;
-      padding: 16px;
-      border: none;
-      border-radius: 12px;
-      background: linear-gradient(135deg, #ff6b9d 0%, #ff4176 100%);
-      color: #fff;
-      font-size: 17px;
-      font-weight: 700;
-      cursor: pointer;
-      font-family: inherit;
-      letter-spacing: 0.5px;
-      box-shadow: 0 6px 20px rgba(255, 65, 118, 0.4);
-      transition: all 0.2s;
-    }
-    .checkout-btn:active {
-      opacity: 0.85;
-      transform: scale(0.98);
-    }
-    .checkout-btn:disabled {
-      background: #ddd;
-      color: #aaa;
-      box-shadow: none;
-      cursor: not-allowed;
-    }
-
-    /* Done / Cancel cards */
+    /* Done / Cancel cards — .panel の上書き */
     .done-card, .cancel-card {
-      background: #fff;
       border-radius: 16px;
       padding: 40px 24px;
-      box-shadow: 0 2px 12px rgba(0,0,0,0.08);
       text-align: center;
       animation: fadeIn 0.3s ease;
     }
