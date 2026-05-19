@@ -338,11 +338,13 @@ async function main() {
     } else if (page === 'event') {
       const eventParams = new URLSearchParams(window.location.search);
       const payment = eventParams.get('payment');
+      const eventId = eventParams.get('id') ? Number(eventParams.get('id')) : undefined;
       let lineUserId: string | undefined;
       try { lineUserId = (await liff.getProfile()).userId; } catch { /* フォールバック */ }
       await initEventBooking({
         lineUserId,
         payment,
+        eventId,
         openWindow: (p) => liff.openWindow(p),
       });
     } else if (!page) {

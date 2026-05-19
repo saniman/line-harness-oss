@@ -127,9 +127,10 @@ export async function startCheckoutSession(
 export async function initEventBooking(options: {
   lineUserId?: string
   payment?: string | null
+  eventId?: number
   openWindow?: (params: { url: string; external: boolean }) => void
 } = {}): Promise<void> {
-  const { lineUserId, payment, openWindow = () => {} } = options
+  const { lineUserId, payment, eventId, openWindow = () => {} } = options
   const app = document.getElementById('app')
   if (!app) return
 
@@ -247,5 +248,14 @@ export async function initEventBooking(options: {
     })
   }
 
-  renderList()
+  if (eventId != null) {
+    const target = events.find((e) => e.id === eventId)
+    if (target) {
+      renderDetail(target)
+    } else {
+      renderList()
+    }
+  } else {
+    renderList()
+  }
 }
