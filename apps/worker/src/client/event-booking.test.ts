@@ -78,7 +78,7 @@ describe('renderEventDetail', () => {
     expect(html).toContain('free-join-btn')
     expect(html).not.toContain('join-name')
     expect(html).not.toContain('join-email')
-    expect(html).not.toContain('checkout-btn')
+    expect(html).not.toContain('id="checkout-btn"')
   })
 
   it('無料イベントは「申し込む（無料）」ボタンが表示される', () => {

@@ -64,7 +64,7 @@ export function buildEventDetailHtml(event: EventPublic): string {
     ? `<button id="checkout-btn" class="checkout-btn" ${full ? 'disabled' : ''}>
         ${full ? '満席' : '申込・決済へ進む 💳'}
        </button>`
-    : `<button id="free-join-btn" class="join-btn" ${full ? 'disabled' : ''}>
+    : `<button id="free-join-btn" class="checkout-btn" ${full ? 'disabled' : ''}>
         ${full ? '満席' : '申し込む（無料）'}
        </button>`
   return `
