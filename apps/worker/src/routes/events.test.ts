@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { Hono } from 'hono'
 
 const mockCheckoutSessionCreate = vi.hoisted(() => vi.fn())
-const mockPushTextMessage = vi.hoisted(() => vi.fn().mockResolvedValue({}))
+const mockPushMessage = vi.hoisted(() => vi.fn().mockResolvedValue({}))
 
 vi.mock('stripe', () => {
   const MockStripe: any = vi.fn().mockImplementation(() => ({
@@ -14,7 +14,7 @@ vi.mock('stripe', () => {
 
 vi.mock('@line-crm/line-sdk', () => ({
   LineClient: vi.fn().mockImplementation(() => ({
-    pushTextMessage: mockPushTextMessage,
+    pushMessage: mockPushMessage,
   })),
 }))
 
@@ -262,14 +262,16 @@ describe('POST /api/events/:id/join', () => {
     const event = { ...EVENT1, participant_count: 2 }
     vi.mocked(eventsService.getEventById).mockResolvedValue(event)
     vi.mocked(eventsService.createEventBooking).mockResolvedValue(BOOKING1)
-    mockPushTextMessage.mockResolvedValue({})
+    mockPushMessage.mockResolvedValue({})
     const res = await app.request('/api/events/1/join', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ lineUserId: 'U123' }),
     }, { DB: mockDb, LINE_CHANNEL_ACCESS_TOKEN: 'test-token' })
     expect(res.status).toBe(201)
-    expect(mockPushTextMessage).toHaveBeenCalledWith('U123', expect.stringContaining('お申込みを受け付けました'))
+    expect(mockPushMessage).toHaveBeenCalledWith('U123', expect.arrayContaining([
+      expect.objectContaining({ type: 'flex' }),
+    ]))
   })
 
   it('定員超過は409を返す', async () => {

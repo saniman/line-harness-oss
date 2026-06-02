@@ -185,11 +185,44 @@ events.post('/api/events/:id/join', async (c) => {
       try {
         const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
         const d = new Date(new Date(event.start_at).getTime() + 9 * 60 * 60 * 1000);
-        const dateStr = `${d.getUTCMonth() + 1}/${d.getUTCDate()} ${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`;
-        await lineClient.pushTextMessage(
-          body.lineUserId,
-          `「${event.title}」のお申込みを受け付けました！\n\n📅 ${dateStr}\n\n当日お会いできることを楽しみにしています。`,
-        );
+        const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+        const dd = String(d.getUTCDate()).padStart(2, '0');
+        const hh = String(d.getUTCHours()).padStart(2, '0');
+        const min = String(d.getUTCMinutes()).padStart(2, '0');
+        const weekdays = ['日', '月', '火', '水', '木', '金', '土'];
+        const dateStr = `${mm}/${dd}(${weekdays[d.getUTCDay()]}) ${hh}:${min}`;
+        await lineClient.pushMessage(body.lineUserId, [{
+          type: 'flex',
+          altText: `✅ 「${event.title}」のお申込みが完了しました`,
+          contents: {
+            type: 'bubble',
+            header: {
+              type: 'box', layout: 'vertical', paddingAll: '16px',
+              backgroundColor: '#06C755',
+              contents: [{ type: 'text', text: '✅ お申込みが完了しました', color: '#ffffff', weight: 'bold', size: 'md' }],
+            },
+            body: {
+              type: 'box', layout: 'vertical', paddingAll: '16px', spacing: 'sm',
+              contents: [
+                { type: 'text', text: event.title, weight: 'bold', size: 'md', wrap: true },
+                { type: 'text', text: `日時：${dateStr}`, size: 'sm', color: '#666666', wrap: true },
+              ],
+            },
+            footer: {
+              type: 'box', layout: 'vertical', paddingAll: '12px',
+              contents: [{
+                type: 'button',
+                action: {
+                  type: 'postback',
+                  label: 'キャンセルはこちら',
+                  data: `event_cancel:${booking.id}`,
+                  displayText: 'キャンセルを申請する',
+                },
+                style: 'secondary', height: 'sm',
+              }],
+            },
+          } as never,
+        }]);
       } catch {
         // ベストエフォート
       }

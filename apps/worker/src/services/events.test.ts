@@ -327,6 +327,16 @@ describe('cancelEventBooking', () => {
     expect(result.error).toContain('見つかりません')
   })
 
+  it('booking.friend_id=nullの場合はオーナーチェックをスキップしてキャンセルする', async () => {
+    // friend_id が null の予約（checkout-session時にlookup失敗等）でも
+    // キャンセルできる必要がある（cancelBookingと同じパターン）
+    const db = makeDb(makeStmt(BOOKING1), makeStmt(null))
+    const stripe = makeStripe()
+    const result = await cancelEventBooking(db, 1, 'U_any_friend', stripe)
+    expect(result.success).toBe(true)
+    expect(result.refunded).toBe(false)
+  })
+
   it('payment_status=unpaid の場合は返金なしでキャンセルする', async () => {
     const db = makeDb(makeStmt(BOOKING1), makeStmt(null))
     const stripe = makeStripe()

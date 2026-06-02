@@ -169,7 +169,7 @@ export async function cancelEventBooking(
   const booking = await getEventBookingById(db, bookingId)
   if (!booking) return { success: false, refunded: false, error: '予約が見つかりませんでした。' }
 
-  if (friendId !== null && booking.friend_id !== friendId) {
+  if (booking.friend_id !== null && booking.friend_id !== friendId) {
     return { success: false, refunded: false, error: '予約が見つかりませんでした。' }
   }
 
