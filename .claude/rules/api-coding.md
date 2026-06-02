@@ -96,18 +96,28 @@ expect(mockPushMessage).toHaveBeenCalledWith('U123', expect.arrayContaining([...
   ```
   Checkout Session の metadata には含まれないため `confirmEventBooking` に引数として渡す
 
-## Stripe インスタンスをサービス関数に渡す場合の型設計
+## 外部SDKクライアントをサービス関数に渡す場合の型設計
 
-サービス関数（`services/*.ts`）が Stripe を引数に取るとき、型を `Stripe`（クラス）にしてはいけない。
-**理由が2つある**：
+**この問題は Stripe に限らず、SendGrid・Twilio・Google API クライアントなど
+クラスベースの外部 SDK を `services/*.ts` に注入する際に必ず発生する。**
 
-1. `Stripe` クラスは多数のプロパティを持つため、テストのモックオブジェクトが型を満たせない
-2. Stripe の返り値の一部は `string | null` だが、ナローな型（`string` のみ）で定義すると実インスタンスが代入不可になる
+### 原則：SDK クラス型ではなくミニマルな構造的インターフェースを定義する
 
-**必ずミニマルな構造的インターフェースを定義してエクスポートする：**
+サービス関数（`services/*.ts`）が外部 SDK クライアントを引数に取るとき、
+**SDK のクラス型をそのまま引数型にしてはいけない。**
+
+理由：
+1. SDK クラスは使わないプロパティを大量に持つため、テストのモックオブジェクトが型を満たせない
+2. SDK の返り値には `string | null` など nullable な型が含まれることが多く、
+   ad-hoc なインライン型で `string`（null 非許容）と書くと実インスタンスが代入不可になる
+
+**解決策：そのサービス関数が実際に使うメソッドだけを宣言したインターフェースを
+services/ ファイル内で定義してエクスポートする。**
+
+TypeScript の構造的部分型により、実インスタンスもモックもどちらも代入可能になる。
 
 ```typescript
-// ✅ 正: services/events.ts に定義する
+// ✅ 正: services/events.ts — 使うメソッドだけ宣言
 export interface StripeRefundClient {
   checkout: {
     sessions: {
@@ -119,19 +129,18 @@ export interface StripeRefundClient {
   }
 }
 
-// ✅ 正: 関数の引数に使う
 export async function cancelEventBooking(
   db: D1Database,
   bookingId: number,
   friendId: string | null,
-  stripe: StripeRefundClient,   // ← Stripe クラスではなくインターフェース
+  stripe: StripeRefundClient,   // ← SDK クラスではなく自前インターフェース
 ): Promise<...> { ... }
 
-// ✅ 正: routes/ 側では実 Stripe インスタンスをそのまま渡せる（構造的部分型）
+// routes/ 側: 実インスタンスをそのまま渡せる（構造的部分型で互換）
 const stripe = new Stripe(env.STRIPE_SECRET_KEY, { ... })
 await cancelEventBooking(db, id, friendId, stripe)  // OK
 
-// ✅ 正: テストでは必要プロパティだけ持つモックを渡せる
+// テスト側: 必要プロパティだけ持つオブジェクトをモックとして渡せる
 const mockStripe = {
   checkout: { sessions: { retrieve: vi.fn().mockResolvedValue({ payment_intent: 'pi_xxx' }) } },
   refunds: { create: vi.fn().mockResolvedValue({ id: 're_xxx', status: 'succeeded' }) },
@@ -139,16 +148,27 @@ const mockStripe = {
 await cancelEventBooking(db, 1, null, mockStripe)  // OK
 ```
 
-❌ **やってはいけないパターン**:
+### 他 SDK を追加するときも同じパターンを適用する
+
+| SDK | 使いそうなメソッド | インターフェース名の例 |
+|-----|--------------------|----------------------|
+| Stripe | `checkout.sessions.retrieve` / `refunds.create` | `StripeRefundClient` |
+| SendGrid | `send(msg)` | `MailSendClient` |
+| Twilio | `messages.create(params)` | `SmsClient` |
+| Google Calendar API | `events.insert` / `events.delete` | `CalendarEventsClient` |
+
+### やってはいけないパターン
 
 ```typescript
-// ❌ 引数型が Stripe クラス → テストモックが代入不可
-async function cancelEventBooking(stripe: Stripe) { ... }
+// ❌ SDK クラス型を直接使う → テストモックが代入不可（プロパティが足りない）
+async function doSomething(stripe: Stripe) { ... }
 
-// ❌ インラインの ad-hoc 型 → status: string（null 非許容）が Stripe 型と不一致
-async function cancelEventBooking(stripe: { refunds: { create(...): Promise<{ id: string; status: string }> } }) { ... }
+// ❌ ad-hoc インライン型で nullable を落とす → 実インスタンスが代入不可
+async function doSomething(stripe: {
+  refunds: { create(...): Promise<{ id: string; status: string }> }  // string | null が string になっている
+}) { ... }
 
-// ❌ import type Stripe → routes/ 側では ok だが、テストファイルで mock オブジェクトが型エラーになる
+// ❌ import type SDK をそのまま引数型に → routes/ 側は OK だがテストでモックが代入不可
 ```
 
 ## イベント価格・決済フロー設計
