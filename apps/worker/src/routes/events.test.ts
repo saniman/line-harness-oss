@@ -50,12 +50,14 @@ const BOOKING1 = {
   id: 1, event_id: 1, friend_id: null, name: '山田太郎',
   email: 'yamada@example.com', status: 'confirmed',
   payment_status: 'unpaid', stripe_session_id: null, paid_at: null, amount: null,
+  stripe_refund_id: null, refund_status: null,
   created_at: '', updated_at: '',
 }
 const PENDING_BOOKING = {
   id: 2, event_id: 1, friend_id: null, name: '', email: '',
   status: 'pending', payment_status: 'unpaid',
   stripe_session_id: null, paid_at: null, amount: null,
+  stripe_refund_id: null, refund_status: null,
   created_at: '', updated_at: '',
 }
 
