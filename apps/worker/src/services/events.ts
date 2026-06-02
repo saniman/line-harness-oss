@@ -1,4 +1,13 @@
-import type Stripe from 'stripe'
+export interface StripeRefundClient {
+  checkout: {
+    sessions: {
+      retrieve(id: string): Promise<{ payment_intent: string | { id?: string } | null }>
+    }
+  }
+  refunds: {
+    create(params: { payment_intent: string }): Promise<{ id: string; status: string | null }>
+  }
+}
 
 export interface EventRow {
   id: number
@@ -155,7 +164,7 @@ export async function cancelEventBooking(
   db: D1Database,
   bookingId: number,
   friendId: string | null,
-  stripe: Stripe,
+  stripe: StripeRefundClient,
 ): Promise<{ success: boolean; refunded: boolean; refundId?: string; error?: string }> {
   const booking = await getEventBookingById(db, bookingId)
   if (!booking) return { success: false, refunded: false, error: '予約が見つかりませんでした。' }

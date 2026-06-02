@@ -29,7 +29,7 @@ import {
 } from '../services/diagnosis.js';
 import { toJstString } from '@line-crm/db';
 import { cancelBooking } from '../services/cancellation.js';
-import { cancelEventBooking } from '../services/events.js';
+import { cancelEventBooking, type StripeRefundClient } from '../services/events.js';
 import Stripe from 'stripe';
 import type { Env } from '../index.js';
 
