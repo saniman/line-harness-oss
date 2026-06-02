@@ -12,6 +12,7 @@ import {
   createEventBooking,
   createPendingBooking,
   updateBookingStripeSessionId,
+  cancelEventBooking,
 } from '../services/events.js';
 import type { Env } from '../index.js';
 
@@ -307,6 +308,43 @@ events.post('/api/events/:id/checkout-session', async (c) => {
     return c.json({ success: true, data: { url: session.url } });
   } catch (err) {
     console.error('POST /api/events/:id/checkout-session error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// ========== LIFF: イベント予約キャンセル ==========
+
+events.post('/api/events/bookings/:id/cancel', async (c) => {
+  try {
+    const bookingId = Number(c.req.param('id'));
+    const lineUserId = c.req.header('x-line-user-id') ?? null;
+
+    // lineUserId → friendId 解決（ベストエフォート）
+    let friendId: string | null = null;
+    if (lineUserId) {
+      try {
+        const row = await c.env.DB
+          .prepare('SELECT id FROM friends WHERE line_user_id = ? LIMIT 1')
+          .bind(lineUserId)
+          .first<{ id: string }>();
+        friendId = row?.id ?? null;
+      } catch {
+        // フォールバック: friend_id なしで続行
+      }
+    }
+
+    const stripe = new Stripe(c.env.STRIPE_SECRET_KEY, {
+      apiVersion: '2026-04-22.dahlia',
+      httpClient: Stripe.createFetchHttpClient(),
+    });
+
+    const result = await cancelEventBooking(c.env.DB, bookingId, friendId, stripe);
+    if (!result.success) {
+      return c.json({ success: false, error: result.error }, 400);
+    }
+    return c.json({ success: true, data: { refunded: result.refunded } });
+  } catch (err) {
+    console.error('POST /api/events/bookings/:id/cancel error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

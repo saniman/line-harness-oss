@@ -143,12 +143,63 @@ export async function initEventBooking(options: {
   }
 
   if (payment === 'cancel') {
-    app.innerHTML = `
-      <div class="cancel-card panel">
-        <h2>お申込みをキャンセルしました。</h2>
-        <button id="back-to-list-btn">イベント一覧に戻る</button>
-      </div>
-    `
+    // URLから bookingId を取得（?bookingId=N 形式）
+    const urlParams = new URLSearchParams(window.location.search)
+    const bookingId = urlParams.get('bookingId')
+
+    // Stripe checkout abandonment（bookingId なし）は表示のみ
+    if (!bookingId) {
+      app.innerHTML = `
+        <div class="cancel-card panel">
+          <h2>お申込みをキャンセルしました。</h2>
+          <button id="back-to-list-btn">イベント一覧に戻る</button>
+        </div>
+      `
+      document.getElementById('back-to-list-btn')?.addEventListener('click', () => {
+        initEventBooking({ lineUserId, openWindow })
+      })
+      return
+    }
+
+    // 確定済み予約のキャンセル: バックエンドに実際にキャンセルを送信
+    app.innerHTML = '<p class="loading">キャンセル処理中...</p>'
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (lineUserId) headers['x-line-user-id'] = lineUserId
+      const res = await fetch(`${API_BASE}/api/events/bookings/${bookingId}/cancel`, {
+        method: 'POST',
+        headers,
+      })
+      const json = await res.json() as { success: boolean; data?: { refunded: boolean }; error?: string }
+      if (json.success) {
+        const refundMsg = json.data?.refunded
+          ? '<p>返金処理を開始しました。数営業日以内に元の支払い方法へ返金されます。</p>'
+          : ''
+        app.innerHTML = `
+          <div class="cancel-card panel">
+            <h2>✅ 予約をキャンセルしました。</h2>
+            ${refundMsg}
+            <button id="back-to-list-btn">イベント一覧に戻る</button>
+          </div>
+        `
+      } else {
+        app.innerHTML = `
+          <div class="cancel-card panel">
+            <h2>キャンセルできませんでした</h2>
+            <p>${json.error ?? 'しばらくしてから再度お試しください。'}</p>
+            <button id="back-to-list-btn">イベント一覧に戻る</button>
+          </div>
+        `
+      }
+    } catch {
+      app.innerHTML = `
+        <div class="cancel-card panel">
+          <h2>エラーが発生しました</h2>
+          <p>通信に失敗しました。しばらくしてから再度お試しください。</p>
+          <button id="back-to-list-btn">イベント一覧に戻る</button>
+        </div>
+      `
+    }
     document.getElementById('back-to-list-btn')?.addEventListener('click', () => {
       initEventBooking({ lineUserId, openWindow })
     })
