@@ -25,6 +25,40 @@ globs: "apps/worker/src/**/*.ts"
 - describe名：機能名（日本語OK）
 - it名：「〜の場合〜になる」形式で日本語で書く
 
+### D1テーブルにカラムを追加したらテスト fixture も全件更新する
+TypeScript の型インターフェースにカラムを追加した後、テスト内の定数（`BOOKING1` 等）が
+型を満たさなくなり CI が型エラーで落ちる。
+
+```typescript
+// ❌ 修正漏れ: 新カラムを追加したのに fixture が古いまま
+const BOOKING1: EventBookingRow = {
+  id: 1, ..., stripe_session_id: null, paid_at: null, amount: null,
+  // stripe_refund_id と refund_status が抜けている → TS2741
+}
+
+// ✅ 正: 新カラムを null で追加する
+const BOOKING1: EventBookingRow = {
+  id: 1, ..., stripe_session_id: null, paid_at: null, amount: null,
+  stripe_refund_id: null, refund_status: null,
+}
+```
+
+対処：`grep -r "EventBookingRow\|BOOKING1\|PENDING_BOOKING" src/` で使用箇所を全列挙し、
+`services/events.test.ts` / `routes/events.test.ts` / `routes/stripe.test.ts` を一括確認する。
+
+### LINE SDK メソッドを変えたらルートテストのモックも更新する
+`pushTextMessage` → `pushMessage`（または逆方向）の変更でルートテストが落ちる。
+
+```typescript
+// ❌ 修正漏れ: routes/events.test.ts が古いモック名を参照したまま
+vi.mock('@line-crm/line-sdk', () => ({ LineClient: vi.fn(() => ({ pushTextMessage: mockFn })) }))
+expect(mockPushTextMessage).toHaveBeenCalled() // mockPushTextMessage が呼ばれないで素通り
+
+// ✅ 正: ルート実装に合わせてモック名を揃える
+vi.mock('@line-crm/line-sdk', () => ({ LineClient: vi.fn(() => ({ pushMessage: mockPushMessage })) }))
+expect(mockPushMessage).toHaveBeenCalledWith('U123', expect.arrayContaining([...]))
+```
+
 ### beforeEach/afterEachの返り値に注意
 - vi.useFakeTimers()などをアロー関数で直接returnするとTypeScriptの型エラーになる
 
@@ -61,6 +95,61 @@ globs: "apps/worker/src/**/*.ts"
   session.customer_details?.email ?? null
   ```
   Checkout Session の metadata には含まれないため `confirmEventBooking` に引数として渡す
+
+## Stripe インスタンスをサービス関数に渡す場合の型設計
+
+サービス関数（`services/*.ts`）が Stripe を引数に取るとき、型を `Stripe`（クラス）にしてはいけない。
+**理由が2つある**：
+
+1. `Stripe` クラスは多数のプロパティを持つため、テストのモックオブジェクトが型を満たせない
+2. Stripe の返り値の一部は `string | null` だが、ナローな型（`string` のみ）で定義すると実インスタンスが代入不可になる
+
+**必ずミニマルな構造的インターフェースを定義してエクスポートする：**
+
+```typescript
+// ✅ 正: services/events.ts に定義する
+export interface StripeRefundClient {
+  checkout: {
+    sessions: {
+      retrieve(id: string): Promise<{ payment_intent: string | { id?: string } | null }>
+    }
+  }
+  refunds: {
+    create(params: { payment_intent: string }): Promise<{ id: string; status: string | null }>
+  }
+}
+
+// ✅ 正: 関数の引数に使う
+export async function cancelEventBooking(
+  db: D1Database,
+  bookingId: number,
+  friendId: string | null,
+  stripe: StripeRefundClient,   // ← Stripe クラスではなくインターフェース
+): Promise<...> { ... }
+
+// ✅ 正: routes/ 側では実 Stripe インスタンスをそのまま渡せる（構造的部分型）
+const stripe = new Stripe(env.STRIPE_SECRET_KEY, { ... })
+await cancelEventBooking(db, id, friendId, stripe)  // OK
+
+// ✅ 正: テストでは必要プロパティだけ持つモックを渡せる
+const mockStripe = {
+  checkout: { sessions: { retrieve: vi.fn().mockResolvedValue({ payment_intent: 'pi_xxx' }) } },
+  refunds: { create: vi.fn().mockResolvedValue({ id: 're_xxx', status: 'succeeded' }) },
+}
+await cancelEventBooking(db, 1, null, mockStripe)  // OK
+```
+
+❌ **やってはいけないパターン**:
+
+```typescript
+// ❌ 引数型が Stripe クラス → テストモックが代入不可
+async function cancelEventBooking(stripe: Stripe) { ... }
+
+// ❌ インラインの ad-hoc 型 → status: string（null 非許容）が Stripe 型と不一致
+async function cancelEventBooking(stripe: { refunds: { create(...): Promise<{ id: string; status: string }> } }) { ... }
+
+// ❌ import type Stripe → routes/ 側では ok だが、テストファイルで mock オブジェクトが型エラーになる
+```
 
 ## イベント価格・決済フロー設計
 
