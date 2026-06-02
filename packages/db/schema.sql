@@ -662,6 +662,8 @@ CREATE TABLE IF NOT EXISTS event_bookings (
   payment_status TEXT NOT NULL DEFAULT 'unpaid',
   paid_at DATETIME,
   amount INTEGER,
+  stripe_refund_id TEXT,
+  refund_status TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

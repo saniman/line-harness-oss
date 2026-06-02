@@ -26,6 +26,8 @@ export interface EventBookingRow {
   stripe_session_id: string | null
   paid_at: string | null
   amount: number | null
+  stripe_refund_id: string | null
+  refund_status: string | null
   created_at: string
   updated_at: string
 }
@@ -145,6 +147,52 @@ export async function getEventBookingById(db: D1Database, id: number): Promise<E
   const row = await db.prepare('SELECT * FROM event_bookings WHERE id = ?')
     .bind(id).first<EventBookingRow>()
   return row ?? null
+}
+
+export async function cancelEventBooking(
+  db: D1Database,
+  bookingId: number,
+  friendId: string | null,
+  stripe: { checkout: { sessions: { retrieve: (id: string) => Promise<{ payment_intent: string | { id: string } | null }> } }; refunds: { create: (params: { payment_intent: string }) => Promise<{ id: string; status: string }> } },
+): Promise<{ success: boolean; refunded: boolean; refundId?: string; error?: string }> {
+  const booking = await getEventBookingById(db, bookingId)
+  if (!booking) return { success: false, refunded: false, error: '予約が見つかりませんでした。' }
+
+  if (friendId !== null && booking.friend_id !== friendId) {
+    return { success: false, refunded: false, error: '予約が見つかりませんでした。' }
+  }
+
+  if (booking.status === 'cancelled') {
+    return { success: false, refunded: false, error: 'すでにキャンセル済みです。' }
+  }
+
+  let refunded = false
+  let refundId: string | undefined
+
+  if (booking.payment_status === 'paid' && booking.stripe_session_id) {
+    try {
+      const session = await stripe.checkout.sessions.retrieve(booking.stripe_session_id)
+      const paymentIntentId = typeof session.payment_intent === 'string'
+        ? session.payment_intent
+        : session.payment_intent?.id
+      if (paymentIntentId) {
+        const refund = await stripe.refunds.create({ payment_intent: paymentIntentId })
+        refundId = refund.id
+        refunded = true
+        await db.prepare(
+          "UPDATE event_bookings SET stripe_refund_id = ?, refund_status = ?, updated_at = datetime('now') WHERE id = ?",
+        ).bind(refund.id, refund.status, bookingId).run()
+      }
+    } catch (err) {
+      console.error('[cancelEventBooking] Stripe refund failed:', err)
+    }
+  }
+
+  await db.prepare(
+    "UPDATE event_bookings SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?",
+  ).bind(bookingId).run()
+
+  return { success: true, refunded, refundId }
 }
 
 export async function confirmEventBooking(

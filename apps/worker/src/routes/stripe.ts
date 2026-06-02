@@ -246,7 +246,6 @@ stripe.post('/api/stripe/webhook', async (c) => {
     try {
       const eventRow = await getEventById(c.env.DB, eventId);
       const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
-      const liffBase = c.env.LIFF_BASE_URL ?? '';
 
       const flex = {
         type: 'bubble',
@@ -278,9 +277,10 @@ stripe.post('/api/stripe/webhook', async (c) => {
           contents: [{
             type: 'button',
             action: {
-              type: 'uri',
+              type: 'postback',
               label: 'キャンセルはこちら',
-              uri: `${liffBase}?page=event&payment=cancel&bookingId=${bookingId}`,
+              data: `event_cancel:${bookingId}`,
+              displayText: 'キャンセルを申請する',
             },
             style: 'secondary', height: 'sm',
           }],

@@ -29,6 +29,8 @@ import {
 } from '../services/diagnosis.js';
 import { toJstString } from '@line-crm/db';
 import { cancelBooking } from '../services/cancellation.js';
+import { cancelEventBooking } from '../services/events.js';
+import Stripe from 'stripe';
 import type { Env } from '../index.js';
 
 export function buildWelcomeMessages() {
@@ -328,6 +330,65 @@ async function handleEvent(
         }
         return;
       }
+    }
+
+    // イベント予約キャンセル確認 postback: "event_cancel:{bookingId}"
+    if (postbackData.startsWith('event_cancel:') && !postbackData.startsWith('event_cancel_confirm:')) {
+      const bookingId = postbackData.slice('event_cancel:'.length);
+      try {
+        await lineClient.replyMessage(event.replyToken, [{
+          type: 'text',
+          text: '有料イベントのご予約をキャンセルしますか？\n決済済みの場合は自動的に返金処理を行います。',
+          quickReply: {
+            items: [
+              {
+                type: 'action',
+                action: {
+                  type: 'postback',
+                  label: 'キャンセルする',
+                  data: `event_cancel_confirm:${bookingId}`,
+                  displayText: 'キャンセルする',
+                },
+              },
+              {
+                type: 'action',
+                action: { type: 'message', label: 'やめる', text: 'キャンセルをやめました' },
+              },
+            ],
+          },
+        } as unknown as Parameters<typeof lineClient.replyMessage>[1][number]]);
+      } catch (err) {
+        console.error('event_cancel prompt error:', err);
+      }
+      return;
+    }
+
+    // イベント予約キャンセル実行 postback: "event_cancel_confirm:{bookingId}"（返金含む）
+    if (postbackData.startsWith('event_cancel_confirm:') && env) {
+      const bookingId = Number(postbackData.slice('event_cancel_confirm:'.length));
+      try {
+        const stripeClient = new Stripe(env.STRIPE_SECRET_KEY, {
+          apiVersion: '2026-04-22.dahlia',
+          httpClient: Stripe.createFetchHttpClient(),
+        });
+        const result = await cancelEventBooking(env.DB, bookingId, friend.id, stripeClient);
+        if (result.success) {
+          const refundMsg = result.refunded
+            ? '\n\n返金処理を開始しました。数営業日以内に元の支払い方法へ返金されます。'
+            : '';
+          await lineClient.replyMessage(event.replyToken, [
+            buildMessage('text', `✅ 予約をキャンセルしました。${refundMsg}`),
+          ]);
+        } else {
+          await lineClient.replyMessage(event.replyToken, [
+            buildMessage('text', `キャンセルできませんでした。\n${result.error ?? 'しばらくしてから再度お試しください。'}`),
+          ]);
+        }
+      } catch (err) {
+        console.error('event_cancel_confirm error:', err);
+        await lineClient.replyMessage(event.replyToken, [buildMessage('text', 'キャンセル処理中にエラーが発生しました。')]);
+      }
+      return;
     }
 
     // キャンセル確認 postback: "cancel:{bookingId}" → 確認メッセージを返す

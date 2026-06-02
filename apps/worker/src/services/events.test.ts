@@ -28,6 +28,8 @@ interface EventBookingRow {
   stripe_session_id: string | null
   paid_at: string | null
   amount: number | null
+  stripe_refund_id: string | null
+  refund_status: string | null
   created_at: string
   updated_at: string
 }
@@ -59,6 +61,7 @@ import {
   updateBookingStripeSessionId,
   getEventBookingById,
   confirmEventBooking,
+  cancelEventBooking,
 } from './events.js'
 
 const EVENT1: EventWithCount = {
@@ -72,6 +75,7 @@ const BOOKING1: EventBookingRow = {
   id: 1, event_id: 1, friend_id: null, name: '山田太郎',
   email: 'yamada@example.com', status: 'confirmed',
   payment_status: 'unpaid', stripe_session_id: null, paid_at: null, amount: null,
+  stripe_refund_id: null, refund_status: null,
   created_at: '', updated_at: '',
 }
 
@@ -276,5 +280,87 @@ describe('confirmEventBooking', () => {
     const db = makeDb(makeStmt(null))
     await confirmEventBooking(db, 1, 3000)
     expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining("status = 'confirmed'"))
+  })
+})
+
+function makeStripe(overrides?: { sessionPaymentIntent?: string | null; refundId?: string; refundStatus?: string; throwRefund?: boolean }) {
+  return {
+    checkout: {
+      sessions: {
+        retrieve: vi.fn().mockResolvedValue({
+          payment_intent: overrides?.sessionPaymentIntent ?? 'pi_test_xxx',
+        }),
+      },
+    },
+    refunds: {
+      create: overrides?.throwRefund
+        ? vi.fn().mockRejectedValue(new Error('Stripe error'))
+        : vi.fn().mockResolvedValue({ id: overrides?.refundId ?? 're_test_xxx', status: overrides?.refundStatus ?? 'succeeded' }),
+    },
+  }
+}
+
+describe('cancelEventBooking', () => {
+  it('存在しないbookingIDの場合はエラーを返す', async () => {
+    const db = makeDb(makeStmt(null))
+    const stripe = makeStripe()
+    const result = await cancelEventBooking(db, 999, null, stripe)
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('見つかりません')
+  })
+
+  it('すでにcancelledの場合は二重キャンセルエラーを返す', async () => {
+    const cancelled: EventBookingRow = { ...BOOKING1, status: 'cancelled' }
+    const db = makeDb(makeStmt(cancelled))
+    const stripe = makeStripe()
+    const result = await cancelEventBooking(db, 1, null, stripe)
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('キャンセル済み')
+  })
+
+  it('friendId が一致しない場合はエラーを返す', async () => {
+    const booking: EventBookingRow = { ...BOOKING1, friend_id: 'U_owner' }
+    const db = makeDb(makeStmt(booking))
+    const stripe = makeStripe()
+    const result = await cancelEventBooking(db, 1, 'U_other', stripe)
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('見つかりません')
+  })
+
+  it('payment_status=unpaid の場合は返金なしでキャンセルする', async () => {
+    const db = makeDb(makeStmt(BOOKING1), makeStmt(null))
+    const stripe = makeStripe()
+    const result = await cancelEventBooking(db, 1, null, stripe)
+    expect(result.success).toBe(true)
+    expect(result.refunded).toBe(false)
+    expect(stripe.refunds.create).not.toHaveBeenCalled()
+    expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining("status = 'cancelled'"))
+  })
+
+  it('payment_status=paid の場合はStripe返金を実行してcancelledにする', async () => {
+    const paidBooking: EventBookingRow = {
+      ...BOOKING1, payment_status: 'paid', stripe_session_id: 'cs_test_xxx',
+    }
+    const db = makeDb(makeStmt(paidBooking), makeStmt(null), makeStmt(null))
+    const stripe = makeStripe()
+    const result = await cancelEventBooking(db, 1, null, stripe)
+    expect(result.success).toBe(true)
+    expect(result.refunded).toBe(true)
+    expect(result.refundId).toBe('re_test_xxx')
+    expect(stripe.refunds.create).toHaveBeenCalledWith({ payment_intent: 'pi_test_xxx' })
+    expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining('stripe_refund_id'))
+    expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining("status = 'cancelled'"))
+  })
+
+  it('Stripe返金が失敗してもキャンセル自体は成功する', async () => {
+    const paidBooking: EventBookingRow = {
+      ...BOOKING1, payment_status: 'paid', stripe_session_id: 'cs_test_xxx',
+    }
+    const db = makeDb(makeStmt(paidBooking), makeStmt(null))
+    const stripe = makeStripe({ throwRefund: true })
+    const result = await cancelEventBooking(db, 1, null, stripe)
+    expect(result.success).toBe(true)
+    expect(result.refunded).toBe(false)
+    expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining("status = 'cancelled'"))
   })
 })
