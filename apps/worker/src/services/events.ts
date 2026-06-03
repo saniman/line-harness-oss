@@ -165,7 +165,7 @@ export async function cancelEventBooking(
   bookingId: number,
   friendId: string | null,
   stripe: StripeRefundClient,
-): Promise<{ success: boolean; refunded: boolean; refundId?: string; error?: string }> {
+): Promise<{ success: boolean; refunded: boolean; refundId?: string; eventId?: number; error?: string }> {
   const booking = await getEventBookingById(db, bookingId)
   if (!booking) return { success: false, refunded: false, error: '予約が見つかりませんでした。' }
 
@@ -203,7 +203,7 @@ export async function cancelEventBooking(
     "UPDATE event_bookings SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?",
   ).bind(bookingId).run()
 
-  return { success: true, refunded, refundId }
+  return { success: true, refunded, refundId, eventId: booking.event_id }
 }
 
 export async function confirmEventBooking(

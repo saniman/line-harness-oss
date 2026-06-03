@@ -342,6 +342,49 @@ events.post('/api/events/bookings/:id/cancel', async (c) => {
     if (!result.success) {
       return c.json({ success: false, error: result.error }, 400);
     }
+
+    // LINE push通知（ベストエフォート）
+    if (lineUserId && c.env.LINE_CHANNEL_ACCESS_TOKEN && result.eventId) {
+      try {
+        const event = await getEventById(c.env.DB, result.eventId);
+        const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
+        const d = new Date(new Date(event?.start_at ?? '').getTime() + 9 * 60 * 60 * 1000);
+        const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+        const dd = String(d.getUTCDate()).padStart(2, '0');
+        const hh = String(d.getUTCHours()).padStart(2, '0');
+        const min = String(d.getUTCMinutes()).padStart(2, '0');
+        const weekdays = ['日', '月', '火', '水', '木', '金', '土'];
+        const dateStr = event?.start_at
+          ? `${mm}/${dd}(${weekdays[d.getUTCDay()]}) ${hh}:${min}`
+          : '';
+        const bodyContents: object[] = [
+          { type: 'text', text: event?.title ?? 'イベント', weight: 'bold', size: 'md', wrap: true },
+          { type: 'text', text: `日時：${dateStr}`, size: 'sm', color: '#666666', wrap: true },
+        ];
+        if (result.refunded) {
+          bodyContents.push({ type: 'text', text: '返金処理を開始しました。カードの種類や銀行によって、口座への反映まで 5〜10 営業日ほどかかる場合があります。', size: 'sm', color: '#999999', wrap: true });
+        }
+        await lineClient.pushMessage(lineUserId, [{
+          type: 'flex',
+          altText: `キャンセルが完了しました：${event?.title ?? 'イベント'}`,
+          contents: {
+            type: 'bubble',
+            header: {
+              type: 'box', layout: 'vertical', paddingAll: '16px',
+              backgroundColor: '#999999',
+              contents: [{ type: 'text', text: 'キャンセルが完了しました', color: '#ffffff', weight: 'bold', size: 'md' }],
+            },
+            body: {
+              type: 'box', layout: 'vertical', paddingAll: '16px', spacing: 'sm',
+              contents: bodyContents,
+            },
+          } as never,
+        }]);
+      } catch {
+        // ベストエフォート
+      }
+    }
+
     return c.json({ success: true, data: { refunded: result.refunded } });
   } catch (err) {
     console.error('POST /api/events/bookings/:id/cancel error:', err);

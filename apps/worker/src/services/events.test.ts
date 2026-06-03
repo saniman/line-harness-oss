@@ -335,6 +335,7 @@ describe('cancelEventBooking', () => {
     const result = await cancelEventBooking(db, 1, 'U_any_friend', stripe)
     expect(result.success).toBe(true)
     expect(result.refunded).toBe(false)
+    expect(result.eventId).toBe(BOOKING1.event_id)
   })
 
   it('payment_status=unpaid の場合は返金なしでキャンセルする', async () => {
@@ -343,6 +344,7 @@ describe('cancelEventBooking', () => {
     const result = await cancelEventBooking(db, 1, null, stripe)
     expect(result.success).toBe(true)
     expect(result.refunded).toBe(false)
+    expect(result.eventId).toBe(BOOKING1.event_id)
     expect(stripe.refunds.create).not.toHaveBeenCalled()
     expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining("status = 'cancelled'"))
   })

@@ -32,6 +32,7 @@ vi.mock('../services/events.js', () => ({
   updateBookingStripeSessionId: vi.fn(),
   getEventBookingById: vi.fn(),
   confirmEventBooking: vi.fn(),
+  cancelEventBooking: vi.fn(),
 }))
 
 import * as eventsService from '../services/events.js'
@@ -357,5 +358,67 @@ describe('POST /api/events/:id/checkout-session', () => {
       headers: { 'x-line-user-id': 'U123' },
     }, MOCK_ENV)
     expect(res.status).toBe(500)
+  })
+})
+
+describe('POST /api/events/bookings/:id/cancel', () => {
+  const CANCEL_ENV = { ...MOCK_ENV, LINE_CHANNEL_ACCESS_TOKEN: 'test-token' }
+
+  it('正常系：キャンセル成功で200と refunded: false を返す', async () => {
+    vi.mocked(eventsService.cancelEventBooking).mockResolvedValue({ success: true, refunded: false, eventId: 1 })
+    vi.mocked(eventsService.getEventById).mockResolvedValue(EVENT1)
+    const res = await app.request('/api/events/bookings/1/cancel', {
+      method: 'POST',
+      headers: { 'x-line-user-id': 'U123' },
+    }, CANCEL_ENV)
+    expect(res.status).toBe(200)
+    const json = await res.json() as { success: boolean; data: { refunded: boolean } }
+    expect(json.success).toBe(true)
+    expect(json.data.refunded).toBe(false)
+  })
+
+  it('LINE通知：キャンセル成功時にpushMessageが呼ばれる', async () => {
+    vi.mocked(eventsService.cancelEventBooking).mockResolvedValue({ success: true, refunded: false, eventId: 1 })
+    vi.mocked(eventsService.getEventById).mockResolvedValue(EVENT1)
+    await app.request('/api/events/bookings/1/cancel', {
+      method: 'POST',
+      headers: { 'x-line-user-id': 'U123' },
+    }, CANCEL_ENV)
+    expect(mockPushMessage).toHaveBeenCalledWith('U123', expect.arrayContaining([
+      expect.objectContaining({ type: 'flex' }),
+    ]))
+  })
+
+  it('LINE通知：返金ありの場合は返金文言が含まれる', async () => {
+    vi.mocked(eventsService.cancelEventBooking).mockResolvedValue({ success: true, refunded: true, refundId: 're_xxx', eventId: 1 })
+    vi.mocked(eventsService.getEventById).mockResolvedValue(EVENT1)
+    await app.request('/api/events/bookings/1/cancel', {
+      method: 'POST',
+      headers: { 'x-line-user-id': 'U123' },
+    }, CANCEL_ENV)
+    const call = mockPushMessage.mock.calls[0]
+    const flexMsg = call[1][0]
+    const bodyText = JSON.stringify(flexMsg.contents.body)
+    expect(bodyText).toContain('返金処理を開始しました')
+    expect(bodyText).toContain('5〜10 営業日')
+  })
+
+  it('LINE_CHANNEL_ACCESS_TOKEN がなければ pushMessage は呼ばれない', async () => {
+    vi.mocked(eventsService.cancelEventBooking).mockResolvedValue({ success: true, refunded: false, eventId: 1 })
+    await app.request('/api/events/bookings/1/cancel', {
+      method: 'POST',
+      headers: { 'x-line-user-id': 'U123' },
+    }, MOCK_ENV)
+    expect(mockPushMessage).not.toHaveBeenCalled()
+  })
+
+  it('異常系：cancelEventBooking がエラーを返すと400', async () => {
+    vi.mocked(eventsService.cancelEventBooking).mockResolvedValue({ success: false, refunded: false, error: 'すでにキャンセル済みです。' })
+    const res = await app.request('/api/events/bookings/1/cancel', {
+      method: 'POST',
+    }, MOCK_ENV)
+    expect(res.status).toBe(400)
+    const json = await res.json() as { success: boolean; error: string }
+    expect(json.error).toContain('キャンセル済み')
   })
 })
