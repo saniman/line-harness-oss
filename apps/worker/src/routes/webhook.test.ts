@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildWelcomeMessages } from './webhook.js';
+import { buildWelcomeMessages, MAX_WEBHOOK_BODY_SIZE } from './webhook.js';
 
 describe('followイベント', () => {
   it('ウェルカムメッセージが2通送信される', () => {
@@ -12,5 +12,11 @@ describe('followイベント', () => {
     const second = messages[1] as { quickReply: { items: unknown[] } };
     expect(second.quickReply).toBeDefined();
     expect(second.quickReply.items).toHaveLength(2);
+  });
+});
+
+describe('ボディサイズ制限', () => {
+  it('MAX_WEBHOOK_BODY_SIZE が 1 MiB である', () => {
+    expect(MAX_WEBHOOK_BODY_SIZE).toBe(1024 * 1024);
   });
 });
