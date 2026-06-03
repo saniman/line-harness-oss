@@ -190,6 +190,21 @@ with open('/Users/akihisa/line-harness-oss/.claude/upstream-sync-state.json', 'w
 
 ---
 
+## fork 固有の取り込み禁止ファイル
+
+以下は upstream との設計乖離が大きく、取り込むと fork の機能が壊れる。
+「安全」に分類せず、常に「手動対応必要」と明示すること。
+
+| ファイル | 理由 |
+|---------|------|
+| `apps/worker/src/client/event-booking/main.tsx` | upstream が React 化した版。fork は Stripe/LIFF 連携の vanilla TS 版（`event-booking.ts`）を維持しており競合する |
+| `apps/worker/src/client/main.ts`（event-booking セクション） | upstream は `initEventBooking` を React 動的 import に置き換えているが、fork は vanilla TS 版を維持中。salon-booking 部分・ig パラメータ部分のみ安全に取り込める（2026-06-03 実施済み） |
+| `apps/worker/src/routes/events.ts` | upstream の冪等性制御と fork の Stripe フローが同一関数に混在している |
+| `apps/worker/src/middleware/auth.ts` | スキップリストを両側から統合する必要がある |
+| `packages/db/schema.sql` | マイグレーション適用後に手動で更新する |
+
+---
+
 ## 禁止事項
 
 - upstream の変更を自動でマージしない

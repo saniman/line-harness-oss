@@ -37,3 +37,18 @@ globs: "apps/worker/src/client/**/*.ts"
 - slots と book エンドポイントは認証不要（Bearer トークン不要）
 - エラー時はユーザーに分かりやすいメッセージを表示する
 - booking リクエストには lineUserId（liff.getProfile().userId）を含める
+
+## `declare const liff` の型宣言に openWindow を維持する
+
+`main.ts` の `declare const liff` には `openWindow` を必ず含めること。
+
+```typescript
+declare const liff: {
+  // ... 他のメソッド ...
+  openWindow(params: { url: string; external?: boolean }): void;
+};
+```
+
+upstream は event-booking を React 化したため `openWindow` の宣言を削除しているが、
+fork の vanilla TS 版 `event-booking.ts` が `liff.openWindow()` を使っている。
+upstream の main.ts を cherry-pick する際に `openWindow` 宣言を誤って消さないこと。
