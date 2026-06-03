@@ -246,10 +246,15 @@ git show upstream/main:packages/db/migrations/046_xxx.sql > packages/db/migratio
 # 先頭に移植コメントを追加
 # -- Ported from upstream Shudesu/line-harness-oss migration 046_xxx.sql
 
-# 適用
-npx wrangler@latest d1 execute line-harness --remote \
-  --file=packages/db/migrations/055_xxx.sql
+# 未適用の確認（migrations_dir が設定済みのため list で確認できる）
+npx wrangler@latest d1 migrations list line-harness --remote
+
+# 適用（migrations_dir による自動トラッキング）
+npx wrangler@latest d1 migrations apply line-harness --remote
 ```
+
+> **注意**: `wrangler 4.0.0` には `d1 execute --file` で相対パスを扱うバグがある。
+> 必ず `npx wrangler@latest`（4.97.0+）を使うこと。
 
 ### 9.4 fork 固有の機能を追加する手順
 
@@ -276,6 +281,89 @@ fork の `events` テーブルは upstream と根本的に異なる（INTEGER vs
 この乖離は upstream に Stripe 決済フローを PR することで長期的に解消を目指す。
 詳細は `packages/db/MIGRATIONS.md` を参照。
 
+### 9.7 wrangler migrations_dir による自動トラッキング（2026-06-03 有効化）
+
+`apps/worker/wrangler.toml` の `[[d1_databases]]` に `migrations_dir` を設定済み。
+
+```toml
+[[d1_databases]]
+binding = "DB"
+database_name = "line-harness"
+database_id = "..."
+migrations_dir = "../../packages/db/migrations"
+```
+
+これにより D1 の `d1_migrations` テーブルが適用済みファイルを自動トラッキングする。
+**手動で `d1 execute --file=...` を繰り返す必要はなくなった。**
+
+```bash
+# 未適用マイグレーションの確認
+npx wrangler@latest d1 migrations list line-harness --remote
+
+# 未適用をすべて適用
+npx wrangler@latest d1 migrations apply line-harness --remote
+```
+
+#### 新規インストール時のブートストラップ手順
+
+新規 D1 を `schema.sql` で構築した後、`d1_migrations` テーブルに適用済みファイルをシードする。
+
+```bash
+# schema.sql で DB 構築
+npx wrangler@latest d1 execute <DB_NAME> --remote \
+  --file=packages/db/schema.sql
+
+# d1_migrations をシード（migrations_bootstrap.sql を適宜更新してから）
+npx wrangler@latest d1 execute <DB_NAME> --remote \
+  --file=packages/db/migrations_bootstrap.sql
+
+# 残りの pending を適用
+npx wrangler@latest d1 migrations apply <DB_NAME> --remote
+```
+
+`migrations_bootstrap.sql` は `packages/db/` にある。新しいマイグレーションを追加した際は
+bootstrap の INSERT リストにも追加を忘れずに更新すること。
+
+### 9.8 schema.sql 構築環境の欠落補完パターン（gap-filler）
+
+#### 問題
+
+`schema.sql` は一部の upstream マイグレーションをアドホックに取り込んで構築されているため、
+`d1_migrations` が「適用済み」とマークされていても実際には適用されていないテーブル・カラムが存在しうる。
+
+**2026-06-03 の事例：**
+migrations_dir 導入後に 034-054 を `migrations apply` しようとしたところ、
+`044_entry_routes_pool_and_push.sql` が `no such table: entry_routes` で失敗した。
+調査の結果、003, 006, 007, 016 等（entry_routes / tracked_links / forms / traffic_pools を作成する
+マイグレーション）の内容が `schema.sql` に含まれておらず、bootstrap で誤って「適用済み」と
+マークされていたことが判明。
+
+#### 診断方法
+
+```bash
+# 実際のテーブル一覧
+npx wrangler@latest d1 execute <DB_NAME> --remote \
+  --command="SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+
+# 不足テーブルの例（以下が存在しない場合は gap-filler が必要）
+# entry_routes, ref_tracking, tracked_links, link_clicks,
+# forms, form_submissions, traffic_pools, form_opens
+```
+
+#### 解消方法
+
+欠落分を補完する SQL ファイルを作成し、適用後に `d1_migrations` に登録する。
+ファイル名は後続の failing migration より **アルファベット順で前になる番号** にすること。
+
+```
+# 例: 044 が失敗する場合 → 043_z_schema_gaps.sql（043 < 043_z < 044 の順に並ぶ）
+packages/db/migrations/043_z_schema_gaps.sql
+```
+
+- テーブル作成は必ず `CREATE TABLE IF NOT EXISTS` を使う
+- 既に schema.sql で持っているカラムへの `ALTER TABLE` は除外する（重複エラー防止）
+- 作成済みの gap-filler: `043_z_schema_gaps.sql`（003〜024 の不足分を補完済み、2026-06-03 適用）
+
 ---
 
 ## 10. AI エージェント向けルール
@@ -290,7 +378,7 @@ MCP や Claude Code で操作する際の追加ルール。
 
 ---
 
-## 10. チェックリスト
+## 11. チェックリスト
 
 ### マイグレーション追加時
 
@@ -298,6 +386,9 @@ MCP や Claude Code で操作する際の追加ルール。
 - [ ] upstream 由来の移植は fork の最大番号 + 1 を使った
 - [ ] `packages/db/MIGRATIONS.md` の番号割り当て表を更新した
 - [ ] `schema.sql` を同期した
+- [ ] `migrations_bootstrap.sql` の INSERT リストに新ファイルを追加した（新規インストール用）
+- [ ] `npx wrangler@latest d1 migrations list line-harness --remote` で pending を確認した
+- [ ] `npx wrangler@latest d1 migrations apply line-harness --remote` で適用した
 
 ### Private → OSS sync 前
 
