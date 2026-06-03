@@ -34,6 +34,19 @@ Cloudflare Workers + D1 + Next.js のモノレポ構成。
 2026-06-03 に upstream の 028-033 と fork の 028-033 が別内容で衝突した。
 詳細な経緯・解消方法・設計乖離については `packages/db/MIGRATIONS.md` を参照。
 
+### マイグレーションの適用コマンド
+
+```bash
+# 未適用の確認（apps/worker から実行）
+npx wrangler@latest d1 migrations list line-harness --remote
+
+# 適用
+npx wrangler@latest d1 migrations apply line-harness --remote
+```
+
+wrangler 4.0.0 には `d1 execute --file` で相対パスを使うバグがあるため、
+`npx wrangler@latest`（4.97.0+）を使うこと。
+
 ### schema.sql との同期
 マイグレーション適用後は必ず `packages/db/schema.sql` も更新する。
 schema.sql は新規インストール用の正規ソース（マイグレーションファイルと乖離すると新規セットアップ不可）。

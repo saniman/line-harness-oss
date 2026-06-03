@@ -21,6 +21,7 @@ binding = "ASSETS"
 binding = "DB"
 database_name = "line-harness"
 database_id = "b41a1c65-a224-41bc-a99a-3284b43ea440"
+migrations_dir = "../../packages/db/migrations"
 
 # [[r2_buckets]]
 # binding = "IMAGES"

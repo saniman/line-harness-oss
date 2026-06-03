@@ -15,17 +15,32 @@ wrangler d1 execute line-harness --file=packages/db/schema.sql --remote
 
 `schema.sql` が全テーブルの定義を保持する。新規 DB はこれだけで再現できる。
 
-### 既存 DB への差分適用（マイグレーションファイル）
+### 既存 DB への差分適用（wrangler 自動トラッキング）
+
+`wrangler.toml` に `migrations_dir = "../../packages/db/migrations"` を設定済み。
+`d1_migrations` テーブルが適用済みファイルを自動トラッキングする。
 
 ```bash
-wrangler d1 execute line-harness --file=packages/db/migrations/NNN_name.sql --remote
+# 未適用マイグレーションの確認（apps/worker から実行）
+npx wrangler@latest d1 migrations list line-harness --remote
+
+# 未適用マイグレーションをすべて適用
+npx wrangler@latest d1 migrations apply line-harness --remote
 ```
 
-`migrations/` 以下のファイルは、既存 DB に対する増分変更を記述する。
-wrangler の組み込みマイグレーション管理（`d1_migrations` テーブル）は**現時点では未使用**であり、
-どのファイルが適用済みかはオペレーターが手動で管理する。
+> **注意**: wrangler 4.0.0 には `d1 execute --file` で相対パスを使うと
+> `ERR_INVALID_STATE` が発生するバグがある。`npx wrangler@latest` を使うこと。
 
-> **TODO**: `wrangler.toml` に `migrations_dir` を設定してトラッキングを自動化する（計画中）。
+#### 現在の pending マイグレーション（034-054）
+
+034-054 は upstream から移植済みだが **本番 DB には未適用**。
+適用前に各ファイルの内容を必ず確認すること（特に 035 は `broadcasts` テーブルを再作成する）。
+
+```bash
+# 安全確認してから適用する
+npx wrangler@latest d1 migrations list line-harness --remote
+npx wrangler@latest d1 migrations apply line-harness --remote
+```
 
 ---
 
