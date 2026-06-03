@@ -11,7 +11,11 @@
       "Bash(git add *)",
       "Bash(git commit *)",
       "Bash(git push)",
-      "Bash(git diff *)"
+      "Bash(git diff *)",
+      "Bash(git fetch upstream)",
+      "Bash(git log *)",
+      "Bash(git merge-base *)",
+      "Bash(git rev-parse *)"
     ],
     "deny": [
       "Bash(git push --force*)",

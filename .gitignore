@@ -11,6 +11,8 @@ dist/
 *.toml.bak
 .env.production
 .env.staging
+.claude/.env.upstream-sync
+.claude/upstream-sync-report.md
 apps/web/out/
 apps/worker/dist/
 .worktrees/
