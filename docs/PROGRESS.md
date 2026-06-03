@@ -75,6 +75,16 @@ L社/U社代替。AI（CC）ネイティブ設計。
 - [x] Webhook: customer_details（name/email）をbookingに保存するバグ修正
 - [x] 本番動作確認: 決済→DB確定（id=6）→LINE通知、全フロー成功
 
+### SP7 (キャンセル通知 & AI アーキテクチャ設計) ✅ 完了 2026-06-03
+- [x] キャンセル成功時に LINE Flex メッセージで push 通知
+- [x] 返金あり時は「返金処理を開始しました。5〜10 営業日かかる場合あり」を表示
+- [x] cancelEventBooking の戻り値に eventId を追加（余分な DB クエリ不要）
+- [x] ルートテスト 5 ケース追加（通知送信・返金文言・トークンなし・異常系）
+- [x] AI アーキテクチャ設計ドキュメント整備（docs/ai-architecture/）
+  - 7 エージェントのカタログ設計
+  - 自己改善フィードバックループの設計
+  - Phase 1〜5 の実装ロードマップ
+
 ### Round 4 (予定)
 - [ ] メール配信連携 (SendGrid/SES)
 - [ ] SMS連携
