@@ -37,7 +37,11 @@ jobs:
 
       - name: Deploy to Cloudflare Pages
         working-directory: apps/worker
-        run: pnpm exec wrangler pages deploy ../web/out --project-name=line-harness-web
+        run: |
+          COMMIT_HASH=$(git log -1 --format=%H)
+          pnpm exec wrangler pages deploy ../web/out \
+            --project-name=line-harness-web \
+            --commit-message="$COMMIT_HASH"
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: aa7b3de8b8dc8dd263572893aa4f652e
