@@ -9,9 +9,10 @@
  *   → already friend? → show completion
  *
  * Query params:
- *   ?ref=xxx     — attribution tracking (which LP/campaign)
- *   ?redirect=x  — redirect after linking (for wrapped URLs)
- *   ?page=book   — booking page (calendar slot picker)
+ *   ?ref=xxx          — attribution tracking (which LP/campaign)
+ *   ?redirect=x       — redirect after linking (for wrapped URLs)
+ *   ?page=book        — booking page (calendar slot picker, Google Calendar)
+ *   ?page=salon-book  — salon booking flow (React, dynamic-imported)
  */
 
 import { initBooking } from './booking.js';
@@ -28,6 +29,7 @@ declare const liff: {
   getFriendship(): Promise<{ friendFlag: boolean }>;
   isInClient(): boolean;
   closeWindow(): void;
+  openWindow(params: { url: string; external?: boolean }): void;
 };
 
 // Resolve LIFF ID: ?liffId= param (from endpoint URL) > env var (fallback to ①)
@@ -150,6 +152,7 @@ function showFriendAdd(profile: { displayName: string; pictureUrl?: string }) {
               ref: params.get('ref') || '',
               gate: params.get('gate') || '',
               xh: params.get('xh') || '',
+              ig: params.get('ig') || '',
             }),
           });
         } catch { /* best-effort */ }
@@ -220,6 +223,7 @@ async function linkAndAddFlow() {
     ]);
 
     // 1. UUID linking (always, regardless of friendship)
+    const linkParams = new URLSearchParams(window.location.search);
     const linkPromise = apiCall('/api/liff/link', {
       method: 'POST',
       body: JSON.stringify({
@@ -227,6 +231,7 @@ async function linkAndAddFlow() {
         displayName: profile.displayName,
         existingUuid: existingUuid,
         ref: ref,
+        ig: linkParams.get('ig') || '',
       }),
     }).then(async (res) => {
       if (res.ok) {
@@ -288,6 +293,7 @@ async function linkAndAddFlow() {
               ref: ref || '',
               gate: params.get('gate') || '',
               xh: params.get('xh') || '',
+              ig: params.get('ig') || '',
             }),
           });
         } catch { /* best-effort */ }
@@ -304,6 +310,78 @@ async function linkAndAddFlow() {
       showError(err instanceof Error ? err.message : 'エラーが発生しました');
     }
   }
+}
+
+// ─── Salon Booking (React, dynamic-imported) ─────────────
+
+async function initSalonBooking(): Promise<void> {
+  // 既存 linkAndAddFlow と同じ初期化シーケンスを踏む:
+  //   ① profile + idToken + friendFlag を並列取得
+  //   ② /api/liff/link で UUID 確定 (ref/ig 含む) — booking エンドポイントが
+  //      id_token verify で friend を引くために friends 行が必要
+  //   ③ ref があれば /api/affiliates/click で流入計測
+  //   ④ 未友達なら showFriendAdd (friend-add gate)。友達追加後に同じ URL に
+  //      戻ってくれば再度ここを通って React mount に進む
+  //   ⑤ 友達なら React チャンクを動的 import して mount
+  const [profile, idToken, friendship] = await Promise.all([
+    liff.getProfile(),
+    Promise.resolve(liff.getIDToken()),
+    liff.getFriendship(),
+  ]);
+  if (!idToken) {
+    showError('LINE 認証情報の取得に失敗しました。LINE アプリ内で再度開いてください。');
+    return;
+  }
+
+  const existingUuid = getSavedUuid();
+  const ref = getRef();
+  const ig = new URLSearchParams(window.location.search).get('ig');
+
+  // ② Silent UUID linking (fire-and-forget)
+  apiCall('/api/liff/link', {
+    method: 'POST',
+    body: JSON.stringify({
+      idToken,
+      displayName: profile.displayName,
+      existingUuid,
+      ref: ref || undefined,
+      ig: ig || undefined,
+    }),
+  })
+    .then(async (res) => {
+      if (res.ok) {
+        const data = (await res.json()) as { success: boolean; data?: { userId?: string } };
+        if (data?.data?.userId) saveUuid(data.data.userId);
+      }
+    })
+    .catch(() => { /* silent */ });
+
+  // ③ Affiliate click 計測
+  if (ref) {
+    apiCall('/api/affiliates/click', {
+      method: 'POST',
+      body: JSON.stringify({ code: ref, url: window.location.href }),
+    }).catch(() => { /* silent */ });
+  }
+
+  // ④ 未友達なら friend-add UI に流す
+  if (!friendship.friendFlag) {
+    showFriendAdd(profile);
+    return;
+  }
+
+  // ⑤ React + Tailwind チャンクを動的 import → 既存 LIFF 利用者には load されない
+  const container = document.getElementById('app');
+  if (!container) {
+    showError('mount target #app が見つかりません');
+    return;
+  }
+  const { mountSalonBooking } = await import('./salon-booking/main.js');
+  mountSalonBooking(container, {
+    liffId: LIFF_ID,
+    lineUserId: profile.userId,
+    idToken,
+  });
 }
 
 // ─── Entry Point ────────────────────────────────────────
@@ -331,6 +409,8 @@ async function main() {
     const page = getPage();
     if (page === 'book') {
       await initBooking();
+    } else if (page === 'salon-book') {
+      await initSalonBooking();
     } else if (page === 'form') {
       const params = new URLSearchParams(window.location.search);
       const formId = params.get('id');
