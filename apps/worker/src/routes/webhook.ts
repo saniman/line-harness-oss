@@ -33,7 +33,8 @@ import { cancelEventBooking, type StripeRefundClient } from '../services/events.
 import Stripe from 'stripe';
 import type { Env } from '../index.js';
 
-export function buildWelcomeMessages() {
+export function buildWelcomeMessages(liffUrl: string = '') {
+  const eventUrl = liffUrl ? `${liffUrl}?page=event` : '';
   return [
     {
       type: 'text' as const,
@@ -46,7 +47,34 @@ export function buildWelcomeMessages() {
         items: [
           { type: 'action' as const, action: { type: 'message' as const, label: '🎁 診断を受ける', text: '診断' } },
           { type: 'action' as const, action: { type: 'message' as const, label: '📅 相談を予約する', text: '無料相談予約' } },
+          { type: 'action' as const, action: { type: 'message' as const, label: '🎪 イベントを見る', text: 'イベント' } },
         ],
+      },
+    },
+    {
+      type: 'flex' as const,
+      altText: '開催中のイベント一覧',
+      contents: {
+        type: 'bubble',
+        body: {
+          type: 'box', layout: 'vertical', paddingAll: '20px',
+          contents: [
+            { type: 'text', text: '🎪 開催中のイベント', weight: 'bold', size: 'lg', color: '#1e293b' },
+            { type: 'text', text: 'WALOVERのイベント・ワークショップ一覧をチェック！\n気になるものがあればお気軽にご参加ください。', size: 'sm', color: '#64748b', wrap: true, margin: 'md' },
+          ],
+        },
+        footer: {
+          type: 'box', layout: 'vertical', paddingAll: '16px',
+          contents: [
+            {
+              type: 'button',
+              action: eventUrl
+                ? { type: 'uri', label: 'イベント一覧を見る', uri: eventUrl }
+                : { type: 'message', label: 'イベント一覧を見る', text: 'イベント' },
+              style: 'primary', color: '#06C755',
+            },
+          ],
+        },
       },
     },
   ];
@@ -247,9 +275,9 @@ async function handleEvent(
     // イベントバス発火: friend_add（replyToken は Step 0 で使用済みの可能性あり）
     await fireEvent(db, 'friend_add', { friendId: friend.id, eventData: { displayName: friend.display_name } }, lineAccessToken, lineAccountId);
 
-    // 友だち追加特典: ウェルカムメッセージ2通を送信
+    // 友だち追加特典: ウェルカムメッセージ3通を送信
     try {
-      await lineClient.pushMessage(userId, buildWelcomeMessages() as Parameters<typeof lineClient.pushMessage>[1]);
+      await lineClient.pushMessage(userId, buildWelcomeMessages(env?.LIFF_URL ?? '') as Parameters<typeof lineClient.pushMessage>[1]);
     } catch (err) {
       console.warn('[follow] Failed to send welcome push:', err);
     }
