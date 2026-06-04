@@ -63,6 +63,9 @@ export function buildEventDetailHtml(event: EventPublic): string {
   const actionHtml = isPaid
     ? `<button id="checkout-btn" class="btn-pink" ${full ? 'disabled' : ''}>
         ${full ? '満席' : '申込・決済へ進む 💳'}
+       </button>
+       <button id="cash-join-btn" ${full ? 'disabled' : ''}>
+        当日現金の方はこちら 💴
        </button>`
     : `<button id="free-join-btn" class="btn-pink" ${full ? 'disabled' : ''}>
         ${full ? '満席' : '申し込む（無料）'}
@@ -88,6 +91,24 @@ export async function joinFreeEvent(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name, lineUserId: lineUserId || undefined }),
+  })
+
+  if (!res.ok) {
+    if (res.status === 409) return { success: false, error: 'このイベントは満席です' }
+    return { success: false, error: '申し込みに失敗しました' }
+  }
+  return { success: true }
+}
+
+export async function joinCashEvent(
+  eventId: number,
+  lineUserId: string,
+  name: string,
+): Promise<{ success: boolean; error?: string }> {
+  const res = await fetch(`${API_BASE}/api/events/${eventId}/join`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, lineUserId: lineUserId || undefined, paymentMethod: 'cash' }),
   })
 
   if (!res.ok) {
@@ -265,6 +286,28 @@ export async function initEventBooking(options: {
         checkoutBtn.disabled = false
         checkoutBtn.textContent = '申込・決済へ進む 💳'
         showError(checkoutBtn, result.error || 'エラーが発生しました')
+      }
+    })
+
+    // 当日現金フロー
+    const cashBtn = document.getElementById('cash-join-btn') as HTMLButtonElement | null
+    cashBtn?.addEventListener('click', async () => {
+      if (!cashBtn) return
+      cashBtn.disabled = true
+      cashBtn.textContent = '処理中...'
+      const result = await joinCashEvent(event.id, lineUserId ?? '', displayName ?? '')
+      if (result.success) {
+        app.innerHTML = `
+          <div class="done-card panel">
+            <div class="check-icon">✓</div>
+            <h2>申込が完了しました！</h2>
+            <p>当日スタッフにお支払いください。</p>
+          </div>
+        `
+      } else {
+        cashBtn.disabled = false
+        cashBtn.textContent = '当日現金の方はこちら 💴'
+        showError(cashBtn, result.error || 'エラーが発生しました')
       }
     })
 

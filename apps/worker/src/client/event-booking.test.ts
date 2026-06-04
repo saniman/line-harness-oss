@@ -31,7 +31,7 @@ const EVENT_FULL: EventPublic = {
   capacity: 5, participant_count: 5, remaining: 0, available: false, price: null,
 }
 
-import { buildEventListHtml, buildEventDetailHtml, startCheckoutSession, joinFreeEvent, initEventBooking } from './event-booking.js'
+import { buildEventListHtml, buildEventDetailHtml, startCheckoutSession, joinFreeEvent, joinCashEvent, initEventBooking } from './event-booking.js'
 
 afterEach(() => { vi.unstubAllGlobals() })
 
@@ -71,6 +71,17 @@ describe('renderEventDetail', () => {
     expect(html).toContain('checkout-btn')
     expect(html).toContain('申込・決済へ進む')
     expect(html).not.toContain('free-join-form')
+  })
+
+  it('有料イベントは「当日現金の方はこちら」ボタンが表示される', () => {
+    const html = buildEventDetailHtml(EVENT_PAID)
+    expect(html).toContain('cash-join-btn')
+    expect(html).toContain('当日現金の方はこちら')
+  })
+
+  it('無料イベントは当日現金ボタンが表示されない', () => {
+    const html = buildEventDetailHtml(EVENT_FREE)
+    expect(html).not.toContain('cash-join-btn')
   })
 
   it('無料イベント（price=null）はワンクリック申し込みボタンが表示される', () => {
@@ -146,6 +157,35 @@ describe('joinFreeEvent', () => {
     const result = await joinFreeEvent(2, '', '山田太郎')
     expect(result.success).toBe(false)
     expect(result.error).toBeTruthy()
+  })
+})
+
+describe('joinCashEvent', () => {
+  it('現金申込成功時に success: true を返す', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true, status: 201,
+      json: async () => ({ success: true, data: { id: 10 } }),
+    }))
+    const result = await joinCashEvent(1, 'U123', '山田太郎')
+    expect(result.success).toBe(true)
+  })
+
+  it('リクエストボディに paymentMethod: cash が含まれる', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true, status: 201,
+      json: async () => ({ success: true, data: { id: 10 } }),
+    })
+    vi.stubGlobal('fetch', mockFetch)
+    await joinCashEvent(1, 'U123', '山田太郎')
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body)
+    expect(body.paymentMethod).toBe('cash')
+  })
+
+  it('409（満席）の場合エラーを返す', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 409 }))
+    const result = await joinCashEvent(1, '', '山田太郎')
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('満席')
   })
 })
 

@@ -153,7 +153,8 @@ events.delete('/api/events/:id', async (c) => {
 events.post('/api/events/:id/join', async (c) => {
   try {
     const id = Number(c.req.param('id'));
-    const body = await c.req.json<{ name?: string; lineUserId?: string }>();
+    const body = await c.req.json<{ name?: string; lineUserId?: string; paymentMethod?: string }>();
+    const isCash = body.paymentMethod === 'cash';
 
     const event = await getEventById(c.env.DB, id);
     if (!event) return c.json({ success: false, error: 'Event not found' }, 404);
@@ -179,6 +180,7 @@ events.post('/api/events/:id/join', async (c) => {
       event_id: id,
       friend_id: friendId,
       name: body.name ?? '',
+      payment_status: isCash ? 'cash' : undefined,
     });
 
     // LINE push通知（ベストエフォート）
@@ -192,6 +194,10 @@ events.post('/api/events/:id/join', async (c) => {
         const min = String(d.getUTCMinutes()).padStart(2, '0');
         const weekdays = ['日', '月', '火', '水', '木', '金', '土'];
         const dateStr = `${mm}/${dd}(${weekdays[d.getUTCDay()]}) ${hh}:${min}`;
+        const headerText = isCash ? '✅ 当日現金払いで申込完了' : '✅ お申込みが完了しました';
+        const cashNote = isCash ? [
+          { type: 'text', text: '💴 当日スタッフにお支払いください', size: 'sm', color: '#e67e22', wrap: true },
+        ] : [];
         await lineClient.pushMessage(body.lineUserId, [{
           type: 'flex',
           altText: `✅ 「${event.title}」のお申込みが完了しました`,
@@ -200,13 +206,14 @@ events.post('/api/events/:id/join', async (c) => {
             header: {
               type: 'box', layout: 'vertical', paddingAll: '16px',
               backgroundColor: '#06C755',
-              contents: [{ type: 'text', text: '✅ お申込みが完了しました', color: '#ffffff', weight: 'bold', size: 'md' }],
+              contents: [{ type: 'text', text: headerText, color: '#ffffff', weight: 'bold', size: 'md' }],
             },
             body: {
               type: 'box', layout: 'vertical', paddingAll: '16px', spacing: 'sm',
               contents: [
                 { type: 'text', text: event.title, weight: 'bold', size: 'md', wrap: true },
                 { type: 'text', text: `日時：${dateStr}`, size: 'sm', color: '#666666', wrap: true },
+                ...cashNote,
               ],
             },
             footer: {
