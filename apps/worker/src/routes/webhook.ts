@@ -770,6 +770,26 @@ async function handleEvent(
 
     if (matched) return;
 
+    // AIニュース配信テスト（送信者本人にのみ replyMessage で返す）
+    if (incomingText === 'ニューステスト' && env) {
+      try {
+        const { fetchAiNewsItems, summarizeNewsWithClaude, buildAiNewsFlexMessage } = await import('../services/ai-news.js');
+        await lineClient.replyMessage(event.replyToken, [buildMessage('text', '🔍 AIニュースを収集中... 少々お待ちください')]);
+        replyTokenConsumed = true;
+        const items = await fetchAiNewsItems(30);
+        const summary = await summarizeNewsWithClaude(items, env.ANTHROPIC_API_KEY);
+        const flex = buildAiNewsFlexMessage(summary);
+        await lineClient.pushMessage(userId, [flex as Parameters<typeof lineClient.pushMessage>[1][number]]);
+      } catch (err) {
+        console.error('[ai-news] テスト配信エラー:', err);
+        if (!replyTokenConsumed) {
+          await lineClient.replyMessage(event.replyToken, [buildMessage('text', 'ニュース取得に失敗しました。しばらくしてから再試行してください。')]);
+          replyTokenConsumed = true;
+        }
+      }
+      return;
+    }
+
     // イベントキーワード検出 → イベント一覧LIFFへ誘導
     if (incomingText.includes('イベント') && env) {
       const liffUrl = env.LIFF_URL ?? 'https://liff.line.me/dummy';
