@@ -342,6 +342,20 @@ async function scheduled(
   env: Env['Bindings'],
   _ctx: ExecutionContext,
 ): Promise<void> {
+  const cronExpr = (_event as unknown as { cron?: string }).cron ?? '';
+
+  // 週次AIニュース配信（毎週月曜 08:00 JST = 日曜 23:00 UTC）
+  if (cronExpr === '0 23 * * 0') {
+    try {
+      const { processWeeklyAiNewsBroadcast } = await import('./services/ai-news.js');
+      const defaultLineClient = new LineClient(env.LINE_CHANNEL_ACCESS_TOKEN);
+      await processWeeklyAiNewsBroadcast(env.DB, defaultLineClient, env.ANTHROPIC_API_KEY);
+    } catch (e) {
+      console.error('[ai-news] 週次配信エラー:', e);
+    }
+    return;
+  }
+
   // Get all active accounts from DB
   const dbAccounts = await getLineAccounts(env.DB);
 
