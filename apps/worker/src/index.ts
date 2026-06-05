@@ -349,7 +349,7 @@ async function scheduled(
     try {
       const { processWeeklyAiNewsBroadcast } = await import('./services/ai-news.js');
       const defaultLineClient = new LineClient(env.LINE_CHANNEL_ACCESS_TOKEN);
-      await processWeeklyAiNewsBroadcast(env.DB, defaultLineClient, env.ANTHROPIC_API_KEY);
+      await processWeeklyAiNewsBroadcast(env.DB, defaultLineClient, env.ANTHROPIC_API_KEY, env.LIFF_BASE_URL ?? '');
     } catch (e) {
       console.error('[ai-news] 週次配信エラー:', e);
     }

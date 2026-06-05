@@ -778,7 +778,7 @@ async function handleEvent(
         replyTokenConsumed = true;
         const items = await fetchAiNewsItems(30);
         const summary = await summarizeNewsWithClaude(items, env.ANTHROPIC_API_KEY);
-        const flex = buildAiNewsFlexMessage(summary);
+        const flex = buildAiNewsFlexMessage(summary, env.LIFF_BASE_URL ?? '');
         await lineClient.pushMessage(userId, [flex as Parameters<typeof lineClient.pushMessage>[1][number]]);
       } catch (err) {
         console.error('[ai-news] テスト配信エラー:', err);

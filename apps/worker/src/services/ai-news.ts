@@ -9,6 +9,11 @@ export interface NewsItem {
   source: string
 }
 
+export interface ParsedAiNews {
+  summary: string
+  items: { emoji: string; title: string; point: string }[]
+}
+
 const RSS_FEEDS = [
   { url: 'https://hnrss.org/newest?q=AI+OR+LLM+OR+Claude+OR+GPT+OR+Gemini&points=100&count=20', source: 'Hacker News' },
   { url: 'https://techcrunch.com/category/artificial-intelligence/feed/', source: 'TechCrunch' },
@@ -18,29 +23,27 @@ const RSS_FEEDS = [
 ]
 
 const SYSTEM_PROMPT = `あなたはAI・テクノロジー専門のキュレーターです。
-提供されたニュース記事リストから、以下の基準で日本語の週次ダイジェストを作成してください。
-
-【選定基準（優先順）】
-1. 大手LLMのリリース・重要アップデート（GPT、Claude、Gemini、Llama等）
-2. 国内企業・行政のAI活用・規制動向
-3. 研究成果（実用化に近いブレークスルー）
-4. 開発者向けツール・APIの変更
-5. 重複・類似トピックは最も情報量が多い1件のみ選択
+提供されたニュース記事から日本語の週次ダイジェストを以下のフォーマットで作成してください。
 
 【出力フォーマット（厳守）】
-📰 AI週次ダイジェスト（MM/DD週）
-読了時間：約1分
 
-絵文字 タイトル（日本語・25字以内）
-→ 要点を1文で（60字以内）
+[SUMMARY]
+今週全体を通じたインサイト1〜2文。最後の1文はWALOVER（AI活用支援会社）の視点から見た示唆を書く。80字以内。
 
-（5〜7件繰り返し）
+[NEWS]
+絵文字|タイトル（日本語・20字以内）|要点を1文で（50字以内）
+（5件、1行1件、|区切り）
 
-💡 今週のまとめ
-（全体を通じた1〜2文のインサイト）
+【絵文字の使い分け】
+🤖=LLMリリース 🇯🇵=国内ニュース 🔬=研究 🛠️=開発ツール ⚡=速報 📊=統計
 
-絵文字の使い分け：🤖=LLMリリース 🇯🇵=国内ニュース 🔬=研究 🛠️=開発ツール ⚡=速報 📊=統計
-URLは含めないこと。先頭の挨拶・後書き不要。`
+【選定基準（優先順）】
+1. 大手LLMのリリース・重要アップデート
+2. 国内企業・行政のAI活用・規制動向
+3. 研究成果（実用化に近いもの）
+4. 開発者向けツール・APIの変更
+
+先頭の挨拶・後書き・URLは含めないこと。`
 
 function extractTag(xml: string, tag: string): string {
   const m = xml.match(new RegExp(`<${tag}[^>]*>(?:<!\\[CDATA\\[)?([\\s\\S]*?)(?:\\]\\]>)?</${tag}>`, 'i'))
@@ -135,7 +138,7 @@ export function buildSummarizePrompt(items: NewsItem[]): string {
   const now = new Date()
   const jst = new Date(now.getTime() + 9 * 60 * 60 * 1000)
   const weekLabel = `${String(jst.getUTCMonth() + 1).padStart(2, '0')}/${String(jst.getUTCDate()).padStart(2, '0')}`
-  return `週：${weekLabel}週\n\n以下の${items.length}件から5〜7件を選んでダイジェストを作成してください：\n\n${list}`
+  return `週：${weekLabel}週\n\n以下の${items.length}件から5件を選んでダイジェストを作成してください：\n\n${list}`
 }
 
 export async function summarizeNewsWithClaude(items: NewsItem[], apiKey: string): Promise<string> {
@@ -170,38 +173,137 @@ export async function summarizeNewsWithClaude(items: NewsItem[], apiKey: string)
   return data.content.filter(b => b.type === 'text').map(b => b.text).join('')
 }
 
-export function buildAiNewsFlexMessage(summary: string): object {
+export function parseAiNewsSections(raw: string): ParsedAiNews {
+  const summaryMatch = raw.match(/\[SUMMARY\]\n([\s\S]*?)(?=\[NEWS\]|$)/)
+  const newsMatch = raw.match(/\[NEWS\]\n([\s\S]*)$/)
+
+  const summary = summaryMatch ? summaryMatch[1].trim() : raw.trim()
+
+  const items = newsMatch
+    ? newsMatch[1]
+        .trim()
+        .split('\n')
+        .filter(l => l.includes('|'))
+        .slice(0, 5)
+        .map(l => {
+          const parts = l.split('|')
+          return {
+            emoji: parts[0]?.trim() ?? '',
+            title: parts[1]?.trim() ?? '',
+            point: parts[2]?.trim() ?? '',
+          }
+        })
+    : []
+
+  return { summary, items }
+}
+
+export function buildAiNewsFlexMessage(summary: string, liffUrl = ''): object {
+  const parsed = parseAiNewsSections(summary)
+  const bookUrl = liffUrl ? `${liffUrl}?page=book` : ''
+
+  const newsComponents = parsed.items.flatMap((item, i) => {
+    const block = {
+      type: 'box',
+      layout: 'vertical',
+      spacing: 'xs',
+      contents: [
+        {
+          type: 'box',
+          layout: 'horizontal',
+          spacing: 'sm',
+          contents: [
+            { type: 'text', text: item.emoji, size: 'sm', flex: 0 },
+            { type: 'text', text: item.title, size: 'sm', weight: 'bold', color: '#24292f', wrap: true, flex: 1 },
+          ],
+        },
+        {
+          type: 'text',
+          text: `→ ${item.point}`,
+          size: 'xs',
+          color: '#666666',
+          wrap: true,
+          margin: 'xs',
+        },
+      ],
+    }
+    if (i > 0) {
+      return [{ type: 'separator', margin: 'md', color: '#f0f0f0' }, block]
+    }
+    return [block]
+  })
+
+  // パース失敗時はプレーンテキストにフォールバック
+  const bodyContents = parsed.items.length > 0
+    ? newsComponents
+    : [{ type: 'text', text: summary, wrap: true, size: 'sm', color: '#24292f', lineSpacing: '6px' }]
+
   return {
     type: 'flex',
     altText: 'AI週次ニュース ─ 今週のAIハイライトをお届けします',
     contents: {
       type: 'bubble',
+      size: 'giga',
       header: {
         type: 'box',
         layout: 'vertical',
         paddingAll: '20px',
         backgroundColor: '#0d1117',
         contents: [
-          { type: 'text', text: '🤖 今週のAIニュース', color: '#ffffff', weight: 'bold', size: 'xl' },
-          { type: 'text', text: '毎週月曜配信', color: '#8b949e', size: 'xs', margin: 'sm' },
+          {
+            type: 'box',
+            layout: 'horizontal',
+            contents: [
+              { type: 'text', text: '🤖 今週のAIニュース', color: '#ffffff', weight: 'bold', size: 'md', flex: 1 },
+              { type: 'text', text: '毎週月曜', color: '#8b949e', size: 'xs', flex: 0, align: 'end' },
+            ],
+          },
+          {
+            type: 'box',
+            layout: 'vertical',
+            margin: 'md',
+            paddingAll: '12px',
+            backgroundColor: '#1c2128',
+            cornerRadius: '8px',
+            contents: [
+              { type: 'text', text: '💡 今週のまとめ', color: '#f0c040', size: 'xs', weight: 'bold' },
+              {
+                type: 'text',
+                text: parsed.summary,
+                color: '#e6edf3',
+                size: 'sm',
+                wrap: true,
+                margin: 'sm',
+                lineSpacing: '4px',
+              },
+            ],
+          },
         ],
       },
       body: {
         type: 'box',
         layout: 'vertical',
-        paddingAll: '20px',
+        paddingAll: '16px',
+        contents: bodyContents as never[],
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '12px',
+        backgroundColor: '#f8fafc',
         contents: [
           {
-            type: 'text',
-            text: summary,
-            wrap: true,
-            size: 'sm',
-            color: '#24292f',
-            lineSpacing: '6px',
+            type: 'button',
+            action: bookUrl
+              ? { type: 'uri', label: '無料相談を予約する', uri: bookUrl }
+              : { type: 'message', label: '無料相談を予約する', text: '無料相談予約' },
+            style: 'primary',
+            height: 'sm',
+            color: '#06C755',
           },
         ],
       },
-    },
+    } as never,
   }
 }
 
@@ -209,6 +311,7 @@ export async function processWeeklyAiNewsBroadcast(
   db: D1Database,
   lineClient: LineClient,
   apiKey: string,
+  liffUrl = '',
 ): Promise<void> {
   console.log('[ai-news] 週次AIニュース配信開始')
 
@@ -222,7 +325,7 @@ export async function processWeeklyAiNewsBroadcast(
   const summary = await summarizeNewsWithClaude(items, apiKey)
   console.log('[ai-news] Claude要約完了, length:', summary.length)
 
-  const flexMessage = buildAiNewsFlexMessage(summary)
+  const flexMessage = buildAiNewsFlexMessage(summary, liffUrl)
 
   const now = new Date()
   const jst = new Date(now.getTime() + 9 * 60 * 60 * 1000)

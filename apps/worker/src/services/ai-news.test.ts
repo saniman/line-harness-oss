@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { parseRssItems, deduplicateNews, buildAiNewsFlexMessage, buildSummarizePrompt } from './ai-news.js'
+import { parseRssItems, deduplicateNews, buildAiNewsFlexMessage, buildSummarizePrompt, parseAiNewsSections } from './ai-news.js'
 
 afterEach(() => { vi.unstubAllGlobals() })
 
@@ -88,23 +88,74 @@ describe('deduplicateNews', () => {
   })
 })
 
+describe('parseAiNewsSections', () => {
+  const STRUCTURED = `[SUMMARY]
+今週はLLMの精度向上が目立った。WALOVERでは導入支援を行っています。
+
+[NEWS]
+🤖|GPT-5がリリース|推論能力が大幅向上した
+🇯🇵|国内企業がAI導入|○○社が業務自動化を発表
+🔬|新研究が公開|マルチモーダル性能が向上`
+
+  it('[SUMMARY]セクションをsummaryとして抽出する', () => {
+    const result = parseAiNewsSections(STRUCTURED)
+    expect(result.summary).toContain('LLMの精度向上')
+    expect(result.summary).not.toContain('[SUMMARY]')
+  })
+
+  it('[NEWS]セクションをitemsとして分解する', () => {
+    const result = parseAiNewsSections(STRUCTURED)
+    expect(result.items).toHaveLength(3)
+    expect(result.items[0].emoji).toBe('🤖')
+    expect(result.items[0].title).toBe('GPT-5がリリース')
+    expect(result.items[0].point).toBe('推論能力が大幅向上した')
+  })
+
+  it('5件を超えるNEWSは5件にスライスする', () => {
+    const many = `[SUMMARY]\nまとめ\n\n[NEWS]\n🤖|A|aaa\n🤖|B|bbb\n🤖|C|ccc\n🤖|D|ddd\n🤖|E|eee\n🤖|F|fff`
+    const result = parseAiNewsSections(many)
+    expect(result.items).toHaveLength(5)
+  })
+
+  it('[SUMMARY]/[NEWS]がない場合はrawをsummaryとして返す', () => {
+    const result = parseAiNewsSections('プレーンテキストのまとめです')
+    expect(result.summary).toBe('プレーンテキストのまとめです')
+    expect(result.items).toHaveLength(0)
+  })
+})
+
 describe('buildAiNewsFlexMessage', () => {
-  const summary = '📰 AI週次ダイジェスト（06/02週）\n1. OpenAIがGPT-5をリリース\n→ 推論能力が大幅向上'
+  const STRUCTURED_SUMMARY = `[SUMMARY]
+今週はGPT-5が話題を席巻した。
+
+[NEWS]
+🤖|GPT-5がリリース|推論能力が大幅向上`
 
   it('type="flex" のメッセージを返す', () => {
-    const msg = buildAiNewsFlexMessage(summary)
+    const msg = buildAiNewsFlexMessage(STRUCTURED_SUMMARY)
     expect((msg as { type: string }).type).toBe('flex')
   })
 
   it('altText に「AI週次ニュース」が含まれる', () => {
-    const msg = buildAiNewsFlexMessage(summary)
+    const msg = buildAiNewsFlexMessage(STRUCTURED_SUMMARY)
     expect((msg as { altText: string }).altText).toContain('AI週次ニュース')
   })
 
-  it('summary テキストが contents に含まれる', () => {
-    const msg = buildAiNewsFlexMessage(summary)
+  it('summary テキストが header に含まれる', () => {
+    const msg = buildAiNewsFlexMessage(STRUCTURED_SUMMARY)
+    expect(JSON.stringify(msg)).toContain('GPT-5')
+  })
+
+  it('liffUrl がある場合フッターに予約ボタンのURIが含まれる', () => {
+    const msg = buildAiNewsFlexMessage(STRUCTURED_SUMMARY, 'https://liff.line.me/test')
+    expect(JSON.stringify(msg)).toContain('https://liff.line.me/test?page=book')
+  })
+
+  it('liffUrl がない場合メッセージアクションにフォールバックする', () => {
+    const msg = buildAiNewsFlexMessage(STRUCTURED_SUMMARY, '')
     const json = JSON.stringify(msg)
-    expect(json).toContain('GPT-5')
+    expect(json).toContain('message')
+    expect(json).not.toContain('?page=book')
   })
 })
 
