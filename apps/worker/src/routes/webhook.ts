@@ -770,6 +770,27 @@ async function handleEvent(
 
     if (matched) return;
 
+    // AIプロンプトテンプレートテスト（送信者本人にのみ返す）
+    if (incomingText === 'プロンプトテスト' && env) {
+      try {
+        const { getWeeklyTheme, generatePromptWithClaude, parseTemplateOutput, buildPromptTemplateFlexMessage } = await import('../services/prompt-template.js');
+        await lineClient.replyMessage(event.replyToken, [buildMessage('text', '✨ プロンプトを生成中... 少々お待ちください')]);
+        replyTokenConsumed = true;
+        const theme = getWeeklyTheme();
+        const raw = await generatePromptWithClaude(theme, env.ANTHROPIC_API_KEY);
+        const parsed = parseTemplateOutput(raw);
+        const flex = buildPromptTemplateFlexMessage(parsed, theme);
+        await lineClient.pushMessage(userId, [flex as Parameters<typeof lineClient.pushMessage>[1][number]]);
+      } catch (err) {
+        console.error('[prompt-template] テスト配信エラー:', err);
+        if (!replyTokenConsumed) {
+          await lineClient.replyMessage(event.replyToken, [buildMessage('text', 'プロンプト生成に失敗しました。しばらくしてから再試行してください。')]);
+          replyTokenConsumed = true;
+        }
+      }
+      return;
+    }
+
     // AIニュース配信テスト（送信者本人にのみ replyMessage で返す）
     if (incomingText === 'ニューステスト' && env) {
       try {
