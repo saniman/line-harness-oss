@@ -6,6 +6,7 @@ dist/
 .env
 .env.local
 *.log
+*.tsbuildinfo
 .DS_Store
 .mcp.json
 *.toml.bak
