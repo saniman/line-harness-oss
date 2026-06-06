@@ -267,6 +267,19 @@ if (cronExpr === '0 23 * * 0') {
 // 以降は既存処理
 ```
 
+### Cloudflare Workers の cron day-of-week に `0`（日曜）を使わない（2026-06-06 追記）
+
+Cloudflare Workers API は cron の曜日フィールドで `0` を不正値として拒否する（error code 10100）。
+`SUN` などの名前表記を使うこと。
+
+```toml
+# ❌ 誤: 0 = Sunday を数値で指定 → Cloudflare API が "invalid cron string" で拒否
+crons = ["0 23 * * 0"]
+
+# ✅ 正: 曜日は SUN / MON / ... の名前表記を使う
+crons = ["0 23 * * SUN"]
+```
+
 ### 本番機能のテストは全体配信せず送信者本人のみに返す（2026-06-05 追記）
 
 broadcast() や全フォロワーへの pushMessage はテスト中に使わない。
