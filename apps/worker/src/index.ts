@@ -356,6 +356,18 @@ async function scheduled(
     return;
   }
 
+  // 週次AIプロンプトテンプレート配信（毎週木曜 08:00 JST = 水曜 23:00 UTC）
+  if (cronExpr === '0 23 * * 3') {
+    try {
+      const { processWeeklyPromptTemplate } = await import('./services/prompt-template.js');
+      const defaultLineClient = new LineClient(env.LINE_CHANNEL_ACCESS_TOKEN);
+      await processWeeklyPromptTemplate(env.DB, defaultLineClient, env.ANTHROPIC_API_KEY);
+    } catch (e) {
+      console.error('[prompt-template] 週次配信エラー:', e);
+    }
+    return;
+  }
+
   // Get all active accounts from DB
   const dbAccounts = await getLineAccounts(env.DB);
 
