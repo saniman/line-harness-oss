@@ -27,6 +27,39 @@ globs: "apps/worker/src/client/**/*.ts"
 
 ## 既知の落とし穴
 
+### LINE Login チャンネルの Developing ステータス問題（2026-06-08 インシデント）
+
+症状: 一般ユーザーが LIFF を開くと `400 This channel is now developing status. User need to have developer role.` が出る。
+原因: LINE Login チャンネル（LIFF の親チャンネル）が Developing のまま公開されていない。
+
+**盲点**: 開発者アカウントは Developing 状態でも LIFF にアクセスできる。
+開発者だけでテストすると本番ユーザーのエラーが発覚しない。
+
+❌ 罠: Messaging API チャンネルが Published でも LINE Login チャンネルが Developing なら一般ユーザーは弾かれる。
+
+✅ 対処: LINE Developers Console → LINE Login チャンネル → Publishing タブ → **Publish**
+
+コード側の対策として、`main.ts` の `liff.init()` catch ブロックでこのエラーを検出し
+ユーザー向けの日本語メッセージを表示する（生のエラー文字列を出さない）：
+
+```typescript
+} catch (err) {
+  const msg = err instanceof Error ? err.message : String(err);
+  console.error('[LIFF] init error:', msg);
+  if (msg.includes('developing') || msg.includes('developer role')) {
+    showError('現在このサービスはメンテナンス中です。しばらく時間をおいてから再度お試しください。');
+  } else {
+    showError(msg || 'LIFF初期化エラー');
+  }
+}
+```
+
+### LIFF 新規リリース前チェックリスト
+
+- [ ] LINE Login チャンネルのステータスが **Published** であること
+- [ ] **開発者ロールを持たない** LINE アカウント（友人・テスト用サブアカウント）でエンドツーエンドを通す
+- [ ] LIFF から始まる全フロー（診断完了 → 予約ボタン → LIFF 起動 → 予約完了）を非開発者で確認する
+
 ### フォームのボタンstate管理
 - `__setName` / `__setEmail` は state を更新するだけでなく `updateSubmitButton()` を必ず呼ぶこと
 - `render()` で全体を差し替えるとフォーカスが飛ぶため、ボタン状態の更新は `updateSubmitButton()` で個別に行う

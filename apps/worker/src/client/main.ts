@@ -439,7 +439,13 @@ async function main() {
       await linkAndAddFlow();
     }
   } catch (err) {
-    showError(err instanceof Error ? err.message : 'LIFF初期化エラー');
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[LIFF] init error:', msg);
+    if (msg.includes('developing') || msg.includes('developer role')) {
+      showError('現在このサービスはメンテナンス中です。しばらく時間をおいてから再度お試しください。');
+    } else {
+      showError(msg || 'LIFF初期化エラー');
+    }
   }
 }
 

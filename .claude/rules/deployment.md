@@ -44,6 +44,16 @@ globs: ""
 4. `git push origin main`
 5. GitHub Actions の完了を待つ（それだけ）
 
+### ⚠️ LIFF デプロイ前チェックリスト（2026-06-08 追記）
+
+LIFF を新規リリースまたは本番初公開するときは必ず確認する：
+
+- [ ] **LINE Login チャンネルが Published** か確認する
+  → LINE Developers Console → LINE Login チャンネル → Publishing タブ
+  → Developing のまま公開すると一般ユーザー全員が 400 エラーになる
+- [ ] **非開発者アカウント**（開発者ロールなし）でエンドツーエンドを通す
+  → 開発者は Developing 状態でも通れるため、開発者テストだけでは発覚しない
+
 ### 手動 wrangler コマンドを使って良いケース
 
 - D1マイグレーション（`npx wrangler d1 execute ... --remote --file=...`）← CI に含まれないので手動 OK
