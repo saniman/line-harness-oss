@@ -63,14 +63,14 @@ SNS投稿文の生成
 describe('buildPromptTemplateFlexMessage', () => {
   it('typeがflexになる', () => {
     const parsed = { title: 'タイトル', prompt: 'プロンプト内容', point: 'コツ' }
-    const theme = { label: '集客・SNS投稿文', emoji: '📣' }
+    const theme = { label: '集客・SNS投稿文', emoji: '📣' } as const
     const msg = buildPromptTemplateFlexMessage(parsed, theme) as { type: string }
     expect(msg.type).toBe('flex')
   })
 
   it('altTextにテーマ名が含まれる', () => {
     const parsed = { title: 'タイトル', prompt: 'プロンプト内容', point: 'コツ' }
-    const theme = { label: '採用・求人票', emoji: '👥' }
+    const theme = { label: '採用・求人票', emoji: '👥' } as const
     const msg = buildPromptTemplateFlexMessage(parsed, theme) as { altText: string }
     expect(msg.altText).toContain('採用・求人票')
   })
@@ -85,7 +85,7 @@ describe('generatePromptWithClaude', () => {
       }),
     }))
 
-    const theme = { label: '集客・SNS投稿文', emoji: '📣' }
+    const theme = { label: '集客・SNS投稿文', emoji: '📣' } as const
     const result = await generatePromptWithClaude(theme, 'test-key')
     expect(result).toContain('[TITLE]')
   })
@@ -93,7 +93,7 @@ describe('generatePromptWithClaude', () => {
   it('Claude APIがエラーを返すと例外を投げる', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 500 }))
 
-    const theme = { label: '集客・SNS投稿文', emoji: '📣' }
+    const theme = { label: '集客・SNS投稿文', emoji: '📣' } as const
     await expect(generatePromptWithClaude(theme, 'test-key')).rejects.toThrow('Claude API error: 500')
   })
 })
