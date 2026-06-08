@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { isTokenExpiringSoon, isSlotOverlapping, generateSlots, buildCreateEventParams, getValidAccessToken, getFreeBusyWithRefresh } from './google-calendar.js'
+import { isTokenExpiringSoon, isSlotOverlapping, generateSlots, buildCreateEventParams, getValidAccessToken, getFreeBusyWithRefresh, refreshAccessToken } from './google-calendar.js'
 
 describe('スロット生成', () => {
   it('10:00〜18:00で8枠生成される', () => {
@@ -249,5 +249,63 @@ describe('getFreeBusyWithRefresh', () => {
     // 1回目がトークンリフレッシュ、2回目がFreeBusy
     expect(fetchMock.mock.calls[0][0]).toContain('oauth2.googleapis.com/token')
     expect(fetchMock.mock.calls[1][0]).toContain('freeBusy')
+  })
+})
+
+describe('refreshAccessToken', () => {
+  const ENV = { GOOGLE_CLIENT_ID: 'cid', GOOGLE_CLIENT_SECRET: 'csecret' } as unknown as Parameters<typeof refreshAccessToken>[0]
+
+  afterEach(() => { vi.restoreAllMocks() })
+
+  it('invalid_grantの場合はREAUTH_REQUIREDをthrowする', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      json: () => Promise.resolve({ error: 'invalid_grant', error_description: 'Token has been expired or revoked.' }),
+    }))
+
+    await expect(refreshAccessToken(ENV, 'expired-refresh-token')).rejects.toThrow('REAUTH_REQUIRED')
+  })
+
+  it('invalid_grant以外のエラーはToken refresh failedをthrowする', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      json: () => Promise.resolve({ error: 'invalid_client' }),
+    }))
+
+    await expect(refreshAccessToken(ENV, 'token')).rejects.toThrow('Token refresh failed')
+  })
+
+  it('成功した場合はaccess_tokenとexpires_inを返す', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ access_token: 'new-token', expires_in: 3600 }),
+    }))
+
+    const result = await refreshAccessToken(ENV, 'valid-refresh-token')
+    expect(result.access_token).toBe('new-token')
+    expect(result.expires_in).toBe(3600)
+  })
+})
+
+describe('getValidAccessToken — invalid_grant伝播', () => {
+  const CONN_ID = 'conn-invalid-grant'
+  const ENV = { GOOGLE_CLIENT_ID: 'cid', GOOGLE_CLIENT_SECRET: 'csecret' } as unknown as Parameters<typeof getValidAccessToken>[0]
+
+  function makeDb(firstVal: unknown) {
+    const stmt = { bind: vi.fn().mockReturnThis(), first: vi.fn().mockResolvedValue(firstVal) }
+    return { prepare: vi.fn().mockReturnValue(stmt) } as unknown as D1Database
+  }
+
+  afterEach(() => { vi.restoreAllMocks() })
+
+  it('リフレッシュAPIがinvalid_grantを返す場合もREAUTH_REQUIREDをthrowする', async () => {
+    const expiredDate = new Date(Date.now() - 1000).toISOString()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      json: () => Promise.resolve({ error: 'invalid_grant' }),
+    }))
+
+    const db = makeDb({ access_token: 'old', refresh_token: 'rf', token_expires_at: expiredDate })
+    await expect(getValidAccessToken(ENV, db, CONN_ID)).rejects.toThrow('REAUTH_REQUIRED')
   })
 })

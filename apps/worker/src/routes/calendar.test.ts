@@ -1,5 +1,47 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { Hono } from 'hono'
+
+const mockGetCalendarBookingById = vi.hoisted(() => vi.fn())
+const mockGetCalendarConnectionById = vi.hoisted(() => vi.fn())
+const mockUpdateCalendarBookingStatus = vi.hoisted(() => vi.fn())
+const mockGetValidAccessToken = vi.hoisted(() => vi.fn())
+const mockDeleteEvent = vi.hoisted(() => vi.fn())
+
+vi.mock('@line-crm/db', () => ({
+  getCalendarConnections: vi.fn(),
+  getCalendarConnectionById: mockGetCalendarConnectionById,
+  createCalendarConnection: vi.fn(),
+  deleteCalendarConnection: vi.fn(),
+  getCalendarBookings: vi.fn(),
+  getCalendarBookingById: mockGetCalendarBookingById,
+  createCalendarBooking: vi.fn(),
+  updateCalendarBookingStatus: mockUpdateCalendarBookingStatus,
+  updateCalendarBookingEventId: vi.fn(),
+  getBookingsInRange: vi.fn(),
+  createReminder: vi.fn(),
+  updateReminder: vi.fn(),
+  createReminderStep: vi.fn(),
+  enrollFriendInReminder: vi.fn(),
+}))
+
+vi.mock('../services/google-calendar.js', () => ({
+  GoogleCalendarClient: vi.fn().mockImplementation(() => ({ deleteEvent: mockDeleteEvent })),
+  getGoogleAuthUrl: vi.fn(),
+  exchangeCodeForTokens: vi.fn(),
+  getValidAccessToken: mockGetValidAccessToken,
+  getFreeBusyWithRefresh: vi.fn(),
+}))
+
+vi.mock('../services/business-hours.js', () => ({
+  isBusinessDay: vi.fn().mockReturnValue(true),
+  getBusinessHours: vi.fn().mockResolvedValue({ start_hour: 9, end_hour: 18, slot_minutes: 60 }),
+}))
+
 import { validateBookingRequest, buildSlots } from './calendar.js'
+import { calendar } from './calendar.js'
+
+const app = new Hono<{ Bindings: { DB: D1Database } }>()
+app.route('/', calendar)
 
 describe('予約リクエストのバリデーション', () => {
   const validBody = {
@@ -100,5 +142,68 @@ describe('buildSlots', () => {
     const slots = buildSlots('2026-05-11', 10, 17, 30, [], [])
     expect(slots).toHaveLength(14) // 7時間 × 2スロット/時間
     expect(slots[0].available).toBe(true)
+  })
+})
+
+describe('PUT /api/integrations/google-calendar/bookings/:id/status', () => {
+  beforeEach(() => { vi.clearAllMocks() })
+
+  const mockEnv = { DB: {} as D1Database }
+
+  it('キャンセル時にgetValidAccessTokenを使ってGoogleカレンダーのイベントを削除する', async () => {
+    mockGetCalendarBookingById.mockResolvedValue({
+      id: 'booking-1', event_id: 'gcal-event-1', connection_id: 'conn-1', status: 'confirmed',
+    })
+    mockGetCalendarConnectionById.mockResolvedValue({ id: 'conn-1', calendar_id: 'primary' })
+    mockGetValidAccessToken.mockResolvedValue('fresh-token')
+    mockDeleteEvent.mockResolvedValue({})
+    mockUpdateCalendarBookingStatus.mockResolvedValue({})
+
+    const res = await app.request(
+      '/api/integrations/google-calendar/bookings/booking-1/status',
+      { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'cancelled' }) },
+      mockEnv,
+    )
+
+    expect(res.status).toBe(200)
+    expect(mockGetValidAccessToken).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'conn-1')
+    expect(mockDeleteEvent).toHaveBeenCalledWith('gcal-event-1')
+    expect(mockUpdateCalendarBookingStatus).toHaveBeenCalled()
+  })
+
+  it('getValidAccessTokenが失敗してもキャンセルステータスは更新される', async () => {
+    mockGetCalendarBookingById.mockResolvedValue({
+      id: 'booking-2', event_id: 'gcal-event-2', connection_id: 'conn-1', status: 'confirmed',
+    })
+    mockGetCalendarConnectionById.mockResolvedValue({ id: 'conn-1', calendar_id: 'primary' })
+    mockGetValidAccessToken.mockRejectedValue(new Error('REAUTH_REQUIRED'))
+    mockUpdateCalendarBookingStatus.mockResolvedValue({})
+
+    const res = await app.request(
+      '/api/integrations/google-calendar/bookings/booking-2/status',
+      { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'cancelled' }) },
+      mockEnv,
+    )
+
+    expect(res.status).toBe(200)
+    expect(mockDeleteEvent).not.toHaveBeenCalled()
+    expect(mockUpdateCalendarBookingStatus).toHaveBeenCalled()
+  })
+
+  it('event_idがないならGoogleカレンダー削除をスキップする', async () => {
+    mockGetCalendarBookingById.mockResolvedValue({
+      id: 'booking-3', event_id: null, connection_id: 'conn-1', status: 'confirmed',
+    })
+    mockUpdateCalendarBookingStatus.mockResolvedValue({})
+
+    const res = await app.request(
+      '/api/integrations/google-calendar/bookings/booking-3/status',
+      { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'cancelled' }) },
+      mockEnv,
+    )
+
+    expect(res.status).toBe(200)
+    expect(mockGetValidAccessToken).not.toHaveBeenCalled()
+    expect(mockUpdateCalendarBookingStatus).toHaveBeenCalled()
   })
 })

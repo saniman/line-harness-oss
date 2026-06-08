@@ -613,11 +613,12 @@ calendar.put('/api/integrations/google-calendar/bookings/:id/status', async (c) 
       const booking = await getCalendarBookingById(c.env.DB, id);
       if (booking?.event_id && booking.connection_id) {
         const conn = await getCalendarConnectionById(c.env.DB, booking.connection_id);
-        if (conn?.access_token) {
+        if (conn) {
           try {
+            const accessToken = await getValidAccessToken(c.env, c.env.DB, booking.connection_id);
             const gcal = new GoogleCalendarClient({
               calendarId: conn.calendar_id,
-              accessToken: conn.access_token,
+              accessToken,
             });
             await gcal.deleteEvent(booking.event_id);
           } catch (err) {

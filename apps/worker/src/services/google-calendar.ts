@@ -75,8 +75,17 @@ export async function refreshAccessToken(
     }),
   });
   if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Token refresh failed: ${err}`);
+    let body: { error?: string } = {};
+    try {
+      body = await res.json<{ error?: string }>();
+    } catch {
+      const text = await res.text().catch(() => '');
+      throw new Error(`Token refresh failed: ${text}`);
+    }
+    if (body.error === 'invalid_grant') {
+      throw new Error('REAUTH_REQUIRED');
+    }
+    throw new Error(`Token refresh failed: ${JSON.stringify(body)}`);
   }
   return res.json();
 }
