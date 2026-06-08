@@ -787,9 +787,12 @@ async function handleEvent(
         await lineClient.pushMessage(userId, [flex as Parameters<typeof lineClient.pushMessage>[1][number]]);
       } catch (err) {
         console.error('[prompt-template] テスト配信エラー:', err);
+        const errMsg = `プロンプト生成に失敗しました。しばらくしてから再試行してください。(${err instanceof Error ? err.message : String(err)})`;
         if (!replyTokenConsumed) {
-          await lineClient.replyMessage(event.replyToken, [buildMessage('text', 'プロンプト生成に失敗しました。しばらくしてから再試行してください。')]);
+          await lineClient.replyMessage(event.replyToken, [buildMessage('text', errMsg)]);
           replyTokenConsumed = true;
+        } else {
+          await lineClient.pushMessage(userId, [buildMessage('text', errMsg)]);
         }
       }
       return;
@@ -807,9 +810,12 @@ async function handleEvent(
         await lineClient.pushMessage(userId, [flex as Parameters<typeof lineClient.pushMessage>[1][number]]);
       } catch (err) {
         console.error('[ai-news] テスト配信エラー:', err);
+        const errMsg = `ニュース取得に失敗しました。しばらくしてから再試行してください。(${err instanceof Error ? err.message : String(err)})`;
         if (!replyTokenConsumed) {
-          await lineClient.replyMessage(event.replyToken, [buildMessage('text', 'ニュース取得に失敗しました。しばらくしてから再試行してください。')]);
+          await lineClient.replyMessage(event.replyToken, [buildMessage('text', errMsg)]);
           replyTokenConsumed = true;
+        } else {
+          await lineClient.pushMessage(userId, [buildMessage('text', errMsg)]);
         }
       }
       return;

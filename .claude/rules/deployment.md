@@ -39,10 +39,15 @@ globs: ""
 ### 正しいデプロイ手順
 
 1. `npx vitest run` → 全テストグリーン確認
-2. `git add` （対象ファイルを明示的に指定）
-3. `git commit -m "..."`
-4. `git push origin main`
-5. GitHub Actions の完了を待つ（それだけ）
+2. `npx tsc --noEmit` → 型エラーなしを確認（vitest は型チェックをしないため必須）
+3. `git add` （対象ファイルを明示的に指定）
+4. `git commit -m "..."`
+5. `git push origin main`
+6. GitHub Actions の完了を待つ（それだけ）
+
+> **vitest がパス ≠ TypeScript が正しい**
+> vitest はランタイムテストのみ実行し、型エラーは無視する。
+> CI は tsc を別途実行するため、ローカルで通っても CI で落ちることがある。
 
 ### ⚠️ LIFF デプロイ前チェックリスト（2026-06-08 追記）
 
