@@ -145,7 +145,7 @@ export function buildPromptTemplateFlexMessage(parsed: ParsedTemplate, theme: Th
                 type: 'text',
                 text: parsed.prompt,
                 size: 'sm',
-                color: '#333',
+                color: '#333333',
                 wrap: true,
               },
             ],
@@ -157,7 +157,7 @@ export function buildPromptTemplateFlexMessage(parsed: ParsedTemplate, theme: Th
             spacing: 'sm',
             contents: [
               { type: 'text', text: '💡', size: 'sm', flex: 0 },
-              { type: 'text', text: parsed.point, size: 'sm', color: '#555', wrap: true, flex: 1 },
+              { type: 'text', text: parsed.point, size: 'sm', color: '#555555', wrap: true, flex: 1 },
             ],
           },
         ],
