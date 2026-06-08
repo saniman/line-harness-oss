@@ -88,6 +88,10 @@ const webhook = new Hono<Env>();
 // 128 MB Cloudflare Workers memory ceiling.
 export const MAX_WEBHOOK_BODY_SIZE = 1024 * 1024; // 1 MiB
 
+export function isAdminBroadcastTrigger(userId: string, adminUserId: string | undefined): boolean {
+  return !!adminUserId && userId === adminUserId;
+}
+
 webhook.post('/webhook', async (c) => {
   // Pre-read size guard: reject before reading the body if Content-Length is oversized.
   const contentLengthHeader = c.req.header('Content-Length');
@@ -806,6 +810,24 @@ async function handleEvent(
         if (!replyTokenConsumed) {
           await lineClient.replyMessage(event.replyToken, [buildMessage('text', 'ニュース取得に失敗しました。しばらくしてから再試行してください。')]);
           replyTokenConsumed = true;
+        }
+      }
+      return;
+    }
+
+    // AIニュース一斉配信（管理者専用）
+    if (incomingText === 'ニュース一斉配信' && env) {
+      if (isAdminBroadcastTrigger(userId, env.ADMIN_LINE_USER_ID)) {
+        await lineClient.replyMessage(event.replyToken, [buildMessage('text', '📡 AIニュースの一斉配信を開始します...')]);
+        replyTokenConsumed = true;
+        try {
+          const { processWeeklyAiNewsBroadcast } = await import('../services/ai-news.js');
+          const broadcastClient = new LineClient(env.LINE_CHANNEL_ACCESS_TOKEN);
+          await processWeeklyAiNewsBroadcast(db, broadcastClient, env.ANTHROPIC_API_KEY, env.LIFF_BASE_URL ?? '');
+          await lineClient.pushMessage(userId, [buildMessage('text', '✅ AIニュースの一斉配信が完了しました。')]);
+        } catch (err) {
+          console.error('[ai-news] 手動一斉配信エラー:', err);
+          await lineClient.pushMessage(userId, [buildMessage('text', `❌ 配信に失敗しました: ${err instanceof Error ? err.message : String(err)}`)]);
         }
       }
       return;

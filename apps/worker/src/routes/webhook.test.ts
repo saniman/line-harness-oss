@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildWelcomeMessages, MAX_WEBHOOK_BODY_SIZE } from './webhook.js';
+import { buildWelcomeMessages, MAX_WEBHOOK_BODY_SIZE, isAdminBroadcastTrigger } from './webhook.js';
 
 describe('followイベント', () => {
   it('ウェルカムメッセージが3通送信される', () => {
@@ -32,5 +32,23 @@ describe('followイベント', () => {
 describe('ボディサイズ制限', () => {
   it('MAX_WEBHOOK_BODY_SIZE が 1 MiB である', () => {
     expect(MAX_WEBHOOK_BODY_SIZE).toBe(1024 * 1024);
+  });
+});
+
+describe('isAdminBroadcastTrigger', () => {
+  it('管理者IDと一致する場合はtrueを返す', () => {
+    expect(isAdminBroadcastTrigger('U_admin', 'U_admin')).toBe(true);
+  });
+
+  it('一般ユーザーIDの場合はfalseを返す', () => {
+    expect(isAdminBroadcastTrigger('U_other', 'U_admin')).toBe(false);
+  });
+
+  it('adminUserIdがundefinedの場合はfalseを返す', () => {
+    expect(isAdminBroadcastTrigger('U_admin', undefined)).toBe(false);
+  });
+
+  it('adminUserIdが空文字の場合はfalseを返す', () => {
+    expect(isAdminBroadcastTrigger('U_admin', '')).toBe(false);
   });
 });
