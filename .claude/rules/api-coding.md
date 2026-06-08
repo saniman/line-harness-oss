@@ -25,6 +25,32 @@ globs: "apps/worker/src/**/*.ts"
 - describe名：機能名（日本語OK）
 - it名：「〜の場合〜になる」形式で日本語で書く
 
+### `as const` 配列から派生したリテラル型を受け取る関数のテストには `as const` が必要
+
+本体コードで `as const` 配列を定義し、その要素型 (`typeof FOO[number]`) を引数に取る関数は、
+テスト内のオブジェクトリテラルも `as const` を付けないと型が合わない。
+
+```typescript
+// 本体: PROMPT_CATEGORIES は as const → 要素型はリテラル union
+const PROMPT_CATEGORIES = [
+  { label: '集客・SNS投稿文', emoji: '📣' },
+  ...
+] as const
+
+export function buildMessage(theme: typeof PROMPT_CATEGORIES[number]) { ... }
+
+// ❌ 誤: as const なし → { label: string; emoji: string } に推論される → TS2345
+const theme = { label: '集客・SNS投稿文', emoji: '📣' }
+buildMessage(theme) // 型エラー
+
+// ✅ 正: as const でリテラル型に揃える
+const theme = { label: '集客・SNS投稿文', emoji: '📣' } as const
+buildMessage(theme) // OK
+```
+
+**vitest はこの型エラーを無視して通過する。CI（tsc）で初めて落ちるため気づきにくい。**
+push 前に必ず `npx tsc --noEmit` を実行すること。
+
 ### D1テーブルにカラムを追加したらテスト fixture も全件更新する
 TypeScript の型インターフェースにカラムを追加した後、テスト内の定数（`BOOKING1` 等）が
 型を満たさなくなり CI が型エラーで落ちる。
@@ -279,6 +305,46 @@ crons = ["0 23 * * 0"]
 # ✅ 正: 曜日は SUN / MON / ... の名前表記を使う
 crons = ["0 23 * * SUN"]
 ```
+
+### Google Calendar 連携のエラーハンドリング（2026-06-08 追記）
+
+#### OAuth APIのエラーコードはドメインエラーに変換する
+
+症状: `refreshAccessToken()` が `invalid_grant` を返してもルート層の
+`err.message === 'REAUTH_REQUIRED'` チェックに引っかからず、管理者 LINE 通知が無音で消えた。
+
+原因: HTTPエラー時に `res.text()` で汎用メッセージを生成していたため
+`invalid_grant` という OAuth 固有のエラーコードが失われた。
+
+```typescript
+// ❌ 誤（汎用エラーで上書きする）
+const err = await res.text()
+throw new Error(`Token refresh failed: ${err}`)
+
+// ✅ 正（JSONをパースして invalid_grant を REAUTH_REQUIRED に変換）
+const body = await res.json<{ error?: string }>()
+if (body.error === 'invalid_grant') throw new Error('REAUTH_REQUIRED')
+throw new Error(`Token refresh failed: ${JSON.stringify(body)}`)
+```
+
+#### access_token 直接参照禁止はキャンセル・削除フローにも適用する
+
+既存ルール「access_tokenの直接参照禁止」は booking（予約作成）フローで認識されていたが、
+PUT .../status（キャンセル）での `deleteEvent` 呼び出しが漏れていた。
+
+`getValidAccessToken()` を使う場所：`createEvent`・`deleteEvent`・FreeBusy 取得、
+**Google Calendar API を呼ぶすべての箇所**が対象。
+
+```typescript
+// ❌ 誤（キャンセルフローで直接参照）
+const gcal = new GoogleCalendarClient({ calendarId: conn.calendar_id, accessToken: conn.access_token })
+
+// ✅ 正（getValidAccessToken() 経由）
+const accessToken = await getValidAccessToken(c.env, c.env.DB, booking.connection_id)
+const gcal = new GoogleCalendarClient({ calendarId: conn.calendar_id, accessToken })
+```
+
+---
 
 ### 本番機能のテストは全体配信せず送信者本人のみに返す（2026-06-05 追記）
 
