@@ -150,6 +150,16 @@ export function buildPromptTemplateFlexMessage(parsed: ParsedTemplate, theme: Th
               },
             ],
           },
+          {
+            type: 'button',
+            style: 'secondary',
+            height: 'sm',
+            action: {
+              type: 'clipboard',
+              label: 'プロンプトをコピー',
+              clipboardText: parsed.prompt,
+            },
+          },
           { type: 'separator' },
           {
             type: 'box',
