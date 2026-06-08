@@ -346,6 +346,41 @@ const gcal = new GoogleCalendarClient({ calendarId: conn.calendar_id, accessToke
 
 ---
 
+### replyToken 消費後のエラーは pushMessage で通知する（2026-06-08 追記）
+
+症状: 「少々お待ちください」で処理が止まり、エラーがユーザーに届かない
+原因: `replyTokenConsumed = true` のあとに例外が発生すると
+      catch の `if (!replyTokenConsumed)` が false になり通知が出ない
+
+❌ 誤（replyToken消費後のサイレント失敗）
+```typescript
+} catch (err) {
+  if (!replyTokenConsumed) {
+    await lineClient.replyMessage(event.replyToken, [buildMessage('text', 'エラー')])
+    replyTokenConsumed = true
+  }
+  // ← replyTokenConsumed=true のとき、ユーザーに何も届かない
+}
+```
+
+✅ 正（else で pushMessage にフォールバック）
+```typescript
+} catch (err) {
+  const errMsg = `エラーが発生しました。(${err instanceof Error ? err.message : String(err)})`
+  if (!replyTokenConsumed) {
+    await lineClient.replyMessage(event.replyToken, [buildMessage('text', errMsg)])
+    replyTokenConsumed = true
+  } else {
+    await lineClient.pushMessage(userId, [buildMessage('text', errMsg)])
+  }
+}
+```
+
+対処: 非同期処理を伴うキーワードハンドラは「先に replyMessage で受付通知 → 処理 → pushMessage で結果通知」
+というパターンになるため、catch も必ず同じ else 分岐を持つこと。
+
+---
+
 ### 本番機能のテストは全体配信せず送信者本人のみに返す（2026-06-05 追記）
 
 broadcast() や全フォロワーへの pushMessage はテスト中に使わない。
