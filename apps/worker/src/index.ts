@@ -345,7 +345,7 @@ async function scheduled(
   const cronExpr = (_event as unknown as { cron?: string }).cron ?? '';
 
   // 週次AIニュース配信（毎週月曜 08:00 JST = 日曜 23:00 UTC）
-  if (cronExpr === '0 23 * * 0') {
+  if (cronExpr === '0 23 * * SUN') {
     try {
       const { processWeeklyAiNewsBroadcast } = await import('./services/ai-news.js');
       const defaultLineClient = new LineClient(env.LINE_CHANNEL_ACCESS_TOKEN);
@@ -357,7 +357,7 @@ async function scheduled(
   }
 
   // 週次AIプロンプトテンプレート配信（毎週木曜 08:00 JST = 水曜 23:00 UTC）
-  if (cronExpr === '0 23 * * 3') {
+  if (cronExpr === '0 23 * * WED') {
     try {
       const { processWeeklyPromptTemplate } = await import('./services/prompt-template.js');
       const defaultLineClient = new LineClient(env.LINE_CHANNEL_ACCESS_TOKEN);
