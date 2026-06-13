@@ -12,6 +12,9 @@ import { enrollEventFollowupScenarios } from './event-followup.js';
 const mockGetScenarios = vi.mocked(getScenarios);
 const mockEnroll = vi.mocked(enrollFriendInScenario);
 
+// イベント開催日時（開催日アンカーの起点）。JST 2026-06-13 14:00。
+const EVENT_START = '2026-06-13T05:00:00.000Z';
+
 function scenario(overrides: Partial<ScenarioWithStepCount>): ScenarioWithStepCount {
   return {
     id: 'sc-1',
@@ -37,6 +40,7 @@ const FRIEND_SCENARIO = {
   status: 'active' as const,
   started_at: '2026-06-13T10:00:00+09:00',
   next_delivery_at: '2026-06-14T10:00:00+09:00',
+  anchor_at: '2026-06-13T05:00:00.000Z',
   updated_at: '2026-06-13T10:00:00+09:00',
 };
 
@@ -49,7 +53,7 @@ describe('enrollEventFollowupScenarios', () => {
   });
 
   it('friend_idがnullの場合は何もせず0を返す（getScenariosも呼ばない）', async () => {
-    const count = await enrollEventFollowupScenarios(db, null);
+    const count = await enrollEventFollowupScenarios(db, null, EVENT_START);
     expect(count).toBe(0);
     expect(mockGetScenarios).not.toHaveBeenCalled();
     expect(mockEnroll).not.toHaveBeenCalled();
@@ -57,9 +61,10 @@ describe('enrollEventFollowupScenarios', () => {
 
   it('event_bookingトリガーかつactiveなシナリオにenrollする', async () => {
     mockGetScenarios.mockResolvedValue([scenario({ id: 'sc-1' })]);
-    const count = await enrollEventFollowupScenarios(db, 'friend-1');
+    const count = await enrollEventFollowupScenarios(db, 'friend-1', EVENT_START);
     expect(count).toBe(1);
-    expect(mockEnroll).toHaveBeenCalledWith(db, 'friend-1', 'sc-1');
+    // eventStartAt が enrollFriendInScenario の第4引数(anchorAt)として渡る
+    expect(mockEnroll).toHaveBeenCalledWith(db, 'friend-1', 'sc-1', EVENT_START);
   });
 
   it('event_booking以外のトリガーは対象外になる', async () => {
@@ -67,36 +72,43 @@ describe('enrollEventFollowupScenarios', () => {
       scenario({ id: 'sc-1', trigger_type: 'friend_add' }),
       scenario({ id: 'sc-2', trigger_type: 'tag_added' }),
     ]);
-    const count = await enrollEventFollowupScenarios(db, 'friend-1');
+    const count = await enrollEventFollowupScenarios(db, 'friend-1', EVENT_START);
     expect(count).toBe(0);
     expect(mockEnroll).not.toHaveBeenCalled();
   });
 
   it('非activeなシナリオは対象外になる', async () => {
     mockGetScenarios.mockResolvedValue([scenario({ id: 'sc-1', is_active: 0 })]);
-    const count = await enrollEventFollowupScenarios(db, 'friend-1');
+    const count = await enrollEventFollowupScenarios(db, 'friend-1', EVENT_START);
     expect(count).toBe(0);
     expect(mockEnroll).not.toHaveBeenCalled();
   });
 
   it('line_account_idが一致しないシナリオは対象外になる', async () => {
     mockGetScenarios.mockResolvedValue([scenario({ id: 'sc-1', line_account_id: 'acc-A' })]);
-    const count = await enrollEventFollowupScenarios(db, 'friend-1', 'acc-B');
+    const count = await enrollEventFollowupScenarios(db, 'friend-1', EVENT_START, 'acc-B');
     expect(count).toBe(0);
     expect(mockEnroll).not.toHaveBeenCalled();
   });
 
   it('line_account_idが一致する場合はenrollする', async () => {
     mockGetScenarios.mockResolvedValue([scenario({ id: 'sc-1', line_account_id: 'acc-A' })]);
-    const count = await enrollEventFollowupScenarios(db, 'friend-1', 'acc-A');
+    const count = await enrollEventFollowupScenarios(db, 'friend-1', EVENT_START, 'acc-A');
     expect(count).toBe(1);
-    expect(mockEnroll).toHaveBeenCalledWith(db, 'friend-1', 'sc-1');
+    expect(mockEnroll).toHaveBeenCalledWith(db, 'friend-1', 'sc-1', EVENT_START);
   });
 
   it('シナリオのline_account_idがnull（全アカウント共通）なら常に対象になる', async () => {
     mockGetScenarios.mockResolvedValue([scenario({ id: 'sc-1', line_account_id: null })]);
-    const count = await enrollEventFollowupScenarios(db, 'friend-1', 'acc-B');
+    const count = await enrollEventFollowupScenarios(db, 'friend-1', EVENT_START, 'acc-B');
     expect(count).toBe(1);
+  });
+
+  it('eventStartAtがnullでもenrollは行われる（相対遅延フォールバック）', async () => {
+    mockGetScenarios.mockResolvedValue([scenario({ id: 'sc-1' })]);
+    const count = await enrollEventFollowupScenarios(db, 'friend-1', null);
+    expect(count).toBe(1);
+    expect(mockEnroll).toHaveBeenCalledWith(db, 'friend-1', 'sc-1', null);
   });
 
   it('既に登録済み（enrollがnullを返す）の場合はカウントしない', async () => {
@@ -105,7 +117,7 @@ describe('enrollEventFollowupScenarios', () => {
       scenario({ id: 'sc-2' }),
     ]);
     mockEnroll.mockResolvedValueOnce(null).mockResolvedValueOnce(FRIEND_SCENARIO);
-    const count = await enrollEventFollowupScenarios(db, 'friend-1');
+    const count = await enrollEventFollowupScenarios(db, 'friend-1', EVENT_START);
     expect(count).toBe(1);
     expect(mockEnroll).toHaveBeenCalledTimes(2);
   });

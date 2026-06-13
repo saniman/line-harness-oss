@@ -242,9 +242,12 @@ stripe.post('/api/stripe/webhook', async (c) => {
     session.customer_details?.email ?? null,
   );
 
+  // イベント情報（開催日時 start_at はアフターフォローの開催日アンカーに使う）
+  const eventRow = await getEventById(c.env.DB, eventId);
+
   // 5b. アフターフォローシナリオへ自動登録（ベストエフォート: 失敗しても決済確定は維持）
   try {
-    await enrollEventFollowupScenarios(c.env.DB, booking.friend_id);
+    await enrollEventFollowupScenarios(c.env.DB, booking.friend_id, eventRow?.start_at ?? null);
   } catch (err) {
     console.error('[stripe webhook] enrollEventFollowupScenarios failed:', err);
   }
@@ -252,7 +255,6 @@ stripe.post('/api/stripe/webhook', async (c) => {
   // 6. LINE Push通知（ベストエフォート）
   if (lineUserId) {
     try {
-      const eventRow = await getEventById(c.env.DB, eventId);
       const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
 
       const flex = {

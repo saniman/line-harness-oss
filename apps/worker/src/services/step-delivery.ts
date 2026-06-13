@@ -7,7 +7,9 @@ import {
   claimFriendScenarioForDelivery,
   getFriendById,
   jstNow,
+  computeAnchoredDeliveryAt,
 } from '@line-crm/db';
+import type { ScenarioStep } from '@line-crm/db';
 import type { LineClient } from '@line-crm/line-sdk';
 import type { Message } from '@line-crm/line-sdk';
 import { jitterDeliveryTime, addJitter, sleep } from './stealth.js';
@@ -109,6 +111,28 @@ function enforceDeliveryWindow(date: Date, preferredHour?: number): Date {
   return result;
 }
 
+/**
+ * 次ステップの配信時刻(next_delivery_at, '...+09:00')を求める。
+ *
+ * - イベント開催日アンカー（step.anchor_offset_days が非null かつ anchorAt あり）:
+ *   開催日の N日後 + 指定時刻に固定する。指定時刻を厳守するため枠補正・jitterは適用しない。
+ * - それ以外（相対遅延）: 既存通り now + delay_minutes に枠補正(9-21時)＋jitter を適用する。
+ */
+function nextDeliveryAtFor(
+  step: Pick<ScenarioStep, 'delay_minutes' | 'anchor_offset_days' | 'send_time'>,
+  anchorAt: string | null,
+  preferredHour?: number,
+): string {
+  if (anchorAt && step.anchor_offset_days !== null && step.anchor_offset_days !== undefined) {
+    return computeAnchoredDeliveryAt(anchorAt, step.anchor_offset_days, step.send_time ?? '10:00');
+  }
+  const nextDate = new Date(Date.now() + 9 * 60 * 60_000);
+  nextDate.setMinutes(nextDate.getMinutes() + step.delay_minutes);
+  const windowedDate = enforceDeliveryWindow(nextDate, preferredHour);
+  const jitteredDate = jitterDeliveryTime(windowedDate);
+  return jitteredDate.toISOString().slice(0, -1) + '+09:00';
+}
+
 const MAX_SENDS_PER_CRON = 40; // CF Free plan: 50 subrequests limit (margin for other jobs)
 
 export async function processStepDeliveries(
@@ -151,6 +175,7 @@ async function processSingleDelivery(
     current_step_order: number;
     status: string;
     next_delivery_at: string | null;
+    anchor_at: string | null;
   },
   workerUrl?: string,
 ): Promise<boolean> {
@@ -190,22 +215,14 @@ async function processSingleDelivery(
       if (currentStep.next_step_on_false !== null && currentStep.next_step_on_false !== undefined) {
         const jumpStep = steps.find((s) => s.step_order === currentStep.next_step_on_false);
         if (jumpStep) {
-          const nextDate = new Date(Date.now() + 9 * 60 * 60_000);
-          nextDate.setMinutes(nextDate.getMinutes() + jumpStep.delay_minutes);
-          const windowedDate = enforceDeliveryWindow(nextDate, preferredHour);
-          const jitteredDate = jitterDeliveryTime(windowedDate);
-          await advanceFriendScenario(db, fs.id, currentStep.step_order, jitteredDate.toISOString().slice(0, -1) + '+09:00');
+          await advanceFriendScenario(db, fs.id, currentStep.step_order, nextDeliveryAtFor(jumpStep, fs.anchor_at, preferredHour));
           return false;
         }
       }
       const nextIndex = steps.indexOf(currentStep) + 1;
       if (nextIndex < steps.length) {
         const nextStep = steps[nextIndex];
-        const nextDate = new Date(Date.now() + 9 * 60 * 60_000);
-        nextDate.setMinutes(nextDate.getMinutes() + nextStep.delay_minutes);
-        const windowedDate = enforceDeliveryWindow(nextDate, preferredHour);
-        const jitteredDate = jitterDeliveryTime(windowedDate);
-        await advanceFriendScenario(db, fs.id, currentStep.step_order, jitteredDate.toISOString().slice(0, -1) + '+09:00');
+        await advanceFriendScenario(db, fs.id, currentStep.step_order, nextDeliveryAtFor(nextStep, fs.anchor_at, preferredHour));
       } else {
         await completeFriendScenario(db, fs.id);
       }
@@ -255,12 +272,8 @@ async function processSingleDelivery(
   const nextStep = currentIndex + 1 < steps.length ? steps[currentIndex + 1] : null;
 
   if (nextStep) {
-    // Schedule next delivery with stealth jitter + delivery window enforcement
-    const nextDeliveryDate = new Date(Date.now() + 9 * 60 * 60_000);
-    nextDeliveryDate.setMinutes(nextDeliveryDate.getMinutes() + nextStep.delay_minutes);
-    const windowedDate = enforceDeliveryWindow(nextDeliveryDate, preferredHour);
-    const jitteredDate = jitterDeliveryTime(windowedDate);
-    await advanceFriendScenario(db, fs.id, currentStep.step_order, jitteredDate.toISOString().slice(0, -1) + '+09:00');
+    // Schedule next delivery: 開催日アンカーなら固定時刻、相対なら stealth jitter + 配信枠補正
+    await advanceFriendScenario(db, fs.id, currentStep.step_order, nextDeliveryAtFor(nextStep, fs.anchor_at, preferredHour));
   } else {
     // This was the last step
     await completeFriendScenario(db, fs.id);

@@ -19,12 +19,15 @@ import { getScenarios, enrollFriendInScenario } from '@line-crm/db';
  *
  * @param db        D1
  * @param friendId  対象の友だちID（null の場合は何もしない）
+ * @param eventStartAt イベントの開催日時(start_at, ISO)。開催日アンカー配信の起点になる。
+ *                     null の場合はステップの相対遅延(delay_minutes)で配信される。
  * @param lineAccountId 確定が起きた LINE アカウントID（マルチアカウント絞り込み用）
  * @returns 新規に登録できたシナリオ数
  */
 export async function enrollEventFollowupScenarios(
   db: D1Database,
   friendId: string | null,
+  eventStartAt: string | null,
   lineAccountId?: string | null,
 ): Promise<number> {
   // friend_id が紐付かない予約（LIFF外決済など）はフォロー対象にできない
@@ -44,7 +47,8 @@ export async function enrollEventFollowupScenarios(
 
     // INSERT OR IGNORE が UNIQUE(friend_id, scenario_id) で重複を弾く。
     // 既に登録済みなら null が返るのでカウントしない。
-    const friendScenario = await enrollFriendInScenario(db, friendId, scenario.id);
+    // eventStartAt を渡すと、開催日アンカー設定のステップが開催日基準で配信される。
+    const friendScenario = await enrollFriendInScenario(db, friendId, scenario.id, eventStartAt);
     if (friendScenario) enrolled++;
   }
 

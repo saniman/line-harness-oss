@@ -43,6 +43,10 @@ interface StepFormState {
   delayMinutes: number
   messageType: MessageType
   messageContent: string
+  /** イベント開催日アンカー: 開催日の何日後か (0=当日) */
+  anchorOffsetDays: number
+  /** イベント開催日アンカー時の配信時刻 'HH:MM' (JST) */
+  sendTime: string
 }
 
 const emptyStepForm: StepFormState = {
@@ -50,6 +54,8 @@ const emptyStepForm: StepFormState = {
   delayMinutes: 0,
   messageType: 'text',
   messageContent: '',
+  anchorOffsetDays: 1,
+  sendTime: '10:00',
 }
 
 function FlexPreview({ content }: { content: string }) {
@@ -156,6 +162,8 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
       delayMinutes: step.delayMinutes,
       messageType: step.messageType,
       messageContent: step.messageContent,
+      anchorOffsetDays: step.anchorOffsetDays ?? 1,
+      sendTime: step.sendTime ?? '10:00',
     })
     setEditingStepId(step.id)
     setShowStepForm(true)
@@ -170,24 +178,24 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
     setStepSaving(true)
     setStepError('')
     try {
+      // イベント開催日アンカー: trigger=event_booking のとき開催日基準で配信する
+      const eventAnchored = scenario?.triggerType === 'event_booking'
+      const stepPayload = {
+        stepOrder: stepForm.stepOrder,
+        delayMinutes: eventAnchored ? 0 : stepForm.delayMinutes,
+        messageType: stepForm.messageType,
+        messageContent: stepForm.messageContent,
+        anchorOffsetDays: eventAnchored ? stepForm.anchorOffsetDays : null,
+        sendTime: eventAnchored ? stepForm.sendTime : null,
+      }
       if (editingStepId) {
-        const res = await api.scenarios.updateStep(id, editingStepId, {
-          stepOrder: stepForm.stepOrder,
-          delayMinutes: stepForm.delayMinutes,
-          messageType: stepForm.messageType,
-          messageContent: stepForm.messageContent,
-        })
+        const res = await api.scenarios.updateStep(id, editingStepId, stepPayload)
         if (!res.success) {
           setStepError(res.error)
           return
         }
       } else {
-        const res = await api.scenarios.addStep(id, {
-          stepOrder: stepForm.stepOrder,
-          delayMinutes: stepForm.delayMinutes,
-          messageType: stepForm.messageType,
-          messageContent: stepForm.messageContent,
-        })
+        const res = await api.scenarios.addStep(id, stepPayload)
         if (!res.success) {
           setStepError(res.error)
           return
@@ -392,17 +400,43 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
                     onChange={(e) => setStepForm({ ...stepForm, stepOrder: Number(e.target.value) })}
                   />
                 </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">遅延 (分)</label>
-                  <input
-                    type="number"
-                    min={0}
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-                    value={stepForm.delayMinutes}
-                    onChange={(e) => setStepForm({ ...stepForm, delayMinutes: Number(e.target.value) })}
-                  />
-                  <p className="text-xs text-gray-400 mt-0.5">{formatDelay(stepForm.delayMinutes)}</p>
-                </div>
+                {scenario?.triggerType === 'event_booking' ? (
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">配信タイミング（起点: イベント開催日）</label>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-gray-500">開催日の</span>
+                      <input
+                        type="number"
+                        min={0}
+                        className="w-16 border border-gray-300 rounded-lg px-2 py-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-green-500"
+                        value={stepForm.anchorOffsetDays}
+                        onChange={(e) => setStepForm({ ...stepForm, anchorOffsetDays: Math.max(0, Number(e.target.value) || 0) })}
+                      />
+                      <span className="text-sm text-gray-500">日後</span>
+                      <input
+                        type="time"
+                        className="border border-gray-300 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                        value={stepForm.sendTime}
+                        onChange={(e) => setStepForm({ ...stepForm, sendTime: e.target.value || '10:00' })}
+                      />
+                    </div>
+                    <p className="text-xs text-gray-400 mt-0.5">
+                      {stepForm.anchorOffsetDays === 0 ? '開催当日' : `開催日の${stepForm.anchorOffsetDays}日後`}の{stepForm.sendTime}（JST）に配信
+                    </p>
+                  </div>
+                ) : (
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">遅延 (分)</label>
+                    <input
+                      type="number"
+                      min={0}
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                      value={stepForm.delayMinutes}
+                      onChange={(e) => setStepForm({ ...stepForm, delayMinutes: Number(e.target.value) })}
+                    />
+                    <p className="text-xs text-gray-400 mt-0.5">{formatDelay(stepForm.delayMinutes)}</p>
+                  </div>
+                )}
               </div>
               <div>
                 <label className="block text-xs font-medium text-gray-600 mb-1">メッセージタイプ</label>
@@ -472,7 +506,11 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
                         >
                           {step.stepOrder}
                         </span>
-                        <span className="text-xs text-gray-500">{formatDelay(step.delayMinutes)}</span>
+                        <span className="text-xs text-gray-500">
+                          {step.anchorOffsetDays != null
+                            ? `開催${step.anchorOffsetDays === 0 ? '当日' : `${step.anchorOffsetDays}日後`} ${step.sendTime ?? ''}`
+                            : formatDelay(step.delayMinutes)}
+                        </span>
                         <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
                           step.messageType === 'text' ? 'bg-blue-50 text-blue-600' :
                           step.messageType === 'image' ? 'bg-purple-50 text-purple-600' :

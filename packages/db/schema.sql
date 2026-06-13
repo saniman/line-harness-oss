@@ -72,6 +72,8 @@ CREATE TABLE IF NOT EXISTS scenario_steps (
   delay_minutes   INTEGER NOT NULL DEFAULT 0,
   message_type    TEXT NOT NULL CHECK (message_type IN ('text', 'image', 'flex')),
   message_content TEXT NOT NULL,
+  anchor_offset_days INTEGER,
+  send_time       TEXT,
   created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   UNIQUE (scenario_id, step_order)
 );
@@ -89,6 +91,7 @@ CREATE TABLE IF NOT EXISTS friend_scenarios (
   status             TEXT NOT NULL CHECK (status IN ('active', 'paused', 'completed', 'delivering')) DEFAULT 'active',
   started_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   next_delivery_at   TEXT,
+  anchor_at          TEXT,
   updated_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 

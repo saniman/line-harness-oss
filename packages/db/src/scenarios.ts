@@ -1,4 +1,36 @@
 import { jstNow } from './utils.js';
+
+/**
+ * イベント開催日(anchorAt)を起点にした配信時刻を計算する。
+ *
+ * trigger_type='event_booking' のシナリオで、ステップを
+ * 「開催日(anchorAt の JST 暦日) の offsetDays 日後 + 時刻 sendTime(JST)」に配信するために使う。
+ * 開催の時刻(時分)に依存せず、指定した時刻に固定される。
+ *
+ * @param anchorAt イベントの start_at（UTC ISO または +09:00 表記）
+ * @param offsetDays 開催日の何日後か（0=当日, 1=翌日, ...）
+ * @param sendTime 'HH:MM'（JST）
+ * @returns 'YYYY-MM-DDTHH:MM:00+09:00'（JST 壁時計表記）
+ */
+export function computeAnchoredDeliveryAt(
+  anchorAt: string,
+  offsetDays: number,
+  sendTime: string,
+): string {
+  const [hh, mm] = sendTime.split(':').map((s) => parseInt(s, 10));
+  // epoch + 9h を UTC として読むと JST の壁時計になる → anchorAt の JST 暦日を得る
+  const jst = new Date(new Date(anchorAt).getTime() + 9 * 60 * 60_000);
+  // JST 暦日 + offsetDays 日, 時刻 hh:mm を UTC コンストラクタで組む（月/日の繰り上がりは自動）
+  const target = new Date(
+    Date.UTC(jst.getUTCFullYear(), jst.getUTCMonth(), jst.getUTCDate() + offsetDays, hh, mm, 0),
+  );
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return (
+    `${target.getUTCFullYear()}-${pad(target.getUTCMonth() + 1)}-${pad(target.getUTCDate())}` +
+    `T${pad(target.getUTCHours())}:${pad(target.getUTCMinutes())}:00+09:00`
+  );
+}
+
 export type ScenarioTriggerType = 'friend_add' | 'tag_added' | 'manual' | 'event_booking';
 export type MessageType = 'text' | 'image' | 'flex';
 export type FriendScenarioStatus = 'active' | 'paused' | 'completed';
@@ -25,6 +57,8 @@ export interface ScenarioStep {
   condition_type: string | null;
   condition_value: string | null;
   next_step_on_false: number | null;
+  anchor_offset_days: number | null;
+  send_time: string | null;
   created_at: string;
 }
 
@@ -40,6 +74,7 @@ export interface FriendScenario {
   status: FriendScenarioStatus;
   started_at: string;
   next_delivery_at: string | null;
+  anchor_at: string | null;
   updated_at: string;
 }
 
@@ -192,6 +227,8 @@ export interface CreateScenarioStepInput {
   conditionType?: string | null;
   conditionValue?: string | null;
   nextStepOnFalse?: number | null;
+  anchorOffsetDays?: number | null;
+  sendTime?: string | null;
 }
 
 export async function createScenarioStep(
@@ -203,8 +240,8 @@ export async function createScenarioStep(
 
   await db
     .prepare(
-      `INSERT INTO scenario_steps (id, scenario_id, step_order, delay_minutes, message_type, message_content, condition_type, condition_value, next_step_on_false, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO scenario_steps (id, scenario_id, step_order, delay_minutes, message_type, message_content, condition_type, condition_value, next_step_on_false, anchor_offset_days, send_time, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -216,6 +253,8 @@ export async function createScenarioStep(
       input.conditionType ?? null,
       input.conditionValue ?? null,
       input.nextStepOnFalse ?? null,
+      input.anchorOffsetDays ?? null,
+      input.sendTime ?? null,
       now,
     )
     .run();
@@ -227,7 +266,7 @@ export async function createScenarioStep(
 }
 
 export type UpdateScenarioStepInput = Partial<
-  Pick<ScenarioStep, 'step_order' | 'delay_minutes' | 'message_type' | 'message_content' | 'condition_type' | 'condition_value' | 'next_step_on_false'>
+  Pick<ScenarioStep, 'step_order' | 'delay_minutes' | 'message_type' | 'message_content' | 'condition_type' | 'condition_value' | 'next_step_on_false' | 'anchor_offset_days' | 'send_time'>
 >;
 
 export async function updateScenarioStep(
@@ -265,6 +304,14 @@ export async function updateScenarioStep(
   if (updates.next_step_on_false !== undefined) {
     fields.push('next_step_on_false = ?');
     values.push(updates.next_step_on_false);
+  }
+  if (updates.anchor_offset_days !== undefined) {
+    fields.push('anchor_offset_days = ?');
+    values.push(updates.anchor_offset_days);
+  }
+  if (updates.send_time !== undefined) {
+    fields.push('send_time = ?');
+    values.push(updates.send_time);
   }
 
   if (fields.length > 0) {
@@ -306,9 +353,11 @@ export async function enrollFriendInScenario(
   db: D1Database,
   friendId: string,
   scenarioId: string,
+  anchorAt?: string | null,
 ): Promise<FriendScenario | null> {
   const id = crypto.randomUUID();
   const now = jstNow();
+  const anchor = anchorAt ?? null;
 
   // Get the first step to calculate next_delivery_at
   const firstStep = await db
@@ -316,16 +365,16 @@ export async function enrollFriendInScenario(
       `SELECT * FROM scenario_steps WHERE scenario_id = ? ORDER BY step_order ASC LIMIT 1`,
     )
     .bind(scenarioId)
-    .first<{ step_order: number; delay_minutes: number }>();
+    .first<{ step_order: number; delay_minutes: number; anchor_offset_days: number | null; send_time: string | null }>();
 
   // A scenario with no steps is immediately completed — no stuck active enrollment.
   if (!firstStep) {
     const result = await db
       .prepare(
-        `INSERT OR IGNORE INTO friend_scenarios (id, friend_id, scenario_id, current_step_order, status, started_at, next_delivery_at, updated_at)
-         VALUES (?, ?, ?, 0, 'completed', ?, NULL, ?)`,
+        `INSERT OR IGNORE INTO friend_scenarios (id, friend_id, scenario_id, current_step_order, status, started_at, next_delivery_at, anchor_at, updated_at)
+         VALUES (?, ?, ?, 0, 'completed', ?, NULL, ?, ?)`,
       )
-      .bind(id, friendId, scenarioId, now, now)
+      .bind(id, friendId, scenarioId, now, anchor, now)
       .run();
 
     if (!result.meta.changes || result.meta.changes === 0) return null;
@@ -336,21 +385,27 @@ export async function enrollFriendInScenario(
       .first<FriendScenario>())!;
   }
 
-  const rawDate = new Date(Date.now() + 9 * 60 * 60_000 + firstStep.delay_minutes * 60_000);
-  // Enforce 9:00-21:00 JST delivery window
-  const hours = rawDate.getUTCHours();
-  if (hours < 9 || hours >= 21) {
-    if (hours >= 21) rawDate.setUTCDate(rawDate.getUTCDate() + 1);
-    rawDate.setUTCHours(9, 0, 0, 0);
+  let nextDeliveryAt: string;
+  if (anchor !== null && firstStep.anchor_offset_days !== null) {
+    // イベント開催日アンカー: 指定の N日後 + 時刻に固定（9-21時の枠補正はしない）
+    nextDeliveryAt = computeAnchoredDeliveryAt(anchor, firstStep.anchor_offset_days, firstStep.send_time ?? '10:00');
+  } else {
+    const rawDate = new Date(Date.now() + 9 * 60 * 60_000 + firstStep.delay_minutes * 60_000);
+    // Enforce 9:00-21:00 JST delivery window
+    const hours = rawDate.getUTCHours();
+    if (hours < 9 || hours >= 21) {
+      if (hours >= 21) rawDate.setUTCDate(rawDate.getUTCDate() + 1);
+      rawDate.setUTCHours(9, 0, 0, 0);
+    }
+    nextDeliveryAt = rawDate.toISOString().slice(0, -1) + '+09:00';
   }
-  const nextDeliveryAt = rawDate.toISOString().slice(0, -1) + '+09:00';
 
   const result = await db
     .prepare(
-      `INSERT OR IGNORE INTO friend_scenarios (id, friend_id, scenario_id, current_step_order, status, started_at, next_delivery_at, updated_at)
-       VALUES (?, ?, ?, 0, 'active', ?, ?, ?)`,
+      `INSERT OR IGNORE INTO friend_scenarios (id, friend_id, scenario_id, current_step_order, status, started_at, next_delivery_at, anchor_at, updated_at)
+       VALUES (?, ?, ?, 0, 'active', ?, ?, ?, ?)`,
     )
-    .bind(id, friendId, scenarioId, now, nextDeliveryAt, now)
+    .bind(id, friendId, scenarioId, now, nextDeliveryAt, anchor, now)
     .run();
 
   if (!result.meta.changes || result.meta.changes === 0) return null;

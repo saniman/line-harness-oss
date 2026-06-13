@@ -6,7 +6,16 @@ import type { ScenarioStep, MessageType } from '@line-crm/shared'
 interface StepEditorProps {
   step?: ScenarioStep
   stepOrder: number
-  onSave: (data: { stepOrder: number; delayMinutes: number; messageType: MessageType; messageContent: string }) => Promise<void>
+  /** trigger_type='event_booking' のシナリオでは開催日アンカー入力を表示する */
+  eventAnchored?: boolean
+  onSave: (data: {
+    stepOrder: number
+    delayMinutes: number
+    messageType: MessageType
+    messageContent: string
+    anchorOffsetDays?: number | null
+    sendTime?: string | null
+  }) => Promise<void>
   onCancel: () => void
 }
 
@@ -27,12 +36,17 @@ function displayToMinutes(days: number, hours: number, mins: number): number {
   return days * 24 * 60 + hours * 60 + mins
 }
 
-export default function StepEditor({ step, stepOrder, onSave, onCancel }: StepEditorProps) {
+export default function StepEditor({ step, stepOrder, eventAnchored = false, onSave, onCancel }: StepEditorProps) {
   const initial = step ? minutesToDisplay(step.delayMinutes) : { days: 0, hours: 0, mins: 0 }
 
   const [days, setDays] = useState(initial.days)
   const [hours, setHours] = useState(initial.hours)
   const [mins, setMins] = useState(initial.mins)
+  // イベント開催日アンカー（eventAnchored時のみ使用）
+  const [offsetDays, setOffsetDays] = useState(step?.anchorOffsetDays ?? 1)
+  const initialSend = (step?.sendTime ?? '10:00').split(':')
+  const [sendHour, setSendHour] = useState(parseInt(initialSend[0] ?? '10', 10))
+  const [sendMin, setSendMin] = useState(parseInt(initialSend[1] ?? '0', 10))
   const [messageType, setMessageType] = useState<MessageType>(step?.messageType ?? 'text')
   const [messageContent, setMessageContent] = useState(step?.messageContent ?? '')
   const [saving, setSaving] = useState(false)
@@ -56,9 +70,14 @@ export default function StepEditor({ step, stepOrder, onSave, onCancel }: StepEd
     try {
       await onSave({
         stepOrder,
-        delayMinutes: displayToMinutes(days, hours, mins),
+        // アンカーモードでは delay_minutes は使わない（配信は開催日基準で計算）
+        delayMinutes: eventAnchored ? 0 : displayToMinutes(days, hours, mins),
         messageType,
         messageContent,
+        anchorOffsetDays: eventAnchored ? offsetDays : null,
+        sendTime: eventAnchored
+          ? `${String(sendHour).padStart(2, '0')}:${String(sendMin).padStart(2, '0')}`
+          : null,
       })
     } catch (err) {
       setError(err instanceof Error ? err.message : '保存に失敗しました')
@@ -73,49 +92,96 @@ export default function StepEditor({ step, stepOrder, onSave, onCancel }: StepEd
         {step ? 'ステップを編集' : `ステップ ${stepOrder} を追加`}
       </h3>
 
-      {/* Delay settings */}
-      <div>
-        <label className="block text-xs font-medium text-gray-600 mb-2">
-          前のステップからの待機時間
-        </label>
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-1">
-            <input
-              type="number"
-              min={0}
-              className="w-16 border border-gray-300 rounded-md px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 text-center"
-              value={days}
-              onChange={(e) => setDays(Math.max(0, parseInt(e.target.value) || 0))}
-            />
-            <span className="text-sm text-gray-500">日</span>
+      {/* 配信タイミング: イベント開催日アンカー or 相対遅延 */}
+      {eventAnchored ? (
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-2">
+            配信タイミング（起点: イベント開催日）
+          </label>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm text-gray-500">開催日の</span>
+            <div className="flex items-center gap-1">
+              <input
+                type="number"
+                min={0}
+                className="w-16 border border-gray-300 rounded-md px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 text-center"
+                value={offsetDays}
+                onChange={(e) => setOffsetDays(Math.max(0, parseInt(e.target.value) || 0))}
+              />
+              <span className="text-sm text-gray-500">日後</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <input
+                type="number"
+                min={0}
+                max={23}
+                className="w-16 border border-gray-300 rounded-md px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 text-center"
+                value={sendHour}
+                onChange={(e) => setSendHour(Math.min(23, Math.max(0, parseInt(e.target.value) || 0)))}
+              />
+              <span className="text-sm text-gray-500">時</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <input
+                type="number"
+                min={0}
+                max={59}
+                className="w-16 border border-gray-300 rounded-md px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 text-center"
+                value={sendMin}
+                onChange={(e) => setSendMin(Math.min(59, Math.max(0, parseInt(e.target.value) || 0)))}
+              />
+              <span className="text-sm text-gray-500">分</span>
+            </div>
           </div>
-          <div className="flex items-center gap-1">
-            <input
-              type="number"
-              min={0}
-              max={23}
-              className="w-16 border border-gray-300 rounded-md px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 text-center"
-              value={hours}
-              onChange={(e) => setHours(Math.min(23, Math.max(0, parseInt(e.target.value) || 0)))}
-            />
-            <span className="text-sm text-gray-500">時間</span>
-          </div>
-          <div className="flex items-center gap-1">
-            <input
-              type="number"
-              min={0}
-              max={59}
-              className="w-16 border border-gray-300 rounded-md px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 text-center"
-              value={mins}
-              onChange={(e) => setMins(Math.min(59, Math.max(0, parseInt(e.target.value) || 0)))}
-            />
-            <span className="text-sm text-gray-500">分</span>
-          </div>
-          <span className="text-xs text-gray-400">
-            (合計: {displayToMinutes(days, hours, mins).toLocaleString('ja-JP')} 分)
-          </span>
+          <p className="mt-1 text-xs text-gray-400">
+            {offsetDays === 0 ? '開催当日' : `開催日の${offsetDays}日後`}の
+            {String(sendHour).padStart(2, '0')}:{String(sendMin).padStart(2, '0')}（JST）に配信します
+          </p>
         </div>
-      </div>
+      ) : (
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-2">
+            前のステップからの待機時間
+          </label>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-1">
+              <input
+                type="number"
+                min={0}
+                className="w-16 border border-gray-300 rounded-md px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 text-center"
+                value={days}
+                onChange={(e) => setDays(Math.max(0, parseInt(e.target.value) || 0))}
+              />
+              <span className="text-sm text-gray-500">日</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <input
+                type="number"
+                min={0}
+                max={23}
+                className="w-16 border border-gray-300 rounded-md px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 text-center"
+                value={hours}
+                onChange={(e) => setHours(Math.min(23, Math.max(0, parseInt(e.target.value) || 0)))}
+              />
+              <span className="text-sm text-gray-500">時間</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <input
+                type="number"
+                min={0}
+                max={59}
+                className="w-16 border border-gray-300 rounded-md px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 text-center"
+                value={mins}
+                onChange={(e) => setMins(Math.min(59, Math.max(0, parseInt(e.target.value) || 0)))}
+              />
+              <span className="text-sm text-gray-500">分</span>
+            </div>
+            <span className="text-xs text-gray-400">
+              (合計: {displayToMinutes(days, hours, mins).toLocaleString('ja-JP')} 分)
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* Message type */}
       <div>

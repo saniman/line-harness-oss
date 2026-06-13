@@ -104,6 +104,10 @@ export interface ScenarioStep {
   messageType: MessageType;
   /** メッセージ内容 (テキスト or JSONシリアライズ済みFlexメッセージ等) */
   messageContent: string;
+  /** イベント開催日アンカー: 開催日の何日後か (0=当日, 1=翌日)。null=相対遅延モード */
+  anchorOffsetDays?: number | null;
+  /** イベント開催日アンカー時の配信時刻 'HH:MM' (JST)。null=相対遅延モード */
+  sendTime?: string | null;
   /** 作成日時 (ISO 8601) */
   createdAt: string;
 }

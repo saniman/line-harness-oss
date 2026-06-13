@@ -185,8 +185,9 @@ events.post('/api/events/:id/join', async (c) => {
     });
 
     // アフターフォローシナリオへ自動登録（ベストエフォート: 失敗しても申込は維持）
+    // event.start_at を渡すと開催日アンカー設定のステップが開催日基準で配信される
     try {
-      await enrollEventFollowupScenarios(c.env.DB, friendId);
+      await enrollEventFollowupScenarios(c.env.DB, friendId, event.start_at);
     } catch (err) {
       console.error('[events /join] enrollEventFollowupScenarios failed:', err);
     }

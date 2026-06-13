@@ -49,6 +49,8 @@ function serializeStep(row: DbScenarioStep) {
     conditionType: row.condition_type ?? null,
     conditionValue: row.condition_value ?? null,
     nextStepOnFalse: row.next_step_on_false ?? null,
+    anchorOffsetDays: row.anchor_offset_days ?? null,
+    sendTime: row.send_time ?? null,
     createdAt: row.created_at,
   };
 }
@@ -221,6 +223,8 @@ scenarios.post('/api/scenarios/:id/steps', async (c) => {
       conditionType?: string | null;
       conditionValue?: string | null;
       nextStepOnFalse?: number | null;
+      anchorOffsetDays?: number | null;
+      sendTime?: string | null;
     }>();
 
     if (body.stepOrder === undefined || !body.messageType || !body.messageContent) {
@@ -239,6 +243,8 @@ scenarios.post('/api/scenarios/:id/steps', async (c) => {
       conditionType: body.conditionType ?? null,
       conditionValue: body.conditionValue ?? null,
       nextStepOnFalse: body.nextStepOnFalse ?? null,
+      anchorOffsetDays: body.anchorOffsetDays ?? null,
+      sendTime: body.sendTime ?? null,
     });
 
     return c.json({ success: true, data: serializeStep(step) }, 201);
@@ -260,6 +266,8 @@ scenarios.put('/api/scenarios/:id/steps/:stepId', async (c) => {
       conditionType?: string | null;
       conditionValue?: string | null;
       nextStepOnFalse?: number | null;
+      anchorOffsetDays?: number | null;
+      sendTime?: string | null;
     }>();
 
     const updated = await updateScenarioStep(c.env.DB, stepId, {
@@ -270,6 +278,8 @@ scenarios.put('/api/scenarios/:id/steps/:stepId', async (c) => {
       condition_type: body.conditionType,
       condition_value: body.conditionValue,
       next_step_on_false: body.nextStepOnFalse,
+      anchor_offset_days: body.anchorOffsetDays,
+      send_time: body.sendTime,
     });
 
     if (!updated) {
