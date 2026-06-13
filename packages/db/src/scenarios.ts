@@ -1,5 +1,5 @@
 import { jstNow } from './utils.js';
-export type ScenarioTriggerType = 'friend_add' | 'tag_added' | 'manual';
+export type ScenarioTriggerType = 'friend_add' | 'tag_added' | 'manual' | 'event_booking';
 export type MessageType = 'text' | 'image' | 'flex';
 export type FriendScenarioStatus = 'active' | 'paused' | 'completed';
 

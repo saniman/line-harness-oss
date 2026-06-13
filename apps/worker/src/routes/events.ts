@@ -14,6 +14,7 @@ import {
   updateBookingStripeSessionId,
   cancelEventBooking,
 } from '../services/events.js';
+import { enrollEventFollowupScenarios } from '../services/event-followup.js';
 import type { Env } from '../index.js';
 
 const events = new Hono<Env>();
@@ -182,6 +183,13 @@ events.post('/api/events/:id/join', async (c) => {
       name: body.name ?? '',
       payment_status: isCash ? 'cash' : undefined,
     });
+
+    // アフターフォローシナリオへ自動登録（ベストエフォート: 失敗しても申込は維持）
+    try {
+      await enrollEventFollowupScenarios(c.env.DB, friendId);
+    } catch (err) {
+      console.error('[events /join] enrollEventFollowupScenarios failed:', err);
+    }
 
     // LINE push通知（ベストエフォート）
     if (body.lineUserId && c.env.LINE_CHANNEL_ACCESS_TOKEN) {

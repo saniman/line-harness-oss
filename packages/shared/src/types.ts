@@ -63,7 +63,7 @@ export interface FriendTag {
 // -----------------------------------------------------------------------------
 
 /** シナリオのトリガー種別 */
-export type ScenarioTriggerType = "friend_add" | "tag_added" | "manual";
+export type ScenarioTriggerType = "friend_add" | "tag_added" | "manual" | "event_booking";
 
 export interface Scenario {
   /** 主キー (UUIDv4) */

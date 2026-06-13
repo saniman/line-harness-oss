@@ -12,6 +12,7 @@ import {
   getEventBookingById,
   confirmEventBooking,
 } from '../services/events.js';
+import { enrollEventFollowupScenarios } from '../services/event-followup.js';
 import type { Env } from '../index.js';
 
 const stripe = new Hono<Env>();
@@ -240,6 +241,13 @@ stripe.post('/api/stripe/webhook', async (c) => {
     session.customer_details?.name ?? null,
     session.customer_details?.email ?? null,
   );
+
+  // 5b. アフターフォローシナリオへ自動登録（ベストエフォート: 失敗しても決済確定は維持）
+  try {
+    await enrollEventFollowupScenarios(c.env.DB, booking.friend_id);
+  } catch (err) {
+    console.error('[stripe webhook] enrollEventFollowupScenarios failed:', err);
+  }
 
   // 6. LINE Push通知（ベストエフォート）
   if (lineUserId) {

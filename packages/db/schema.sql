@@ -52,11 +52,14 @@ CREATE TABLE IF NOT EXISTS scenarios (
   id              TEXT PRIMARY KEY,
   name            TEXT NOT NULL,
   description     TEXT,
-  trigger_type    TEXT NOT NULL CHECK (trigger_type IN ('friend_add', 'tag_added', 'manual')),
+  trigger_type    TEXT NOT NULL CHECK (trigger_type IN ('friend_add', 'tag_added', 'manual', 'event_booking')),
   trigger_tag_id  TEXT REFERENCES tags (id) ON DELETE SET NULL,
   is_active       INTEGER NOT NULL DEFAULT 1,
   created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
-  updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+  updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  delivery_mode   TEXT NOT NULL DEFAULT 'relative'
+    CHECK (delivery_mode IN ('relative', 'elapsed', 'absolute_time')),
+  line_account_id TEXT
 );
 
 -- ============================================================

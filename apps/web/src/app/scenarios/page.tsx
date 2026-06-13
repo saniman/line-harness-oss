@@ -34,6 +34,7 @@ const triggerOptions: { value: ScenarioTriggerType; label: string }[] = [
   { value: 'friend_add', label: '友だち追加時' },
   { value: 'tag_added', label: 'タグ付与時' },
   { value: 'manual', label: '手動' },
+  { value: 'event_booking', label: 'イベント参加・決済時' },
 ]
 
 interface CreateFormState {
