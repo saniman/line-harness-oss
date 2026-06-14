@@ -14,7 +14,8 @@ import {
   updateBookingStripeSessionId,
   cancelEventBooking,
 } from '../services/events.js';
-import { enrollEventFollowupScenarios } from '../services/event-followup.js';
+import { enrollEventFollowupScenarios, enrollEventParticipants } from '../services/event-followup.js';
+import { getScenarioById } from '@line-crm/db';
 import type { Env } from '../index.js';
 
 const events = new Hono<Env>();
@@ -404,6 +405,42 @@ events.post('/api/events/bookings/:id/cancel', async (c) => {
     return c.json({ success: true, data: { refunded: result.refunded } });
   } catch (err) {
     console.error('POST /api/events/bookings/:id/cancel error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// POST /api/events/:id/enroll-participants - 確定参加者を一括でフォローシナリオに登録（管理者専用）
+events.post('/api/events/:id/enroll-participants', async (c) => {
+  try {
+    const id = Number(c.req.param('id'));
+    if (Number.isNaN(id)) {
+      return c.json({ success: false, error: 'Invalid event id' }, 400);
+    }
+    const body = await c.req.json<{ scenarioId?: string }>();
+    if (!body.scenarioId) {
+      return c.json({ success: false, error: 'scenarioId is required' }, 400);
+    }
+
+    // シナリオの存在と種別を検証（event_booking 以外は誤登録防止のため拒否）
+    const scenario = await getScenarioById(c.env.DB, body.scenarioId);
+    if (!scenario) {
+      return c.json({ success: false, error: 'Scenario not found' }, 404);
+    }
+    if (scenario.trigger_type !== 'event_booking') {
+      return c.json(
+        { success: false, error: 'トリガーが「イベント参加・決済時」のシナリオのみ登録できます' },
+        400,
+      );
+    }
+
+    const result = await enrollEventParticipants(c.env.DB, id, body.scenarioId);
+    if (!result.eventFound) {
+      return c.json({ success: false, error: 'Event not found' }, 404);
+    }
+
+    return c.json({ success: true, data: { enrolled: result.enrolled, total: result.total } });
+  } catch (err) {
+    console.error('POST /api/events/:id/enroll-participants error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

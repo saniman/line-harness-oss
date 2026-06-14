@@ -7,10 +7,24 @@ vi.mock('@line-crm/db', () => ({
 }));
 
 import { getScenarios, enrollFriendInScenario } from '@line-crm/db';
-import { enrollEventFollowupScenarios } from './event-followup.js';
+import { enrollEventFollowupScenarios, enrollEventParticipants } from './event-followup.js';
 
 const mockGetScenarios = vi.mocked(getScenarios);
 const mockEnroll = vi.mocked(enrollFriendInScenario);
+
+function makeStmt(firstResult: unknown = null, allResult: { results: unknown[] } = { results: [] }) {
+  return {
+    bind: vi.fn().mockReturnThis(),
+    run: vi.fn().mockResolvedValue({ meta: {} }),
+    first: vi.fn().mockResolvedValue(firstResult),
+    all: vi.fn().mockResolvedValue(allResult),
+  };
+}
+
+function makeDb(...stmts: ReturnType<typeof makeStmt>[]): D1Database {
+  let i = 0;
+  return { prepare: vi.fn().mockImplementation(() => stmts[i++] ?? makeStmt()) } as unknown as D1Database;
+}
 
 // イベント開催日時（開催日アンカーの起点）。JST 2026-06-13 14:00。
 const EVENT_START = '2026-06-13T05:00:00.000Z';
@@ -120,5 +134,57 @@ describe('enrollEventFollowupScenarios', () => {
     const count = await enrollEventFollowupScenarios(db, 'friend-1', EVENT_START);
     expect(count).toBe(1);
     expect(mockEnroll).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('enrollEventParticipants', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockEnroll.mockResolvedValue(FRIEND_SCENARIO);
+  });
+
+  it('イベントが存在しない場合は eventFound:false を返す', async () => {
+    const db = makeDb(makeStmt(null)); // events SELECT → not found
+    const res = await enrollEventParticipants(db, 999, 'sc-1');
+    expect(res.eventFound).toBe(false);
+    expect(res.enrolled).toBe(0);
+    expect(res.total).toBe(0);
+    expect(mockEnroll).not.toHaveBeenCalled();
+  });
+
+  it('確定参加者全員を開催日アンカー(start_at)でenrollする', async () => {
+    const db = makeDb(
+      makeStmt({ start_at: EVENT_START }), // events SELECT
+      makeStmt(null, { results: [{ friend_id: 'f1' }, { friend_id: 'f2' }] }), // 参加者 SELECT DISTINCT
+    );
+    const res = await enrollEventParticipants(db, 2, 'sc-1');
+    expect(res.eventFound).toBe(true);
+    expect(res.total).toBe(2);
+    expect(res.enrolled).toBe(2);
+    expect(mockEnroll).toHaveBeenCalledWith(db, 'f1', 'sc-1', EVENT_START);
+    expect(mockEnroll).toHaveBeenCalledWith(db, 'f2', 'sc-1', EVENT_START);
+  });
+
+  it('既に登録済み(enrollがnull)はenrolledに数えない', async () => {
+    const db = makeDb(
+      makeStmt({ start_at: EVENT_START }),
+      makeStmt(null, { results: [{ friend_id: 'f1' }, { friend_id: 'f2' }] }),
+    );
+    mockEnroll.mockResolvedValueOnce(null).mockResolvedValueOnce(FRIEND_SCENARIO);
+    const res = await enrollEventParticipants(db, 2, 'sc-1');
+    expect(res.total).toBe(2);
+    expect(res.enrolled).toBe(1);
+  });
+
+  it('確定参加者が0人なら total:0 enrolled:0', async () => {
+    const db = makeDb(
+      makeStmt({ start_at: EVENT_START }),
+      makeStmt(null, { results: [] }),
+    );
+    const res = await enrollEventParticipants(db, 2, 'sc-1');
+    expect(res.eventFound).toBe(true);
+    expect(res.total).toBe(0);
+    expect(res.enrolled).toBe(0);
+    expect(mockEnroll).not.toHaveBeenCalled();
   });
 });

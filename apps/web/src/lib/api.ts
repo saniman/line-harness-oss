@@ -619,6 +619,11 @@ export const api = {
       fetchApi<ApiResponse<null>>(`/api/events/${id}`, { method: 'DELETE' }),
     getBookings: (id: number) =>
       fetchApi<ApiResponse<EventBookingItem[]>>(`/api/events/${id}/bookings`),
+    enrollParticipants: (id: number, scenarioId: string) =>
+      fetchApi<ApiResponse<{ enrolled: number; total: number }>>(`/api/events/${id}/enroll-participants`, {
+        method: 'POST',
+        body: JSON.stringify({ scenarioId }),
+      }),
   },
 }
 

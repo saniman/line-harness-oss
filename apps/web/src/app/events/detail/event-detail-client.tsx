@@ -41,6 +41,41 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
   })
   const [saving, setSaving] = useState(false)
   const [editError, setEditError] = useState('')
+  // アフターフォロー一括登録
+  const [followupScenarios, setFollowupScenarios] = useState<{ id: string; name: string }[]>([])
+  const [selectedScenarioId, setSelectedScenarioId] = useState('')
+  const [enrolling, setEnrolling] = useState(false)
+  const [enrollResult, setEnrollResult] = useState('')
+
+  useEffect(() => {
+    api.scenarios.list().then((res) => {
+      if (!res.success) return
+      const evScenarios = res.data
+        .filter((s) => s.triggerType === 'event_booking')
+        .map((s) => ({ id: s.id, name: s.name }))
+      setFollowupScenarios(evScenarios)
+      if (evScenarios.length > 0) setSelectedScenarioId((prev) => prev || evScenarios[0].id)
+    })
+  }, [])
+
+  const handleEnrollParticipants = async () => {
+    if (!selectedScenarioId) return
+    if (!confirm('このイベントの確定参加者を、選択したフォローシナリオに一括登録します。よろしいですか？')) return
+    setEnrolling(true)
+    setEnrollResult('')
+    try {
+      const res = await api.events.enrollParticipants(eventId, selectedScenarioId)
+      if (res.success) {
+        setEnrollResult(`確定参加者 ${res.data.total} 名中 ${res.data.enrolled} 名を登録しました（登録済みは除外）。`)
+      } else {
+        setEnrollResult('エラー: ' + res.error)
+      }
+    } catch {
+      setEnrollResult('登録に失敗しました')
+    } finally {
+      setEnrolling(false)
+    }
+  }
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -216,6 +251,41 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
                 })}
               </>
             )}
+          </div>
+
+          {/* アフターフォロー一括登録 */}
+          <div className="bg-white rounded-lg border border-gray-200 p-4 mt-4">
+            <h2 className="text-sm font-semibold text-gray-700 mb-1">アフターフォロー一括登録</h2>
+            <p className="text-xs text-gray-500 mb-3">
+              このイベントの確定参加者を、選んだフォローシナリオに一括登録します。配信はシナリオの設定（開催日アンカー）に従います。既に登録済みの参加者は自動的に除外されます。
+            </p>
+            {followupScenarios.length === 0 ? (
+              <p className="text-xs text-gray-400">
+                トリガーが「イベント参加・決済時」のシナリオがありません。先に
+                <button onClick={() => router.push('/scenarios')} className="text-green-600 hover:underline mx-1">シナリオ</button>
+                を作成してください。
+              </p>
+            ) : (
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  className="text-sm border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-green-500 bg-white"
+                  value={selectedScenarioId}
+                  onChange={(e) => setSelectedScenarioId(e.target.value)}
+                >
+                  {followupScenarios.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
+                <button
+                  onClick={handleEnrollParticipants}
+                  disabled={enrolling}
+                  className="px-4 py-2 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700 disabled:opacity-50"
+                >
+                  {enrolling ? '登録中...' : '参加者を一括登録'}
+                </button>
+              </div>
+            )}
+            {enrollResult && <p className="text-xs text-gray-600 mt-2">{enrollResult}</p>}
           </div>
         </div>
 

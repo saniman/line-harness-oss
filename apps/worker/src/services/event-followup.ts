@@ -54,3 +54,40 @@ export async function enrollEventFollowupScenarios(
 
   return enrolled;
 }
+
+/**
+ * 特定イベントの確定参加者全員を、指定シナリオへ開催日アンカーで一括登録する。
+ *
+ * 自動登録（予約確定時）と違い、すでに申込済みの既存参加者を後から登録できる。
+ * 管理画面の「参加者を一括登録」ボタンから呼ばれる。
+ *
+ * @returns eventFound: イベントが存在したか / total: 確定参加者数 / enrolled: 新規登録できた数
+ */
+export async function enrollEventParticipants(
+  db: D1Database,
+  eventId: number,
+  scenarioId: string,
+): Promise<{ eventFound: boolean; total: number; enrolled: number }> {
+  const event = await db
+    .prepare('SELECT start_at FROM events WHERE id = ?')
+    .bind(eventId)
+    .first<{ start_at: string }>();
+  if (!event) return { eventFound: false, total: 0, enrolled: 0 };
+
+  // 確定参加者（friend_id 紐付きのみ）を重複排除して取得。participant_count と同じ status='confirmed' 基準。
+  const rows = await db
+    .prepare(
+      "SELECT DISTINCT friend_id FROM event_bookings WHERE event_id = ? AND status = 'confirmed' AND friend_id IS NOT NULL",
+    )
+    .bind(eventId)
+    .all<{ friend_id: string }>();
+
+  let enrolled = 0;
+  for (const row of rows.results) {
+    // INSERT OR IGNORE が重複登録を弾く。既に登録済みなら null が返る。
+    const friendScenario = await enrollFriendInScenario(db, row.friend_id, scenarioId, event.start_at);
+    if (friendScenario) enrolled++;
+  }
+
+  return { eventFound: true, total: rows.results.length, enrolled };
+}

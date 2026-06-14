@@ -35,8 +35,22 @@ vi.mock('../services/events.js', () => ({
   cancelEventBooking: vi.fn(),
 }))
 
+vi.mock('../services/event-followup.js', () => ({
+  enrollEventFollowupScenarios: vi.fn().mockResolvedValue(0),
+  enrollEventParticipants: vi.fn(),
+}))
+
+vi.mock('@line-crm/db', () => ({
+  getScenarioById: vi.fn(),
+}))
+
 import * as eventsService from '../services/events.js'
+import { enrollEventParticipants } from '../services/event-followup.js'
+import { getScenarioById } from '@line-crm/db'
 import { events } from './events.js'
+
+const mockEnrollParticipants = vi.mocked(enrollEventParticipants)
+const mockGetScenarioById = vi.mocked(getScenarioById)
 
 const mockDb = {} as D1Database
 const app = new Hono()
@@ -420,5 +434,63 @@ describe('POST /api/events/bookings/:id/cancel', () => {
     expect(res.status).toBe(400)
     const json = await res.json() as { success: boolean; error: string }
     expect(json.error).toContain('キャンセル済み')
+  })
+})
+
+describe('POST /api/events/:id/enroll-participants', () => {
+  const EVENT_BOOKING_SCENARIO = {
+    id: 'sc-1', name: 'もくもく会参加者', description: null,
+    trigger_type: 'event_booking' as const, trigger_tag_id: null, line_account_id: null,
+    is_active: 1, created_at: '', updated_at: '', steps: [],
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  function post(id: string, body: unknown) {
+    return app.request(`/api/events/${id}/enroll-participants`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }, { DB: mockDb })
+  }
+
+  it('正常系：確定参加者を一括登録して enrolled/total を返す', async () => {
+    mockGetScenarioById.mockResolvedValue(EVENT_BOOKING_SCENARIO)
+    mockEnrollParticipants.mockResolvedValue({ eventFound: true, total: 2, enrolled: 2 })
+    const res = await post('2', { scenarioId: 'sc-1' })
+    expect(res.status).toBe(200)
+    const json = await res.json() as { success: boolean; data: { enrolled: number; total: number } }
+    expect(json.success).toBe(true)
+    expect(json.data).toEqual({ enrolled: 2, total: 2 })
+    expect(mockEnrollParticipants).toHaveBeenCalledWith(mockDb, 2, 'sc-1')
+  })
+
+  it('scenarioId が無ければ400', async () => {
+    const res = await post('2', {})
+    expect(res.status).toBe(400)
+    expect(mockEnrollParticipants).not.toHaveBeenCalled()
+  })
+
+  it('シナリオが存在しなければ404', async () => {
+    mockGetScenarioById.mockResolvedValue(null)
+    const res = await post('2', { scenarioId: 'nope' })
+    expect(res.status).toBe(404)
+    expect(mockEnrollParticipants).not.toHaveBeenCalled()
+  })
+
+  it('event_booking 以外のシナリオは400で拒否する', async () => {
+    mockGetScenarioById.mockResolvedValue({ ...EVENT_BOOKING_SCENARIO, trigger_type: 'friend_add' })
+    const res = await post('2', { scenarioId: 'sc-1' })
+    expect(res.status).toBe(400)
+    expect(mockEnrollParticipants).not.toHaveBeenCalled()
+  })
+
+  it('イベントが存在しなければ404', async () => {
+    mockGetScenarioById.mockResolvedValue(EVENT_BOOKING_SCENARIO)
+    mockEnrollParticipants.mockResolvedValue({ eventFound: false, total: 0, enrolled: 0 })
+    const res = await post('999', { scenarioId: 'sc-1' })
+    expect(res.status).toBe(404)
   })
 })
