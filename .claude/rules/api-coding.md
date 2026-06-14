@@ -19,6 +19,57 @@ globs: "apps/worker/src/**/*.ts"
 - IDは必ず crypto.randomUUID() を使う
 - 日時は全て ISO 8601 形式で保存（JST変換はクライアント側で行う）
 
+### CHECK制約変更のテーブル再作成は実DBのカラム順に厳密一致させる（2026-06-13 追記）
+
+症状: schema.sql の定義が実DBと乖離していることがある。後続の `ALTER TABLE ADD COLUMN` の
+適用順で実DBのカラム順が決まるため、schema.sql の記載順とズレる。
+schema.sql を信じて `INSERT ... SELECT *` で再作成すると列ズレでデータ破損する。
+
+原因: 過去の ALTER が schema.sql に反映されていない。
+例: 2026-06-13 時点の scenarios は実DBで `delivery_mode` が `line_account_id` より**前**だったが
+（043_scenario_delivery_mode → 043_z_schema_gaps の順で適用されたため）、schema.sql にはどちらも無かった。
+
+❌ 誤（schema.sql ベース・SELECT * で再作成）
+```sql
+CREATE TABLE x_v2 (...); INSERT INTO x_v2 SELECT * FROM x;  -- 列順がズレるとデータ破損
+```
+
+✅ 正（実DDLを確認し、明示カラムリストで再作成）
+```bash
+# まず実DBの本物の DDL を確認する
+npx wrangler@latest d1 execute line-harness --remote \
+  --command="SELECT sql FROM sqlite_master WHERE name='x'"
+```
+```sql
+-- 確認した実カラムを「明示列リスト」で移送する（SELECT * を使わない）
+INSERT INTO x_v2 (id, name, ..., delivery_mode, line_account_id)
+  SELECT id, name, ..., delivery_mode, line_account_id FROM x;
+```
+対処: テーブル再作成マイグレーションは migration-planner に任せ、必ず `SELECT sql FROM sqlite_master` で
+実DDLを確認してから書く。schema.sql の該当定義も実DDLに一致するよう同期する。
+
+### 「スキーマにカラムがある＝実装済み」ではない（2026-06-13 追記）
+
+`scenarios.delivery_mode`（'relative'/'elapsed'/'absolute_time'）は列が存在したが、
+`step-delivery.ts` は一切参照しておらず配信は常に相対遅延だった。
+機能の有無は列の存在ではなく、実際にその列を読む処理コードを grep して確認する。
+
+## 共有型は db / shared の両方を更新し shared を rebuild する（2026-06-13 追記）
+
+`ScenarioTriggerType` / `ScenarioStep` などの型は `@line-crm/db`（`packages/db/src`）と
+`@line-crm/shared`（`packages/shared/src`）の**両方**に重複定義されている。
+
+症状: db 側だけ型を変更すると web の `tsc` が古い型で落ちる。
+原因: (1) 型が2箇所にある (2) web は `@line-crm/shared` の **dist** を参照するため、
+src を変えても rebuild しないと反映されない。
+
+✅ 正（共有 enum / 型を変えたときの手順）
+1. `packages/db/src` と `packages/shared/src` の**両方**の定義を更新する
+2. `cd packages/shared && npm run build`（dist を再生成）
+3. `apps/web` で `npx tsc --noEmit` を再実行して反映を確認する
+
+（worker は `@line-crm/db` を src 直参照なので rebuild 不要。web のみ dist 参照で rebuild が要る）
+
 ## テストルール
 - src/services/*.ts を変更したら src/services/*.test.ts も更新する
 - テストファイルの命名：対象ファイルと同名で .test.ts 拡張子
@@ -206,6 +257,21 @@ async function doSomething(stripe: {
   - 含めると「仮登録が多いと残席0になる」問題が発生する
 - `GET /api/events/public` は `GET /api/events/:id` より前に登録すること
   - Hono のルートマッチは登録順優先のため、後ろに置くと `/public` が `:id` に吸収される
+
+### トリガー型自動化は「新規発生分のみ」— 既存レコードへの遡及手段を併設する（2026-06-14 追記）
+
+症状: 予約確定時に自動でフォローシナリオへ登録する機能を投入したが、
+**投入より前に申し込んだ既存参加者には届かなかった**（確定2名・登録0件で発覚）。
+
+原因: 「Xが起きたら自動でY」のトリガーは、Xが発生した瞬間にしか走らない。
+過去に発生済みのレコードは対象外になる。
+
+✅ 対処: 「Xが起きたら自動でY」を設計する段階で次を必ず確認する。
+1. 既存（過去）レコードにも適用が必要か → 必要なら管理画面に**一括適用アクション**を併設する
+   （例: `POST /api/events/:id/enroll-participants` ＝確定参加者をまとめてシナリオ登録）
+2. トリガーはグローバルか対象限定か
+   （`event_booking` トリガーは**全イベント共通**。特定イベント限定でやりたいなら一括登録ボタンを使う）
+3. 一括適用は冪等にする（`INSERT OR IGNORE` ＋ UNIQUE 制約で二重登録を防ぐ）
 
 ## 日時フォーマット
 
