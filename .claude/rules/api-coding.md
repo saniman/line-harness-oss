@@ -273,6 +273,52 @@ async function doSomething(stripe: {
    （`event_booking` トリガーは**全イベント共通**。特定イベント限定でやりたいなら一括登録ボタンを使う）
 3. 一括適用は冪等にする（`INSERT OR IGNORE` ＋ UNIQUE 制約で二重登録を防ぐ）
 
+### LLM出力フォーマットはコードレベルで保証する（2026-06-15 追記）
+
+症状: Claude Haiku に「マークダウン禁止」とプロンプトで指示しても `**太字**` などを使い続ける。
+      プロンプトを3回修正後もユーザーから「直っていない」と指摘され続けた。
+原因: LLM はフォーマット指示に確実に従うとは限らない（強調・箇条書きは自然な出力傾向）。
+      プロンプトは「傾向を下げる」効果はあるが「ゼロにする」保証はない。
+
+❌ 誤（プロンプトだけで制御しようとする）
+```typescript
+system: '**太字**や*斜体*などのマークダウン記法は絶対に使わない。プレーンテキストのみ。'
+// → Haiku はそれでも ** を使う
+```
+
+✅ 正（ポストプロセス関数でコード的に除去し、テストで担保する）
+```typescript
+export function stripMarkdown(text: string): string {
+  return text
+    .replace(/\*\*(.*?)\*\*/g, '$1')  // **bold**
+    .replace(/\*(.*?)\*/g, '$1')       // *italic*
+    .replace(/^#{1,6}\s+/gm, '');     // # heading
+}
+// generateXxxReply() の返値に必ず stripMarkdown() を通す
+```
+
+対処: LLM の出力に対するフォーマット制約はすべてコードで実施する。
+プロンプトへの追記は傾向の補助として残してよいが、保証の手段にしない。
+実際に発生したパターン（`**bold**` 等）をテストケースにして pure function で担保する。
+
+### Honoルートテストで c.env と vi.clearAllMocks に注意する（2026-06-15 追記）
+
+症状1: ルートハンドラが `TypeError: Cannot read properties of undefined (reading 'DB')` で 500 を返す。
+原因1: `app.request(path, options)` の2引数では `c.env` が undefined になる。
+
+✅ 正（第3引数に env オブジェクトを渡す）
+```typescript
+app.request('/api/foo', { method: 'GET' }, { DB: mockDb })
+```
+
+症状2: `expect(mockFn).not.toHaveBeenCalled()` が直前のテストの呼び出しを拾って失敗する。
+原因2: `vi.clearAllMocks()` を呼ばないと呼び出し履歴が describe をまたいで残る。
+
+✅ 正（afterEach でクリア）
+```typescript
+afterEach(() => { vi.clearAllMocks() })
+```
+
 ## 日時フォーマット
 
 D1 に保存される日時は UTC の ISO 8601 形式（例: `2026-06-13T05:00:00.000Z`）。
