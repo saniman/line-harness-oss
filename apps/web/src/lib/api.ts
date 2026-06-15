@@ -625,6 +625,15 @@ export const api = {
         body: JSON.stringify({ scenarioId }),
       }),
   },
+  aiAssistant: {
+    getConfig: () =>
+      fetchApi<ApiResponse<AiAssistantConfig>>('/api/ai-assistant/config'),
+    updateConfig: (data: Partial<AiAssistantConfig>) =>
+      fetchApi<ApiResponse<AiAssistantConfig>>('/api/ai-assistant/config', {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+  },
 }
 
 export type CalendarConnection = {
@@ -659,6 +668,15 @@ export type EventCreateInput = {
   capacity: number
   price?: number | null
   is_published?: number
+}
+
+export type AiAssistantConfig = {
+  id: string
+  enabled: number
+  model: string
+  knowledge: string
+  daily_limit: number
+  updated_at: string
 }
 
 export type EventBookingItem = {

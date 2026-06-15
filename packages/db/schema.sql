@@ -676,3 +676,22 @@ CREATE TABLE IF NOT EXISTS event_bookings (
 
 CREATE INDEX IF NOT EXISTS idx_event_bookings_event_id ON event_bookings(event_id);
 CREATE INDEX IF NOT EXISTS idx_event_bookings_status ON event_bookings(status);
+
+-- ============================================================
+-- パーソナルAIアシスタント返信（案A）
+-- ============================================================
+CREATE TABLE IF NOT EXISTS ai_assistant_config (
+  id          TEXT PRIMARY KEY DEFAULT 'default',
+  enabled     INTEGER NOT NULL DEFAULT 0,
+  model       TEXT NOT NULL DEFAULT 'claude-haiku-4-5-20251001',
+  knowledge   TEXT NOT NULL DEFAULT '',
+  daily_limit INTEGER NOT NULL DEFAULT 10,
+  updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+CREATE TABLE IF NOT EXISTS ai_assistant_usage (
+  friend_id TEXT NOT NULL,
+  ymd       TEXT NOT NULL,
+  count     INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (friend_id, ymd)
+);

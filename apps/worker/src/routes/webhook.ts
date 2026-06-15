@@ -30,6 +30,12 @@ import {
 import { toJstString } from '@line-crm/db';
 import { cancelBooking } from '../services/cancellation.js';
 import { cancelEventBooking, type StripeRefundClient } from '../services/events.js';
+import {
+  getAiAssistantConfig,
+  incrementAiUsage,
+  getRecentConversation,
+  generateAssistantReply,
+} from '../services/ai-assistant.js';
 import Stripe from 'stripe';
 import type { Env } from '../index.js';
 
@@ -947,6 +953,45 @@ async function handleEvent(
 
         matched = true;
         break;
+      }
+    }
+
+    // AIアシスタント: キーワード・auto_replies 未マッチかつ replyToken 未消費のとき発火
+    if (!matched && !replyTokenConsumed && env?.ANTHROPIC_API_KEY) {
+      const aiConfig = await getAiAssistantConfig(db);
+      const isAiTest = incomingText.startsWith('AIテスト');
+      if ((aiConfig.enabled || isAiTest) && aiConfig.knowledge.trim()) {
+        const userText = isAiTest ? (incomingText.slice(3).trim() || '営業時間は？') : incomingText;
+        const ymdJst = jstNow().slice(0, 10); // 'YYYY-MM-DD'
+        const usedCount = await incrementAiUsage(db, friend.id, ymdJst);
+        if (isAiTest || usedCount <= aiConfig.daily_limit) {
+          try {
+            const history = await getRecentConversation(db, friend.id, 10);
+            const reply = await generateAssistantReply(aiConfig, history, userText, env!.ANTHROPIC_API_KEY);
+            await lineClient.replyMessage(event.replyToken, [buildMessage('text', reply)]);
+            replyTokenConsumed = true;
+            matched = true;
+
+            // AI返信をoutgoingとして記録
+            const aiLogId = crypto.randomUUID();
+            await db
+              .prepare(
+                `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, delivery_type, created_at)
+                 VALUES (?, ?, 'outgoing', 'text', ?, NULL, NULL, 'reply', ?)`,
+              )
+              .bind(aiLogId, friend.id, reply, jstNow())
+              .run();
+          } catch (err) {
+            console.error('[AI Assistant] failed to generate reply', err);
+            const errMsg = `エラーが発生しました。(${err instanceof Error ? err.message : String(err)})`;
+            if (!replyTokenConsumed) {
+              await lineClient.replyMessage(event.replyToken, [buildMessage('text', errMsg)]);
+              replyTokenConsumed = true;
+            } else {
+              await lineClient.pushMessage(userId, [buildMessage('text', errMsg)]);
+            }
+          }
+        }
       }
     }
 
