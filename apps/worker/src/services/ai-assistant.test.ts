@@ -5,6 +5,7 @@ import {
   incrementAiUsage,
   buildAssistantPayload,
   generateAssistantReply,
+  stripMarkdown,
   type AiAssistantConfig,
 } from './ai-assistant.js';
 
@@ -91,6 +92,32 @@ describe('buildAssistantPayload', () => {
   });
 });
 
+describe('stripMarkdown', () => {
+  it('**bold** を除去する（実際に発生した問題のパターン）', () => {
+    expect(stripMarkdown('当社では **AIセミナーを不定期で開催** しております。'))
+      .toBe('当社では AIセミナーを不定期で開催 しております。');
+  });
+
+  it('*italic* を除去する', () => {
+    expect(stripMarkdown('こちらは *重要* です。')).toBe('こちらは 重要 です。');
+  });
+
+  it('# 見出しを除去する', () => {
+    expect(stripMarkdown('# セミナー情報\n詳細です。')).toBe('セミナー情報\n詳細です。');
+    expect(stripMarkdown('## 概要\n内容')).toBe('概要\n内容');
+  });
+
+  it('マークダウンを含まない文は変えない', () => {
+    expect(stripMarkdown('担当者に確認しますので少々お待ちください。'))
+      .toBe('担当者に確認しますので少々お待ちください。');
+  });
+
+  it('複合パターンを一括除去する', () => {
+    expect(stripMarkdown('**ご質問** ありがとうございます。*セミナー* について。'))
+      .toBe('ご質問 ありがとうございます。セミナー について。');
+  });
+});
+
 describe('generateAssistantReply', () => {
   afterEach(() => { vi.unstubAllGlobals(); });
 
@@ -101,6 +128,16 @@ describe('generateAssistantReply', () => {
     }));
     const reply = await generateAssistantReply(CONFIG, [], '営業時間は？', 'test-key');
     expect(reply).toBe('10時〜18時です。');
+  });
+
+  it('Claude がマークダウンを返しても除去してから返す', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ content: [{ type: 'text', text: '当社では **セミナー** を開催しています。' }] }),
+    }));
+    const reply = await generateAssistantReply(CONFIG, [], 'セミナーは？', 'test-key');
+    expect(reply).toBe('当社では セミナー を開催しています。');
+    expect(reply).not.toContain('**');
   });
 
   it('API エラー時は例外を投げる', async () => {

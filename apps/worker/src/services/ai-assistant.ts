@@ -145,6 +145,19 @@ export function buildAssistantPayload(
 }
 
 /**
+ * Claude が返す可能性のあるマークダウン記法をプレーンテキストに変換する。
+ * LINEはマークダウン非対応のため、プロンプト指示だけでは防げない場合に備えたフェイルセーフ。
+ */
+export function stripMarkdown(text: string): string {
+  return text
+    .replace(/\*\*(.*?)\*\*/g, '$1')  // **bold**
+    .replace(/\*(.*?)\*/g, '$1')       // *italic*
+    .replace(/__(.*?)__/g, '$1')       // __bold__
+    .replace(/_(.*?)_/g, '$1')         // _italic_
+    .replace(/^#{1,6}\s+/gm, '');      // # heading
+}
+
+/**
  * Claude(Haiku) を呼び出して返信文を生成する。
  * diagnosis.ts / prompt-template.ts と同じ fetch パターン。
  */
@@ -177,10 +190,10 @@ export async function generateAssistantReply(
   }
 
   const data = (await response.json()) as { content: Array<{ type: string; text: string }> };
-  const text = data.content
+  const raw = data.content
     .filter((b) => b.type === 'text')
     .map((b) => b.text)
     .join('')
     .trim();
-  return text || '担当者に確認しますので少々お待ちください。';
+  return stripMarkdown(raw) || '担当者に確認しますので少々お待ちください。';
 }
