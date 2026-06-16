@@ -84,6 +84,9 @@ export default function ConversionsPage() {
     { value: 'keyword_sent', label: 'キーワード送信' },
     { value: 'scenario_step', label: 'シナリオステップ到達' },
     { value: 'liff_view', label: 'LIFF閲覧' },
+    { value: 'booking_requested', label: '予約申込' },
+    { value: 'booking_confirmed', label: '予約確定' },
+    { value: 'booking_completed', label: '来店完了' },
     { value: 'purchase', label: '購入完了' },
     { value: 'custom', label: 'カスタム' },
   ]

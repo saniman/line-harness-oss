@@ -28,7 +28,7 @@ migrations_dir = "../../packages/db/migrations"
 # bucket_name = "line-harness-images"
 
 [triggers]
-crons = ["*/5 * * * *", "0 23 * * SUN", "0 23 * * WED"]  # SUN=月曜08:00 JST(AIニュース) WED=木曜08:00 JST(プロンプト)
+crons = ["*/5 * * * *", "0 */6 * * *", "0 23 * * SUN", "0 23 * * WED"]  # 6h=booking expirer SUN=月曜08:00 JST(AIニュース) WED=木曜08:00 JST(プロンプト)
 
 [vars]
 LIFF_BASE_URL = "https://liff.line.me/1661159603-5qlDj5wV"
@@ -59,4 +59,4 @@ binding = "IMAGES"
 bucket_name = "line-harness-images"
 
 [env.production.triggers]
-crons = ["*/5 * * * *", "0 23 * * SUN", "0 23 * * WED"]  # SUN=月曜08:00 JST(AIニュース) WED=木曜08:00 JST(プロンプト)
+crons = ["*/5 * * * *", "0 */6 * * *", "0 23 * * SUN", "0 23 * * WED"]  # 6h=booking expirer SUN=月曜08:00 JST(AIニュース) WED=木曜08:00 JST(プロンプト)

@@ -678,6 +678,124 @@ CREATE INDEX IF NOT EXISTS idx_event_bookings_event_id ON event_bookings(event_i
 CREATE INDEX IF NOT EXISTS idx_event_bookings_status ON event_bookings(status);
 
 -- ============================================================
+-- Salon booking (menus / staff / shifts / bookings)
+-- Ported from packages/db/migrations/042_booking.sql
+-- ============================================================
+CREATE TABLE IF NOT EXISTS menus (
+  id                    TEXT PRIMARY KEY,
+  line_account_id       TEXT NOT NULL,
+  name                  TEXT NOT NULL,
+  category_label        TEXT,
+  description           TEXT,
+  duration_minutes      INTEGER NOT NULL,
+  buffer_after_minutes  INTEGER NOT NULL DEFAULT 0,
+  base_price            INTEGER NOT NULL,
+  sort_order            INTEGER NOT NULL DEFAULT 0,
+  is_active             INTEGER NOT NULL DEFAULT 1,
+  deleted_at            TEXT,
+  auto_tag_id           TEXT REFERENCES tags(id) ON DELETE SET NULL,
+  created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  FOREIGN KEY (line_account_id) REFERENCES line_accounts(id)
+);
+CREATE INDEX IF NOT EXISTS idx_menus_account_sort ON menus (line_account_id, sort_order);
+
+CREATE TABLE IF NOT EXISTS staff (
+  id                       TEXT PRIMARY KEY,
+  line_account_id          TEXT NOT NULL,
+  name                     TEXT NOT NULL,
+  display_name             TEXT NOT NULL,
+  role                     TEXT,
+  profile_image_url        TEXT,
+  bio                      TEXT,
+  sort_order               INTEGER NOT NULL DEFAULT 0,
+  is_designation_optional  INTEGER NOT NULL DEFAULT 0,
+  is_active                INTEGER NOT NULL DEFAULT 1,
+  deleted_at               TEXT,
+  created_at               TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at               TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  FOREIGN KEY (line_account_id) REFERENCES line_accounts(id)
+);
+CREATE INDEX IF NOT EXISTS idx_staff_account_sort ON staff (line_account_id, sort_order);
+
+CREATE TABLE IF NOT EXISTS staff_menus (
+  staff_id                  TEXT NOT NULL,
+  menu_id                   TEXT NOT NULL,
+  is_offered                INTEGER NOT NULL DEFAULT 1,
+  override_duration_minutes INTEGER,
+  override_price            INTEGER,
+  PRIMARY KEY (staff_id, menu_id),
+  FOREIGN KEY (staff_id) REFERENCES staff(id),
+  FOREIGN KEY (menu_id) REFERENCES menus(id)
+);
+
+CREATE TABLE IF NOT EXISTS staff_shifts (
+  id          TEXT PRIMARY KEY,
+  staff_id    TEXT NOT NULL,
+  work_date   TEXT NOT NULL,
+  start_time  TEXT NOT NULL,
+  end_time    TEXT NOT NULL,
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  UNIQUE (staff_id, work_date),
+  FOREIGN KEY (staff_id) REFERENCES staff(id)
+);
+CREATE INDEX IF NOT EXISTS idx_shifts_staff_date ON staff_shifts (staff_id, work_date);
+
+CREATE TABLE IF NOT EXISTS bookings (
+  id                      TEXT PRIMARY KEY,
+  line_account_id         TEXT NOT NULL,
+  friend_id               TEXT NOT NULL,
+  staff_id                TEXT NOT NULL,
+  menu_id                 TEXT NOT NULL,
+  starts_at               TEXT NOT NULL,
+  ends_at                 TEXT NOT NULL,
+  block_ends_at           TEXT NOT NULL,
+  status                  TEXT NOT NULL CHECK (status IN ('requested','confirmed','rejected','expired','cancelled','completed','no_show')),
+  customer_note           TEXT,
+  internal_note           TEXT,
+  price_at_booking        INTEGER NOT NULL,
+  requested_at            TEXT NOT NULL,
+  decided_at              TEXT,
+  decided_by_staff_id     TEXT,
+  external_event_id       TEXT,
+  external_calendar_id    TEXT,
+  created_at              TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at              TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  FOREIGN KEY (line_account_id) REFERENCES line_accounts(id),
+  FOREIGN KEY (friend_id) REFERENCES friends(id),
+  FOREIGN KEY (staff_id) REFERENCES staff(id),
+  FOREIGN KEY (menu_id) REFERENCES menus(id)
+);
+CREATE INDEX IF NOT EXISTS idx_bookings_account_status_starts ON bookings (line_account_id, status, starts_at);
+CREATE INDEX IF NOT EXISTS idx_bookings_staff_overlap ON bookings (staff_id, status, starts_at, block_ends_at);
+CREATE INDEX IF NOT EXISTS idx_bookings_friend_starts ON bookings (friend_id, starts_at DESC);
+
+CREATE TABLE IF NOT EXISTS booking_idempotency_keys (
+  key              TEXT PRIMARY KEY,
+  line_account_id  TEXT NOT NULL,
+  friend_id        TEXT NOT NULL,
+  response_status  INTEGER NOT NULL,
+  response_body    TEXT NOT NULL,
+  created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  expires_at       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_idempotency_expires ON booking_idempotency_keys (expires_at);
+
+CREATE TABLE IF NOT EXISTS booking_reminders (
+  id            TEXT PRIMARY KEY,
+  booking_id    TEXT NOT NULL,
+  kind          TEXT NOT NULL CHECK (kind IN ('day_before','hours_before')),
+  scheduled_at  TEXT NOT NULL,
+  sent_at       TEXT,
+  status        TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','sent','failed','failed_permanent','cancelled')),
+  retry_count   INTEGER NOT NULL DEFAULT 0,
+  last_error    TEXT,
+  FOREIGN KEY (booking_id) REFERENCES bookings(id)
+);
+CREATE INDEX IF NOT EXISTS idx_reminders_status_scheduled ON booking_reminders (status, scheduled_at);
+
+-- ============================================================
 -- パーソナルAIアシスタント返信（案A）
 -- ============================================================
 CREATE TABLE IF NOT EXISTS ai_assistant_config (

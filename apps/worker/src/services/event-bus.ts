@@ -6,8 +6,9 @@ import { extractFlexAltText } from '../utils/flex-alt-text.js';
  * イベント発生時に以下を実行:
  * 1. アクティブな送信Webhookへ通知
  * 2. スコアリングルール適用
- * 3. 自動化ルール(IF-THEN)実行
- * 4. 通知ルール処理
+ * 3. CVポイントへの conversion_events 自動記録
+ * 4. 自動化ルール(IF-THEN)実行
+ * 5. 通知ルール処理
  */
 
 import {
@@ -26,6 +27,7 @@ import {
 import { LineClient } from '@line-crm/line-sdk';
 import type { Message } from '@line-crm/line-sdk';
 import { sendAdConversions } from './ad-conversion.js';
+import { trackConversionsForEvent } from './conversion-tracker.js';
 
 export interface EventPayload {
   friendId?: string;
@@ -51,10 +53,11 @@ export async function fireEvent(
   lineAccessToken?: string,
   lineAccountId?: string | null,
 ): Promise<void> {
-  // Phase 1: fire webhooks, apply scoring rules, and ad conversion postback concurrently.
+  // Phase 1: fire webhooks, apply scoring, CV tracking, and ad conversion postback concurrently.
   const phase1: Promise<unknown>[] = [
     fireOutgoingWebhooks(db, eventType, payload),
     processScoring(db, eventType, payload),
+    processConversions(db, eventType, payload),
   ];
   if (payload.friendId && payload.conversionEventName) {
     phase1.push(
@@ -123,6 +126,19 @@ async function fireOutgoingWebhooks(
     }
   } catch (err) {
     console.error('fireOutgoingWebhooks error:', err);
+  }
+}
+
+/** CVポイントへの conversion_events 自動記録 */
+async function processConversions(
+  db: D1Database,
+  eventType: string,
+  payload: EventPayload,
+): Promise<void> {
+  try {
+    await trackConversionsForEvent(db, eventType, payload);
+  } catch (err) {
+    console.error('processConversions error:', err);
   }
 }
 

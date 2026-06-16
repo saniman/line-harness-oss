@@ -636,6 +636,166 @@ export const api = {
   },
 }
 
+// ----------------------------------------------------------------
+// Booking API client (admin endpoints scoped by ?account_id=)
+// Ported from upstream Shudesu/line-harness-oss
+// ----------------------------------------------------------------
+
+export interface BookingMenu {
+  id: string;
+  name: string;
+  category_label: string | null;
+  description: string | null;
+  duration_minutes: number;
+  buffer_after_minutes: number;
+  base_price: number;
+  sort_order: number;
+  is_active: number;
+}
+
+export interface BookingStaff {
+  id: string;
+  name: string;
+  display_name: string;
+  role: string | null;
+  profile_image_url: string | null;
+  bio: string | null;
+  sort_order: number;
+  is_designation_optional: number;
+  is_active: number;
+}
+
+export interface BookingShift {
+  id: string;
+  work_date: string;
+  start_time: string;
+  end_time: string;
+}
+
+export interface StaffMenuMatrix {
+  menu_id: string;
+  name: string;
+  is_offered: number;
+  override_duration_minutes: number | null;
+  override_price: number | null;
+}
+
+export interface BookingRequest {
+  id: string;
+  starts_at: string;
+  ends_at: string;
+  status: string;
+  customer_note: string | null;
+  internal_note: string | null;
+  price_at_booking: number;
+  menu_name: string;
+  staff_name: string;
+  friend_name: string | null;
+}
+
+function withAccount(path: string, accountId: string): string {
+  return `${path}${path.includes('?') ? '&' : '?'}account_id=${encodeURIComponent(accountId)}`;
+}
+
+export const bookingApi = {
+  listMenus: (accountId: string) =>
+    fetchApi<{ menus: BookingMenu[] }>(withAccount('/api/booking/admin/menus', accountId)),
+  createMenu: (accountId: string, body: Partial<BookingMenu>) =>
+    fetchApi<{ id: string }>(withAccount('/api/booking/admin/menus', accountId), {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  updateMenu: (accountId: string, id: string, body: Partial<BookingMenu>) =>
+    fetchApi<{ ok: true }>(withAccount(`/api/booking/admin/menus/${id}`, accountId), {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  deleteMenu: (accountId: string, id: string) =>
+    fetchApi<{ ok: true }>(withAccount(`/api/booking/admin/menus/${id}`, accountId), {
+      method: 'DELETE',
+    }),
+  listStaff: (accountId: string) =>
+    fetchApi<{ staff: BookingStaff[] }>(withAccount('/api/booking/admin/staff', accountId)),
+  createStaff: (accountId: string, body: Partial<BookingStaff>) =>
+    fetchApi<{ id: string }>(withAccount('/api/booking/admin/staff', accountId), {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  updateStaff: (accountId: string, id: string, body: Partial<BookingStaff>) =>
+    fetchApi<{ ok: true }>(withAccount(`/api/booking/admin/staff/${id}`, accountId), {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  deleteStaff: (accountId: string, id: string) =>
+    fetchApi<{ ok: true }>(withAccount(`/api/booking/admin/staff/${id}`, accountId), {
+      method: 'DELETE',
+    }),
+  getStaffMenus: (accountId: string, staffId: string) =>
+    fetchApi<{ matrix: StaffMenuMatrix[] }>(
+      withAccount(`/api/booking/admin/staff/${staffId}/menus`, accountId),
+    ),
+  putStaffMenus: (
+    accountId: string,
+    staffId: string,
+    menus: Array<{
+      menu_id: string;
+      is_offered: boolean;
+      override_duration_minutes?: number | null;
+      override_price?: number | null;
+    }>,
+  ) =>
+    fetchApi<{ ok: true }>(
+      withAccount(`/api/booking/admin/staff/${staffId}/menus`, accountId),
+      { method: 'PUT', body: JSON.stringify({ menus }) },
+    ),
+  getShifts: (accountId: string, staffId: string) =>
+    fetchApi<{ shifts: BookingShift[] }>(
+      withAccount(`/api/booking/admin/staff/${staffId}/shifts`, accountId),
+    ),
+  putShifts: (
+    accountId: string,
+    staffId: string,
+    shifts: Array<{ work_date: string; start_time: string; end_time: string }>,
+  ) =>
+    fetchApi<{ ok: true; count: number }>(
+      withAccount(`/api/booking/admin/staff/${staffId}/shifts`, accountId),
+      { method: 'PUT', body: JSON.stringify({ shifts }) },
+    ),
+  deleteShift: (accountId: string, staffId: string, shiftId: string) =>
+    fetchApi<{ ok: true }>(
+      withAccount(`/api/booking/admin/staff/${staffId}/shifts/${shiftId}`, accountId),
+      { method: 'DELETE' },
+    ),
+  generateShifts: (
+    accountId: string,
+    staffId: string,
+    body: {
+      from_date: string;
+      weeks: number;
+      weekly_template: Record<string, { start: string; end: string } | null>;
+    },
+  ) =>
+    fetchApi<{ inserted: number }>(
+      withAccount(`/api/booking/admin/staff/${staffId}/shifts/generate`, accountId),
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  listRequests: (accountId: string, status: string = 'requested') =>
+    fetchApi<{ requests: BookingRequest[] }>(
+      withAccount(`/api/booking/admin/requests?status=${status}`, accountId),
+    ),
+  decideRequest: (
+    accountId: string,
+    id: string,
+    action: 'approve' | 'reject' | 'cancel' | 'no_show' | 'complete',
+  ) =>
+    fetchApi<{ status: string }>(
+      withAccount(`/api/booking/admin/requests/${id}`, accountId),
+      { method: 'PATCH', body: JSON.stringify({ action }) },
+    ),
+  pendingCount: (accountId: string) =>
+    fetchApi<{ count: number }>(withAccount('/api/booking/admin/pending-count', accountId)),
+};
+
 export type CalendarConnection = {
   id: string
   calendarId: string

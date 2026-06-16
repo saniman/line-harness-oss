@@ -40,6 +40,19 @@ export async function getConversionPointById(
     .first<ConversionPoint>();
 }
 
+export async function getConversionPointsByEventType(
+  db: D1Database,
+  eventType: string,
+): Promise<ConversionPoint[]> {
+  const result = await db
+    .prepare(
+      `SELECT * FROM conversion_points WHERE event_type = ? ORDER BY created_at ASC`,
+    )
+    .bind(eventType)
+    .all<ConversionPoint>();
+  return result.results;
+}
+
 export interface CreateConversionPointInput {
   name: string;
   eventType: string;

@@ -8,6 +8,10 @@ import { processReminderDeliveries } from './services/reminder-delivery.js';
 import { checkAccountHealth } from './services/ban-monitor.js';
 import { refreshLineAccessTokens } from './services/token-refresh.js';
 import { processInsightFetch } from './services/insight-fetcher.js';
+import { processDueReminders } from './services/booking-reminders.js';
+import { runExpirer } from './services/booking-expirer.js';
+import { sendBookingNotification } from './services/booking-notifier.js';
+import { DEFAULT_ACCOUNT_SETTINGS } from './services/booking-types.js';
 import { authMiddleware } from './middleware/auth.js';
 import { rateLimitMiddleware } from './middleware/rate-limit.js';
 import { webhook } from './routes/webhook.js';
@@ -47,6 +51,7 @@ import { messageTemplates } from './routes/message-templates.js';
 import { businessHours } from './routes/business-hours.js';
 import { events } from './routes/events.js';
 import { aiAssistant } from './routes/ai-assistant.js';
+import booking from './routes/booking.js';
 
 export type Env = {
   Bindings: {
@@ -128,6 +133,7 @@ app.route('/', messageTemplates);
 app.route('/', businessHours);
 app.route('/', events);
 app.route('/', aiAssistant);
+app.route('/', booking);
 
 // Self-hosted QR code proxy — prevents leaking ref tokens to third-party services
 app.get('/api/qr', async (c) => {
@@ -415,6 +421,35 @@ async function scheduled(
     await processDuplicateDetection(env.DB);
   } catch (e) {
     console.error('Duplicate detection error:', e);
+  }
+
+  // Salon booking reminders — every 5-minute tick scans due reminders.
+  try {
+    const result = await processDueReminders(env.DB, {
+      now: new Date(),
+      sender: sendBookingNotification,
+      reminderHoursBefore: DEFAULT_ACCOUNT_SETTINGS.reminder_hours_before,
+    });
+    if (result.sent + result.failed > 0) {
+      console.log(`[booking-reminders] sent=${result.sent} failed=${result.failed}`);
+    }
+  } catch (e) {
+    console.error('booking-reminders error:', e);
+  }
+
+  // Salon booking expirer — 6h cron tick only.
+  if (cronExpr === '0 */6 * * *') {
+    try {
+      const result = await runExpirer(env.DB, {
+        now: new Date(),
+        sender: sendBookingNotification,
+      });
+      console.log(
+        `[booking-expirer] expired=${result.expired} idempotency_purged=${result.idempotencyPurged}`,
+      );
+    } catch (e) {
+      console.error('booking-expirer error:', e);
+    }
   }
 }
 
