@@ -2,6 +2,11 @@
 
 import type { SalonBookingContext } from './context.js';
 
+// LIFF は Pages、API は別オリジンの Worker にホストされる構成があるため、
+// ビルド時に注入される VITE_API_BASE を優先して絶対 URL で叩く。
+// 未設定（API と同一オリジン）の場合は従来どおり相対パスにフォールバック。
+const API_BASE = import.meta.env?.VITE_API_BASE || '';
+
 export interface MenuItem {
   id: string;
   name: string;
@@ -47,8 +52,10 @@ function authHeaders(ctx: SalonBookingContext, extra: Record<string, string> = {
 }
 
 function withLiff(path: string, ctx: SalonBookingContext): string {
-  const u = new URL(path, window.location.origin);
+  const u = new URL(path, API_BASE || window.location.origin);
   u.searchParams.set('liffId', ctx.liffId);
+  // 別オリジン (Worker) を指す場合は絶対 URL を返す必要がある。
+  if (API_BASE) return u.toString();
   return u.pathname + u.search;
 }
 

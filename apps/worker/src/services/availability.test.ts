@@ -304,4 +304,31 @@ describe('getAvailability', () => {
     });
     expect(result.by_staff).toEqual([]);
   });
+
+  test('別メニューの予約でも同一スタッフなら同時間帯は除外（クロスメニュー二重予約防止）', async () => {
+    // メニュー M2 の空きを問い合わせるが、同じスタッフ S1 が別メニュー由来で
+    // 11:00-12:00 JST に予約済み。bookings は staff_id だけで引き、menu を区別
+    // しないので、別メニューの予約でも同一スタッフの時間帯は busy として除外される。
+    const db = stubDB({
+      menu: {
+        duration_minutes: 60,
+        buffer_after_minutes: 0,
+        override_duration: null,
+        override_price: null,
+      },
+      staff: [{ id: 'S1', display_name: '山田', is_designation_optional: 0 }],
+      shifts: [{ staff_id: 'S1', work_date: '2026-05-09', start_time: '10:00', end_time: '13:00' }],
+      // 11:00-12:00 JST = 02:00-03:00 UTC の予約（別メニュー想定）
+      bookings: [{ staff_id: 'S1', starts_at: '2026-05-09T02:00:00Z', block_ends_at: '2026-05-09T03:00:00Z' }],
+    });
+    const result = await getAvailability(db, {
+      lineAccountId: 'A1',
+      menuId: 'M2',
+      from: '2026-05-09',
+      to: '2026-05-09',
+      now: new Date('2026-05-08T00:00:00Z'),
+      minLeadTimeMinutes: 60,
+    });
+    expect(result.by_staff[0].slots.map((s) => s.start)).toEqual(['10:00', '12:00']);
+  });
 });
