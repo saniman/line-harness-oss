@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Header from '@/components/layout/header'
+import AccountGate from '@/components/shared/account-gate'
 import { bookingApi, type BookingShift, type BookingStaff } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
 
@@ -115,6 +116,7 @@ export default function StaffShiftsPage() {
         }
       />
 
+      <AccountGate>
       {error && (
         <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
           {error}
@@ -126,11 +128,7 @@ export default function StaffShiftsPage() {
         </div>
       )}
 
-      {!selectedAccountId ? (
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center text-sm text-gray-500">
-          サイドバーでアカウントを選択してください
-        </div>
-      ) : !id ? (
+      {!id ? (
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center text-sm text-gray-500">
           staff_id が指定されていません。
           <a href="/booking/staff" className="ml-1 text-blue-600 underline">
@@ -263,6 +261,7 @@ export default function StaffShiftsPage() {
           </section>
         </div>
       )}
+      </AccountGate>
     </div>
   )
 }

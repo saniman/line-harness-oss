@@ -91,7 +91,8 @@ function AccountAvatar({ account, size = 32 }: { account: AccountWithStats; size
 }
 
 function AccountSwitcher() {
-  const { accounts, selectedAccount, setSelectedAccountId, loading } = useAccount()
+  const { accounts, selectedAccount, setSelectedAccountId, loading, error, refreshAccounts } =
+    useAccount()
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
@@ -103,7 +104,34 @@ function AccountSwitcher() {
     return () => document.removeEventListener('mousedown', handler)
   }, [])
 
-  if (loading || accounts.length === 0) return null
+  if (loading) {
+    return (
+      <div className="px-3 py-3 border-b border-gray-200">
+        <div className="px-2.5 py-2 text-xs text-gray-400">アカウント読み込み中…</div>
+      </div>
+    )
+  }
+
+  if (accounts.length === 0) {
+    return (
+      <div className="px-3 py-3 border-b border-gray-200">
+        <p className="px-2.5 text-xs text-gray-500 mb-2">LINEアカウント未選択</p>
+        {error && <p className="px-2.5 text-xs text-red-500 mb-2">{error}</p>}
+        <div className="px-2.5 flex gap-2">
+          <button
+            type="button"
+            onClick={() => void refreshAccounts()}
+            className="text-xs text-gray-600 underline"
+          >
+            再読み込み
+          </button>
+          <Link href="/accounts" className="text-xs text-green-700 underline">
+            登録する
+          </Link>
+        </div>
+      </div>
+    )
+  }
 
   const displayName = selectedAccount?.displayName || selectedAccount?.name || ''
 

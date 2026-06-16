@@ -28,6 +28,7 @@ interface AccountContextValue {
   setSelectedAccountId: (id: string) => void
   refreshAccounts: () => Promise<void>
   loading: boolean
+  error: string | null
 }
 
 const AccountContext = createContext<AccountContextValue | null>(null)
@@ -36,6 +37,7 @@ export function AccountProvider({ children }: { children: ReactNode }) {
   const [accounts, setAccounts] = useState<AccountWithStats[]>([])
   const [selectedAccountId, setSelectedAccountIdState] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
   const setSelectedAccountId = useCallback((id: string) => {
     setSelectedAccountIdState(id)
@@ -47,6 +49,8 @@ export function AccountProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const refreshAccounts = useCallback(async () => {
+    setLoading(true)
+    setError(null)
     try {
       const res = await api.lineAccounts.list()
       if (res.success && res.data.length > 0) {
@@ -69,9 +73,14 @@ export function AccountProvider({ children }: { children: ReactNode }) {
       } else {
         setAccounts([])
         setSelectedAccountIdState(null)
+        setError(
+          res.success
+            ? 'LINEアカウントが登録されていません。設定 → LINEアカウント から登録してください。'
+            : res.error || 'アカウント一覧の取得に失敗しました',
+        )
       }
-    } catch {
-      // Failed to load accounts
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'アカウント一覧の取得に失敗しました')
     } finally {
       setLoading(false)
     }
@@ -85,7 +94,7 @@ export function AccountProvider({ children }: { children: ReactNode }) {
 
   return (
     <AccountContext.Provider
-      value={{ accounts, selectedAccountId, selectedAccount, setSelectedAccountId, refreshAccounts, loading }}
+      value={{ accounts, selectedAccountId, selectedAccount, setSelectedAccountId, refreshAccounts, loading, error }}
     >
       {children}
     </AccountContext.Provider>

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import Header from '@/components/layout/header'
+import AccountGate from '@/components/shared/account-gate'
 import { bookingApi, type BookingStaff } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
 
@@ -79,17 +80,14 @@ export default function BookingStaffPage() {
         }
       />
 
+      <AccountGate>
       {error && (
         <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
           {error}
         </div>
       )}
 
-      {!selectedAccountId ? (
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center text-sm text-gray-500">
-          サイドバーでアカウントを選択してください
-        </div>
-      ) : loading ? (
+      {loading ? (
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center text-sm text-gray-500">
           読み込み中…
         </div>
@@ -167,6 +165,8 @@ export default function BookingStaffPage() {
           </div>
         </div>
       )}
+
+      </AccountGate>
 
       {editing && <Modal staff={editing} onSave={save} onClose={() => setEditing(null)} />}
     </div>

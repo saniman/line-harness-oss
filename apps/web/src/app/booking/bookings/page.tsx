@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import Header from '@/components/layout/header'
+import AccountGate from '@/components/shared/account-gate'
 import { bookingApi, type BookingRequest } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
 
@@ -120,11 +121,8 @@ export default function BookingsPage() {
         ))}
       </div>
 
-      {!selectedAccountId ? (
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center text-sm text-gray-500">
-          サイドバーでアカウントを選択してください
-        </div>
-      ) : loading ? (
+      <AccountGate>
+      {loading ? (
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center text-sm text-gray-500">
           読み込み中…
         </div>
@@ -174,6 +172,7 @@ export default function BookingsPage() {
           </div>
         </div>
       )}
+      </AccountGate>
     </div>
   )
 }

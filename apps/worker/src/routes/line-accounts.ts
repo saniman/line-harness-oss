@@ -52,35 +52,54 @@ lineAccounts.get('/api/line-accounts', async (c) => {
     const db = c.env.DB;
     const items = await getLineAccounts(db);
 
-    // Get stats for all accounts in parallel
+    // Get stats for all accounts in parallel (stats failure must not break the list)
     const results = await Promise.all(
       items.map(async (item) => {
-        const [profile, friendCount, scenarioCount, msgCount] = await Promise.all([
-          fetchBotProfile(item.channel_access_token),
-          db.prepare(`SELECT COUNT(*) as count FROM friends WHERE is_following = 1 AND line_account_id = ?`).bind(item.id).first<{ count: number }>(),
-          db.prepare(
-            `SELECT COUNT(*) as count FROM friend_scenarios fs
-             INNER JOIN friends f ON f.id = fs.friend_id
-             WHERE fs.status = 'active' AND f.line_account_id = ?`,
-          ).bind(item.id).first<{ count: number }>(),
-          db.prepare(
-            `SELECT COUNT(*) as count FROM messages_log ml
-             INNER JOIN friends f ON f.id = ml.friend_id
-             WHERE ml.direction = 'outgoing' AND (ml.delivery_type IS NULL OR ml.delivery_type = 'push') AND ml.created_at >= date('now', '-30 days') AND f.line_account_id = ?`,
-          ).bind(item.id).first<{ count: number }>(),
-        ]);
-
-        return {
+        const base = {
           ...serializeLineAccount(item),
-          displayName: profile.displayName || item.name,
-          pictureUrl: profile.pictureUrl || null,
-          basicId: profile.basicId || null,
+          displayName: item.name,
+          pictureUrl: null as string | null,
+          basicId: null as string | null,
           stats: {
+            friendCount: 0,
+            activeScenarios: 0,
+            messagesThisMonth: 0,
+          },
+        };
+
+        try {
+          const profile = await fetchBotProfile(item.channel_access_token);
+          base.displayName = profile.displayName || item.name;
+          base.pictureUrl = profile.pictureUrl || null;
+          base.basicId = profile.basicId || null;
+        } catch {
+          // LINE profile fetch is best-effort
+        }
+
+        try {
+          const [friendCount, scenarioCount, msgCount] = await Promise.all([
+            db.prepare(`SELECT COUNT(*) as count FROM friends WHERE is_following = 1 AND line_account_id = ?`).bind(item.id).first<{ count: number }>(),
+            db.prepare(
+              `SELECT COUNT(*) as count FROM friend_scenarios fs
+               INNER JOIN friends f ON f.id = fs.friend_id
+               WHERE fs.status = 'active' AND f.line_account_id = ?`,
+            ).bind(item.id).first<{ count: number }>(),
+            db.prepare(
+              `SELECT COUNT(*) as count FROM messages_log ml
+               INNER JOIN friends f ON f.id = ml.friend_id
+               WHERE ml.direction = 'outgoing' AND (ml.delivery_type IS NULL OR ml.delivery_type = 'push') AND ml.created_at >= date('now', '-30 days') AND f.line_account_id = ?`,
+            ).bind(item.id).first<{ count: number }>(),
+          ]);
+          base.stats = {
             friendCount: friendCount?.count ?? 0,
             activeScenarios: scenarioCount?.count ?? 0,
             messagesThisMonth: msgCount?.count ?? 0,
-          },
-        };
+          };
+        } catch (err) {
+          console.error(`line-accounts stats error for ${item.id}:`, err);
+        }
+
+        return base;
       }),
     );
     return c.json({ success: true, data: results });
