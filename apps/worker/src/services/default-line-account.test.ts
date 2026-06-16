@@ -8,12 +8,42 @@ vi.mock('@line-crm/db', () => ({
   upsertDefaultLineAccountFromEnv: mockUpsertDefaultLineAccountFromEnv,
 }));
 
-import { ensureDefaultLineAccount } from './default-line-account.js';
+import { ensureDefaultLineAccount, resolveChannelIdForEnv } from './default-line-account.js';
 
 const db = {} as D1Database;
 
 beforeEach(() => {
   vi.clearAllMocks();
+});
+
+describe('resolveChannelIdForEnv', () => {
+  test('prefers LINE_CHANNEL_ID when set', () => {
+    expect(
+      resolveChannelIdForEnv({
+        LINE_CHANNEL_ID: '111',
+        LIFF_BASE_URL: 'https://liff.line.me/222-abc',
+      }),
+    ).toBe('111');
+  });
+
+  test('derives channel id prefix from LIFF URL', () => {
+    expect(
+      resolveChannelIdForEnv({
+        LINE_CHANNEL_ACCESS_TOKEN: 'token',
+        LINE_CHANNEL_SECRET: 'secret',
+        LIFF_BASE_URL: 'https://liff.line.me/1661159603-5qlDj5wV',
+      }),
+    ).toBe('1661159603');
+  });
+
+  test('falls back to env-default when only token and secret exist', () => {
+    expect(
+      resolveChannelIdForEnv({
+        LINE_CHANNEL_ACCESS_TOKEN: 'token',
+        LINE_CHANNEL_SECRET: 'secret',
+      }),
+    ).toBe('env-default');
+  });
 });
 
 describe('ensureDefaultLineAccount', () => {
@@ -49,6 +79,21 @@ describe('ensureDefaultLineAccount', () => {
       loginChannelSecret: null,
       liffId: '1661159603-5qlDj5wV',
     });
+  });
+
+  test('bootstraps without LINE_CHANNEL_ID using LIFF URL prefix', async () => {
+    mockGetLineAccounts.mockResolvedValue([]);
+
+    await ensureDefaultLineAccount(db, {
+      LINE_CHANNEL_ACCESS_TOKEN: 'access-token',
+      LINE_CHANNEL_SECRET: 'channel-secret',
+      LIFF_BASE_URL: 'https://liff.line.me/1661159603-5qlDj5wV',
+    });
+
+    expect(mockUpsertDefaultLineAccountFromEnv).toHaveBeenCalledWith(
+      db,
+      expect.objectContaining({ channelId: '1661159603' }),
+    );
   });
 
   test('skips bootstrap when env credentials are missing', async () => {

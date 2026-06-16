@@ -97,26 +97,46 @@ export async function upsertDefaultLineAccountFromEnv(
   if (existing) return existing;
 
   const now = jstNow();
-  await db
-    .prepare(
-      `INSERT INTO line_accounts
-        (id, channel_id, name, channel_access_token, channel_secret,
-         login_channel_id, login_channel_secret, liff_id, is_active, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
-    )
-    .bind(
-      DEFAULT_LINE_ACCOUNT_ID,
-      input.channelId,
-      input.name,
-      input.channelAccessToken,
-      input.channelSecret,
-      input.loginChannelId ?? null,
-      input.loginChannelSecret ?? null,
-      input.liffId ?? null,
-      now,
-      now,
-    )
-    .run();
+  try {
+    await db
+      .prepare(
+        `INSERT INTO line_accounts
+          (id, channel_id, name, channel_access_token, channel_secret,
+           login_channel_id, login_channel_secret, liff_id, is_active, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+      )
+      .bind(
+        DEFAULT_LINE_ACCOUNT_ID,
+        input.channelId,
+        input.name,
+        input.channelAccessToken,
+        input.channelSecret,
+        input.loginChannelId ?? null,
+        input.loginChannelSecret ?? null,
+        input.liffId ?? null,
+        now,
+        now,
+      )
+      .run();
+  } catch {
+    // Older DBs may lack login_channel_id / liff_id columns (pre-008).
+    await db
+      .prepare(
+        `INSERT INTO line_accounts
+          (id, channel_id, name, channel_access_token, channel_secret, is_active, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
+      )
+      .bind(
+        DEFAULT_LINE_ACCOUNT_ID,
+        input.channelId,
+        input.name,
+        input.channelAccessToken,
+        input.channelSecret,
+        now,
+        now,
+      )
+      .run();
+  }
 
   return (await getLineAccountById(db, DEFAULT_LINE_ACCOUNT_ID))!;
 }

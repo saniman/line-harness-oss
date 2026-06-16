@@ -51,7 +51,11 @@ async function fetchBotProfile(accessToken: string): Promise<{ displayName?: str
 lineAccounts.get('/api/line-accounts', async (c) => {
   try {
     const db = c.env.DB;
-    await ensureDefaultLineAccount(db, c.env);
+    try {
+      await ensureDefaultLineAccount(db, c.env);
+    } catch (bootstrapErr) {
+      console.error('ensureDefaultLineAccount error:', bootstrapErr);
+    }
     const items = await getLineAccounts(db);
 
     // Get stats for all accounts in parallel (stats failure must not break the list)
