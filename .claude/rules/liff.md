@@ -54,9 +54,23 @@ globs: "apps/worker/src/client/**/*.ts"
 }
 ```
 
+### LINE Login チャネルの bot リンク / openid スコープ（2026-06-16 追記）
+
+`liff.getFriendship()` と `liff.getIDToken()` を使うフロー（サロン予約など）では、
+LINE Login チャネル側の設定が2つ必要。**開発者アカウントや既存フローでは顕在化せず、
+該当フローを実機で通して初めてエラーになる**種類の落とし穴。
+
+| 症状 | 原因 | 対処 |
+|---|---|---|
+| `There is no login bot linked to this channel.` | LINE Login チャネルに公式アカウント(bot)が未リンク | チャネル基本設定 → 「リンクされた LINE 公式アカウント」を設定。Login と Messaging が同一プロバイダーである必要あり |
+| `LINE 認証情報の取得に失敗しました。` | LIFF アプリのスコープに `openid` が無く `getIDToken()` が null | LIFF 設定 → Scopes で `openid` を有効化 → LIFF 開き直し |
+
 ### LIFF 新規リリース前チェックリスト
 
 - [ ] LINE Login チャンネルのステータスが **Published** であること
+- [ ] `getFriendship()` を使うなら **公式アカウント(bot)が Login チャネルにリンク**済み
+- [ ] `getIDToken()` を使うなら **LIFF スコープに `openid`** が入っている
+- [ ] API 呼び出しが **VITE_API_BASE 経由の絶対URL**になっている（相対パスは Pages に飛ぶ）
 - [ ] **開発者ロールを持たない** LINE アカウント（友人・テスト用サブアカウント）でエンドツーエンドを通す
 - [ ] LIFF から始まる全フロー（診断完了 → 予約ボタン → LIFF 起動 → 予約完了）を非開発者で確認する
 
@@ -70,6 +84,31 @@ globs: "apps/worker/src/client/**/*.ts"
 - slots と book エンドポイントは認証不要（Bearer トークン不要）
 - エラー時はユーザーに分かりやすいメッセージを表示する
 - booking リクエストには lineUserId（liff.getProfile().userId）を含める
+
+### LIFFクライアントのfetchは必ず VITE_API_BASE 経由の絶対URLにする（2026-06-16 追記）
+
+症状: サロン予約で `メニュー情報の取得に失敗しました。The string did not match the expected pattern.`
+原因: LIFF は Pages（line-harness-liff）、API は別ドメインの Worker（api.walover-co.work）に
+ホストされている。`window.location.origin` ベースの相対パスで叩くと**リクエストが Pages に飛び**、
+返ってきた HTML を `res.json()` がパースできず WebKit が上記エラーを出す。
+
+❌ 誤（相対パス → Pages に飛ぶ）
+```typescript
+const u = new URL(path, window.location.origin);
+return u.pathname + u.search; // /api/... を同一オリジン(Pages)に投げてしまう
+```
+
+✅ 正（VITE_API_BASE 優先で絶対URL）
+```typescript
+const API_BASE = import.meta.env?.VITE_API_BASE || '';
+const u = new URL(path, API_BASE || window.location.origin);
+if (API_BASE) return u.toString(); // Worker への絶対URL
+return u.pathname + u.search;       // 同一オリジン時のフォールバック
+```
+
+対処: `apps/worker/src/client/**` で新しく API を叩くときは `VITE_API_BASE` を使う。
+`main.ts` の link/affiliate 系は best-effort で握りつぶしているため失敗が見えにくいが、
+取得結果が必須のフロー（メニュー/空き枠など）では絶対URL必須。
 
 ## `declare const liff` の型宣言に openWindow を維持する
 
