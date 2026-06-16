@@ -101,8 +101,6 @@ async function verifyCallerLineUserId(c: Context<Env>): Promise<string | null> {
     /* decode 失敗は無視: 候補 URL のみで verify を試す */
   }
 
-  console.log('[verifyCallerLineUserId] candidates:', candidates.length, candidates.join(','));
-
   for (const channelId of candidates) {
     const res = await fetch('https://api.line.me/oauth2/v2.1/verify', {
       method: 'POST',
@@ -355,17 +353,15 @@ booking.post('/api/liff/booking/requests', async (c) => {
     .bind(body.staff_id, startJstDate)
     .first<{ start_time: string; end_time: string }>();
   if (!shift) return c.json({ error: 'out_of_shift' }, 422);
+  const dayStartUtc = new Date(`${startJstDate}T00:00:00+09:00`).toISOString();
+  const dayEndUtc = new Date(`${startJstDate}T24:00:00+09:00`).toISOString();
   const existingBookings = await c.env.DB
     .prepare(
       `SELECT starts_at, block_ends_at FROM bookings
         WHERE staff_id = ? AND status IN ('requested','confirmed')
           AND starts_at < ? AND block_ends_at > ?`,
     )
-    .bind(
-      body.staff_id,
-      `${startJstDate}T15:00:00Z`,
-      `${startJstDate}T-09:00:00.000Z`.replace('-09', '00'),
-    )
+    .bind(body.staff_id, dayEndUtc, dayStartUtc)
     .all<{ starts_at: string; block_ends_at: string }>();
   const slotsToday = computeSlots({
     working: [{ start: shift.start_time, end: shift.end_time }],
