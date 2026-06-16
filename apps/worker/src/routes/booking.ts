@@ -26,6 +26,7 @@ import {
   type BookingStatus,
 } from '../services/booking-types.js';
 import { fireEvent } from '../services/event-bus.js';
+import { ensureDefaultLineAccount } from '../services/default-line-account.js';
 
 const booking = new Hono<Env>();
 
@@ -122,7 +123,14 @@ async function verifyCallerLineUserId(c: Context<Env>): Promise<string | null> {
 }
 
 async function resolveAccountIdAdmin(c: Context<Env>): Promise<string | null> {
-  return c.req.query('account_id') ?? null;
+  const fromQuery = c.req.query('account_id');
+  if (fromQuery) return fromQuery;
+
+  // Single-account fork: env credentials only → bootstrap line_accounts row on first use.
+  await ensureDefaultLineAccount(c.env.DB, c.env);
+  const accounts = await getLineAccounts(c.env.DB);
+  if (accounts.length === 1) return accounts[0].id;
+  return null;
 }
 
 // staff が指定 account に属することを保証する。属していなければ null を返す。

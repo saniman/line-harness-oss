@@ -70,6 +70,57 @@ export async function getLineAccountByChannelId(
     .first<LineAccount>();
 }
 
+/** Bootstrap id used when only wrangler env credentials exist (single-account fork). */
+export const DEFAULT_LINE_ACCOUNT_ID = 'default';
+
+export interface UpsertDefaultLineAccountInput {
+  channelId: string;
+  name: string;
+  channelAccessToken: string;
+  channelSecret: string;
+  loginChannelId?: string | null;
+  loginChannelSecret?: string | null;
+  liffId?: string | null;
+}
+
+/**
+ * Ensure a row exists for the env-based single-account setup.
+ * No-op when line_accounts already has rows or the default row exists.
+ */
+export async function upsertDefaultLineAccountFromEnv(
+  db: D1Database,
+  input: UpsertDefaultLineAccountInput,
+): Promise<LineAccount> {
+  const existing =
+    (await getLineAccountById(db, DEFAULT_LINE_ACCOUNT_ID)) ??
+    (await getLineAccountByChannelId(db, input.channelId));
+  if (existing) return existing;
+
+  const now = jstNow();
+  await db
+    .prepare(
+      `INSERT INTO line_accounts
+        (id, channel_id, name, channel_access_token, channel_secret,
+         login_channel_id, login_channel_secret, liff_id, is_active, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+    )
+    .bind(
+      DEFAULT_LINE_ACCOUNT_ID,
+      input.channelId,
+      input.name,
+      input.channelAccessToken,
+      input.channelSecret,
+      input.loginChannelId ?? null,
+      input.loginChannelSecret ?? null,
+      input.liffId ?? null,
+      now,
+      now,
+    )
+    .run();
+
+  return (await getLineAccountById(db, DEFAULT_LINE_ACCOUNT_ID))!;
+}
+
 export type UpdateLineAccountInput = Partial<
   Pick<LineAccount, 'name' | 'channel_access_token' | 'channel_secret' | 'is_active' | 'token_expires_at'>
 >;

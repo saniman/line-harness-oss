@@ -50,8 +50,8 @@ export default function AccountGate({ children }: { children: ReactNode }) {
         <p className="mb-2 font-medium text-gray-700">LINE アカウントが選択されていません</p>
         {error && <p className="text-red-600 mb-3 text-xs">{error}</p>}
         <p className="mb-4 text-xs text-gray-400">
-          サイドバー上部（ロゴの下）のアカウント名をクリックして選択するか、
-          設定から LINE アカウントを登録してください。
+          単一アカウント構成では、ページを再読み込みすると wrangler の LINE 設定から自動登録されます。
+          サイドバー上部（ロゴの下）から選ぶか、設定 → LINEアカウント を確認してください。
         </p>
         <div className="flex flex-col sm:flex-row gap-2 justify-center">
           <button

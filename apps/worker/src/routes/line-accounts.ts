@@ -9,6 +9,7 @@ import {
 import type { LineAccount as DbLineAccount } from '@line-crm/db';
 import { requireRole } from '../middleware/role-guard.js';
 import type { Env } from '../index.js';
+import { ensureDefaultLineAccount } from '../services/default-line-account.js';
 
 const lineAccounts = new Hono<Env>();
 
@@ -50,6 +51,7 @@ async function fetchBotProfile(accessToken: string): Promise<{ displayName?: str
 lineAccounts.get('/api/line-accounts', async (c) => {
   try {
     const db = c.env.DB;
+    await ensureDefaultLineAccount(db, c.env);
     const items = await getLineAccounts(db);
 
     // Get stats for all accounts in parallel (stats failure must not break the list)
