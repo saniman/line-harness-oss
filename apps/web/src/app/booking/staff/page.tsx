@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import Header from '@/components/layout/header'
-import ImageUploader from '@/components/shared/image-uploader'
 import { bookingApi, type BookingStaff } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
 
@@ -237,12 +236,15 @@ function Modal({
               placeholder="例: トップスタイリスト"
             />
           </Field>
-          <ImageUploader
-            mode="url"
-            value={form.profile_image_url ? { mode: 'url', url: form.profile_image_url } : null}
-            onChange={(v) => set('profile_image_url', v?.mode === 'url' ? v.url : '')}
-            label="プロフィール画像"
-          />
+          <Field label="プロフィール画像 URL">
+            <input
+              type="url"
+              value={form.profile_image_url ?? ''}
+              onChange={(e) => set('profile_image_url', e.target.value)}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+              placeholder="https://..."
+            />
+          </Field>
           <Field label="紹介文">
             <textarea
               value={form.bio ?? ''}
