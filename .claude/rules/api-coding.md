@@ -405,6 +405,37 @@ if (cronExpr === '0 23 * * 0') {
 // 以降は既存処理
 ```
 
+### at-least-once な配信処理は単一 cron 専用にガードする（2026-06-17 追記）
+
+症状: 無料相談の前日リマインドが 09:00 JST(=00:00 UTC) に 2 通届いた（実測 77ms 差）。
+原因: 配信処理 `processReminderDeliveries` 等が cron 分岐なしで「SUN/WED 以外」全てで実行されていた。
+`*/5 * * * *` と `0 */6 * * *` は **00:00 / 06:00 / 12:00 / 18:00 UTC で同時発火**する。
+配信は「送信してから配信済みマーク」する at-least-once 設計のため、2 本の cron でほぼ同時に
+実行されると両方が「未配信」と判定して二重送信する。
+
+❌ 誤（配信系を cron 分岐せず実行 → 他 cron との同時発火で二重実行）
+```typescript
+if (cronExpr === '0 23 * * SUN') { /* ... */ return }
+if (cronExpr === '0 23 * * WED') { /* ... */ return }
+// SUN/WED 以外（*/5 と 0 */6 の両方）で配信系が走る → 同時発火時に二重送信
+await processReminderDeliveries(env.DB, defaultLineClient)
+```
+
+✅ 正（配信・メンテ系は */5 専用にガード）
+```typescript
+if (cronExpr === '*/5 * * * *') {
+  await processReminderDeliveries(env.DB, defaultLineClient)
+  // step配信・broadcast・queue・health・token refresh もここに集約
+}
+if (cronExpr === '0 */6 * * *') {
+  // expirer など 6h 専用処理のみ
+}
+```
+
+対処: 新 cron 追加時は「新処理を early return で分離」するだけでなく、
+**既存の毎分/5分処理も特定 cron 専用にガードされているか**を必ず確認する。
+複数 cron は同時刻に重なる（特に `*/N` と `0 */M`）。送信系は重複の実害が大きい。
+
 ### Cloudflare Workers の cron day-of-week に `0`（日曜）を使わない（2026-06-06 追記）
 
 Cloudflare Workers API は cron の曜日フィールドで `0` を不正値として拒否する（error code 10100）。
