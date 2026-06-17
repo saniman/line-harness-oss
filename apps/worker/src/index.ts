@@ -376,65 +376,72 @@ async function scheduled(
     return;
   }
 
-  // Get all active accounts from DB
-  const dbAccounts = await getLineAccounts(env.DB);
+  // 配信・メンテ系は 5 分毎 cron (`*/5 * * * *`) のときだけ実行する。
+  // `*/5 * * * *` と `0 */6 * * *` は 00:00/06:00/12:00/18:00 UTC で同時発火する。
+  // 配信処理は「送信してから配信済みマーク」する at-least-once 設計のため、
+  // 同時刻に 2 本の cron で二重実行されるとリマインダ等が重複送信される。
+  // （2026-06-17: 前日リマインドが 09:00 JST=00:00 UTC に 2 通届く事象を修正）
+  if (cronExpr === '*/5 * * * *') {
+    // Get all active accounts from DB
+    const dbAccounts = await getLineAccounts(env.DB);
 
-  // Build LineClient map for insight fetching (keyed by account id)
-  const lineClients = new Map<string, LineClient>();
-  for (const account of dbAccounts) {
-    if (account.is_active) {
-      lineClients.set(account.id, new LineClient(account.channel_access_token));
+    // Build LineClient map for insight fetching (keyed by account id)
+    const lineClients = new Map<string, LineClient>();
+    for (const account of dbAccounts) {
+      if (account.is_active) {
+        lineClients.set(account.id, new LineClient(account.channel_access_token));
+      }
     }
-  }
-  const defaultLineClient = new LineClient(env.LINE_CHANNEL_ACCESS_TOKEN);
+    const defaultLineClient = new LineClient(env.LINE_CHANNEL_ACCESS_TOKEN);
 
-  // 配信系は1回だけ実行（内部でfriendのline_account_idから正しいlineClientを動的解決）
-  // 以前はアカウントごとにループしていたが、アカウントフィルタなしのDBクエリで
-  // 全アカウントの配信が各ループで重複実行されていたバグを修正
-  const jobs = [];
-  jobs.push(
-    processStepDeliveries(env.DB, defaultLineClient, env.WORKER_URL),
-    processScheduledBroadcasts(env.DB, defaultLineClient, env.WORKER_URL),
-    processReminderDeliveries(env.DB, defaultLineClient),
-  );
-  // キュー処理は1回だけ実行（内部でアカウント別lineClientを解決する）
-  // ロック解除: タイムアウトでstuckした配信を復旧
-  const { recoverStalledBroadcasts, recoverStuckDeliveries } = await import('@line-crm/db');
-  jobs.push(recoverStuckDeliveries(env.DB));
-  jobs.push(recoverStalledBroadcasts(env.DB));
-  jobs.push(processQueuedBroadcasts(env.DB, defaultLineClient, env.WORKER_URL));
-  jobs.push(checkAccountHealth(env.DB));
-  jobs.push(refreshLineAccessTokens(env.DB));
+    // 配信系は1回だけ実行（内部でfriendのline_account_idから正しいlineClientを動的解決）
+    // 以前はアカウントごとにループしていたが、アカウントフィルタなしのDBクエリで
+    // 全アカウントの配信が各ループで重複実行されていたバグを修正
+    const jobs = [];
+    jobs.push(
+      processStepDeliveries(env.DB, defaultLineClient, env.WORKER_URL),
+      processScheduledBroadcasts(env.DB, defaultLineClient, env.WORKER_URL),
+      processReminderDeliveries(env.DB, defaultLineClient),
+    );
+    // キュー処理は1回だけ実行（内部でアカウント別lineClientを解決する）
+    // ロック解除: タイムアウトでstuckした配信を復旧
+    const { recoverStalledBroadcasts, recoverStuckDeliveries } = await import('@line-crm/db');
+    jobs.push(recoverStuckDeliveries(env.DB));
+    jobs.push(recoverStalledBroadcasts(env.DB));
+    jobs.push(processQueuedBroadcasts(env.DB, defaultLineClient, env.WORKER_URL));
+    jobs.push(checkAccountHealth(env.DB));
+    jobs.push(refreshLineAccessTokens(env.DB));
 
-  await Promise.allSettled(jobs);
+    await Promise.allSettled(jobs);
 
-  // Fetch broadcast insights (runs daily, self-throttled)
-  try {
-    await processInsightFetch(env.DB, lineClients, defaultLineClient);
-  } catch (e) {
-    console.error('Insight fetch error:', e);
-  }
-
-  // Cross-account duplicate detection & auto-tagging
-  try {
-    const { processDuplicateDetection } = await import('./services/duplicate-detect.js');
-    await processDuplicateDetection(env.DB);
-  } catch (e) {
-    console.error('Duplicate detection error:', e);
-  }
-
-  // Salon booking reminders — every 5-minute tick scans due reminders.
-  try {
-    const result = await processDueReminders(env.DB, {
-      now: new Date(),
-      sender: sendBookingNotification,
-      reminderHoursBefore: DEFAULT_ACCOUNT_SETTINGS.reminder_hours_before,
-    });
-    if (result.sent + result.failed > 0) {
-      console.log(`[booking-reminders] sent=${result.sent} failed=${result.failed}`);
+    // Fetch broadcast insights (runs daily, self-throttled)
+    try {
+      await processInsightFetch(env.DB, lineClients, defaultLineClient);
+    } catch (e) {
+      console.error('Insight fetch error:', e);
     }
-  } catch (e) {
-    console.error('booking-reminders error:', e);
+
+    // Cross-account duplicate detection & auto-tagging
+    try {
+      const { processDuplicateDetection } = await import('./services/duplicate-detect.js');
+      await processDuplicateDetection(env.DB);
+    } catch (e) {
+      console.error('Duplicate detection error:', e);
+    }
+
+    // Salon booking reminders — every 5-minute tick scans due reminders.
+    try {
+      const result = await processDueReminders(env.DB, {
+        now: new Date(),
+        sender: sendBookingNotification,
+        reminderHoursBefore: DEFAULT_ACCOUNT_SETTINGS.reminder_hours_before,
+      });
+      if (result.sent + result.failed > 0) {
+        console.log(`[booking-reminders] sent=${result.sent} failed=${result.failed}`);
+      }
+    } catch (e) {
+      console.error('booking-reminders error:', e);
+    }
   }
 
   // Salon booking expirer — 6h cron tick only.
