@@ -1,0 +1,133 @@
+/* モバイルオーダー LIFF のスタイル。body.mo-active のときのみ適用。 */
+
+body.mo-active {
+  margin: 0;
+  background: #f5f5f5;
+  font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", sans-serif;
+  color: #222;
+}
+
+.mo-root { max-width: 480px; margin: 0 auto; padding-bottom: 96px; }
+
+.mo-center { padding: 80px 20px; text-align: center; color: #666; font-size: 14px; }
+.mo-err { color: #c2185b; }
+
+/* カテゴリタブ */
+.mo-cats {
+  display: flex; gap: 6px; padding: 12px 14px; overflow-x: auto;
+  background: #fff; border-bottom: 1px solid #ececec; position: sticky; top: 0; z-index: 10;
+}
+.mo-cats::-webkit-scrollbar { display: none; }
+.mo-cat {
+  white-space: nowrap; font-size: 13px; padding: 7px 14px; border-radius: 999px;
+  background: #f1f1f1; color: #666; font-weight: 600; border: none; cursor: pointer;
+}
+.mo-cat.active { background: #222; color: #fff; }
+
+/* メニューカード */
+.mo-menu { padding: 12px 14px; }
+.mo-card {
+  background: #fff; border-radius: 14px; padding: 12px; display: flex; gap: 12px;
+  align-items: center; margin-bottom: 10px; box-shadow: 0 2px 8px rgba(0,0,0,.06);
+}
+.mo-info { flex: 1; min-width: 0; }
+.mo-name { font-size: 14px; font-weight: 700; }
+.mo-desc { font-size: 11px; color: #999; margin-top: 2px; line-height: 1.4; }
+.mo-price { font-size: 14px; font-weight: 700; margin-top: 5px; }
+
+.mo-add {
+  width: 34px; height: 34px; border-radius: 50%; flex-shrink: 0; border: none; cursor: pointer;
+  background: linear-gradient(135deg, #ff6b9d 0%, #ff4176 100%);
+  color: #fff; font-size: 22px; line-height: 1; box-shadow: 0 4px 12px rgba(255,65,118,.35);
+}
+.mo-add:active { transform: scale(.92); }
+
+.mo-stepper { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.mo-stepper button {
+  width: 30px; height: 30px; border-radius: 50%; background: #f1f1f1; border: none; cursor: pointer;
+  font-size: 18px; color: #222; font-weight: 600; line-height: 1;
+}
+.mo-stepper span { font-size: 15px; font-weight: 700; min-width: 18px; text-align: center; }
+
+/* 下部カートバー */
+.mo-cartbar {
+  position: fixed; bottom: 0; left: 0; right: 0; padding: 14px 16px 18px;
+  background: linear-gradient(to top, #fff 70%, rgba(255,255,255,0)); z-index: 20;
+}
+.mo-cartbtn {
+  width: 100%; max-width: 480px; margin: 0 auto; border: none; cursor: pointer;
+  background: linear-gradient(135deg, #ff6b9d 0%, #ff4176 100%);
+  color: #fff; padding: 15px; border-radius: 14px; font-size: 16px; font-weight: 700;
+  box-shadow: 0 6px 20px rgba(255,65,118,.4); display: flex; align-items: center; justify-content: center; gap: 8px;
+}
+.mo-badge {
+  background: #fff; color: #ff4176; border-radius: 999px; min-width: 22px; height: 22px;
+  font-size: 13px; display: inline-flex; align-items: center; justify-content: center; padding: 0 6px;
+}
+
+/* シート */
+.mo-mask {
+  position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 40;
+  display: flex; align-items: flex-end; justify-content: center;
+}
+.mo-sheet {
+  background: #fff; width: 100%; max-width: 480px; border-radius: 22px 22px 0 0;
+  padding: 18px 16px 24px; max-height: 86vh; overflow-y: auto;
+  animation: mo-slide .28s cubic-bezier(.2,.8,.2,1);
+}
+@keyframes mo-slide { from { transform: translateY(100%); } to { transform: translateY(0); } }
+.mo-sheet h3 { font-size: 16px; margin: 0 0 4px; }
+.mo-sub { font-size: 12px; color: #999; margin-bottom: 14px; }
+
+.mo-optgroup { margin-bottom: 14px; }
+.mo-oglabel { font-size: 13px; font-weight: 700; margin-bottom: 8px; }
+.mo-optrow {
+  display: flex; justify-content: space-between; align-items: center; cursor: pointer;
+  padding: 12px 14px; border: 1.5px solid #ececec; border-radius: 12px; margin-bottom: 8px; font-size: 14px;
+}
+.mo-optrow.sel { border-color: #ff4176; background: #fff5f8; }
+.mo-opprice { font-size: 12px; color: #999; }
+
+.mo-cartline { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid #ececec; }
+.mo-ci-info { flex: 1; }
+.mo-ci-name { font-size: 14px; font-weight: 600; }
+.mo-ci-opt { font-size: 11px; color: #999; }
+.mo-ci-price { font-size: 13px; font-weight: 700; }
+
+.mo-note {
+  width: 100%; margin-top: 14px; border: 1px solid #e0e0e0; border-radius: 10px;
+  padding: 10px; font-size: 13px; font-family: inherit; resize: vertical; min-height: 56px; box-sizing: border-box;
+}
+.mo-total { display: flex; justify-content: space-between; align-items: baseline; margin: 16px 0; }
+.mo-total-val { font-size: 24px; font-weight: 800; }
+.mo-total-val small { font-size: 13px; font-weight: 600; }
+.mo-paynote {
+  background: #fff7fa; border: 1px solid #ffd9e6; color: #c2185b;
+  font-size: 12px; padding: 10px 12px; border-radius: 10px; margin-bottom: 14px; line-height: 1.5;
+}
+.mo-err-box {
+  background: #fdecef; border: 1px solid #f5c2cd; color: #c2185b;
+  font-size: 12px; padding: 10px 12px; border-radius: 10px; margin-bottom: 12px; line-height: 1.5;
+}
+.mo-submit {
+  width: 100%; border: none; cursor: pointer;
+  background: linear-gradient(135deg, #ff6b9d 0%, #ff4176 100%);
+  color: #fff; padding: 16px; border-radius: 14px; font-size: 17px; font-weight: 700;
+  box-shadow: 0 6px 20px rgba(255,65,118,.4);
+}
+.mo-submit:disabled { opacity: .5; }
+
+/* 完了画面 */
+.mo-done { text-align: center; padding: 56px 24px; max-width: 480px; margin: 0 auto; }
+.mo-check {
+  width: 76px; height: 76px; border-radius: 50%; background: #06C755; color: #fff;
+  font-size: 42px; display: flex; align-items: center; justify-content: center; margin: 0 auto 18px;
+  animation: mo-pop .4s cubic-bezier(.2,1.4,.5,1);
+}
+@keyframes mo-pop { from { transform: scale(0); } to { transform: scale(1); } }
+.mo-done h3 { font-size: 19px; margin: 0 0 10px; }
+.mo-done p { font-size: 13px; color: #666; line-height: 1.8; }
+.mo-ghost {
+  margin-top: 24px; width: 100%; padding: 14px; border-radius: 12px; border: none; cursor: pointer;
+  background: #f1f1f1; color: #666; font-size: 15px; font-weight: 600;
+}

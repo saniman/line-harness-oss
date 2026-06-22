@@ -384,6 +384,61 @@ async function initSalonBooking(): Promise<void> {
   });
 }
 
+// ─── Mobile Order (React, dynamic-imported) ──────────────
+
+async function initOrder(): Promise<void> {
+  // initSalonBooking と同じ初期化シーケンス（profile/idToken/friendFlag 並列取得 →
+  // UUID linking → 未友達なら friend-add gate → React mount）。
+  // 注文には ?table=<qr_token> が必須。QR/LIFF URL から受け取る。
+  const tableToken = new URLSearchParams(window.location.search).get('table');
+  if (!tableToken) {
+    showError('テーブル情報が見つかりません。卓上のQRコードから開いてください。');
+    return;
+  }
+
+  const [profile, idToken, friendship] = await Promise.all([
+    liff.getProfile(),
+    Promise.resolve(liff.getIDToken()),
+    liff.getFriendship(),
+  ]);
+  if (!idToken) {
+    showError('LINE 認証情報の取得に失敗しました。LINE アプリ内で再度開いてください。');
+    return;
+  }
+
+  // Silent UUID linking（注文エンドポイントが id_token verify で friend を引くために必要）
+  apiCall('/api/liff/link', {
+    method: 'POST',
+    body: JSON.stringify({ idToken, displayName: profile.displayName, existingUuid: getSavedUuid() }),
+  })
+    .then(async (res) => {
+      if (res.ok) {
+        const data = (await res.json()) as { success: boolean; data?: { userId?: string } };
+        if (data?.data?.userId) saveUuid(data.data.userId);
+      }
+    })
+    .catch(() => { /* silent */ });
+
+  // 未友達なら friend-add gate（友だち登録必須）。追加後に同じ URL へ戻れば再度ここを通る。
+  if (!friendship.friendFlag) {
+    showFriendAdd(profile);
+    return;
+  }
+
+  const container = document.getElementById('app');
+  if (!container) {
+    showError('mount target #app が見つかりません');
+    return;
+  }
+  const { mountOrder } = await import('./order/main.js');
+  mountOrder(container, {
+    liffId: LIFF_ID,
+    lineUserId: profile.userId,
+    idToken,
+    tableToken,
+  });
+}
+
 // ─── Entry Point ────────────────────────────────────────
 
 async function main() {
@@ -411,6 +466,8 @@ async function main() {
       await initBooking();
     } else if (page === 'salon-book') {
       await initSalonBooking();
+    } else if (page === 'order') {
+      await initOrder();
     } else if (page === 'form') {
       const params = new URLSearchParams(window.location.search);
       const formId = params.get('id');
