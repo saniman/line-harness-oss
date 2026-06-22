@@ -26,6 +26,14 @@ import type {
 } from '@line-crm/shared'
 
 import type { Broadcast } from '@line-crm/shared'
+import type { KitchenOrder, OrderStatus } from './orders'
+
+export type DiningTable = {
+  id: string
+  table_number: string
+  qr_token: string
+  is_active: number
+}
 
 /** Broadcast type from API (now camelCase after worker serialization) */
 export type ApiBroadcast = Broadcast
@@ -624,6 +632,27 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ scenarioId }),
       }),
+  },
+  orders: {
+    // 厨房ディスプレイ一覧（既定: status=active = new+preparing）
+    list: (status?: string) =>
+      fetchApi<ApiResponse<KitchenOrder[]>>(
+        `/api/order/admin/orders${status ? `?status=${encodeURIComponent(status)}` : ''}`,
+      ),
+    updateStatus: (id: string, status: OrderStatus) =>
+      fetchApi<ApiResponse<{ id: string; status: OrderStatus }>>(
+        `/api/order/admin/orders/${id}/status`,
+        { method: 'PUT', body: JSON.stringify({ status }) },
+      ),
+    tables: {
+      list: () =>
+        fetchApi<ApiResponse<DiningTable[]>>('/api/order/admin/tables'),
+      create: (table_number: string) =>
+        fetchApi<ApiResponse<DiningTable>>('/api/order/admin/tables', {
+          method: 'POST',
+          body: JSON.stringify({ table_number }),
+        }),
+    },
   },
   aiAssistant: {
     getConfig: () =>
