@@ -46,11 +46,12 @@ export async function fetchMyOrders(ctx: OrderContext): Promise<MyOrdersResult> 
 
 export interface CheckoutResult {
   table_number: string;
-  settled_count: number;
-  settled_total: number;
+  requested_count: number;
+  requested_total: number;
 }
 
-// テーブル一括会計。全品提供済みでなければサーバが 409 not_all_served を返す。
+// テーブル会計依頼。会計完了ではなく依頼（厨房承認制）。
+// 全品提供済みでなければサーバが 409 not_all_served を返す。
 export async function checkoutOrder(
   ctx: OrderContext,
 ): Promise<{ ok: true; data: CheckoutResult } | { ok: false; error: string }> {

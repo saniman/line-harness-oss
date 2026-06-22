@@ -30,17 +30,23 @@ describe('sumTotals（これまでの合計）', () => {
 describe('checkoutButtonState（お会計ボタンの状態）', () => {
   it('summary が無い / 未会計の注文が無いときは非表示', () => {
     expect(checkoutButtonState(null)).toEqual({ visible: false, disabled: true, note: null })
-    expect(checkoutButtonState({ can_checkout: false, unserved_count: 0, open_total: 0 }))
+    expect(checkoutButtonState({ can_checkout: false, unserved_count: 0, open_total: 0, checkout_requested: false }))
       .toEqual({ visible: false, disabled: true, note: null })
   })
+  it('既に会計依頼済みなら表示するが無効＋「お願い中」案内', () => {
+    const s = checkoutButtonState({ can_checkout: true, unserved_count: 0, open_total: 1200, checkout_requested: true })
+    expect(s.visible).toBe(true)
+    expect(s.disabled).toBe(true)
+    expect(s.note).toContain('お願い中')
+  })
   it('未提供が残るときは表示するが無効＋案内文', () => {
-    const s = checkoutButtonState({ can_checkout: false, unserved_count: 1, open_total: 1200 })
+    const s = checkoutButtonState({ can_checkout: false, unserved_count: 1, open_total: 1200, checkout_requested: false })
     expect(s.visible).toBe(true)
     expect(s.disabled).toBe(true)
     expect(s.note).toContain('お作りしている')
   })
-  it('全品提供済みなら活性', () => {
-    expect(checkoutButtonState({ can_checkout: true, unserved_count: 0, open_total: 1200 }))
+  it('全品提供済み・未依頼なら活性', () => {
+    expect(checkoutButtonState({ can_checkout: true, unserved_count: 0, open_total: 1200, checkout_requested: false }))
       .toEqual({ visible: true, disabled: false, note: null })
   })
 })

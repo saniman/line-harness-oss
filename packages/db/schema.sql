@@ -861,6 +861,8 @@ CREATE TABLE IF NOT EXISTS orders (
   customer_note   TEXT,
   placed_at       TEXT NOT NULL DEFAULT (datetime('now')),
   paid_at         TEXT,
+  -- お客さん(LIFF)が会計依頼した時刻。厨房承認までは会計完了にしない（811）。
+  checkout_requested_at TEXT,
   created_at      TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (line_account_id) REFERENCES line_accounts(id)

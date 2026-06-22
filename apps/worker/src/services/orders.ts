@@ -255,6 +255,8 @@ export interface KitchenOrder {
   total_amount: number
   customer_note: string | null
   placed_at: string
+  // お客さんが会計依頼した時刻（厨房承認まで会計完了にしない）。未依頼は null。
+  checkout_requested_at: string | null
   items: Array<{ name_snapshot: string; options_text: string; quantity: number }>
 }
 
@@ -286,7 +288,7 @@ async function hydrateItems(
 }
 
 const ORDER_HEADER_COLS =
-  'id, table_number, status, payment_status, total_amount, customer_note, placed_at'
+  'id, table_number, status, payment_status, total_amount, customer_note, placed_at, checkout_requested_at'
 
 export async function listKitchenOrders(
   db: D1Database,
@@ -391,6 +393,7 @@ export async function updateOrderStatus(
 interface OpenOrderRow {
   status: OrderStatus
   total_amount: number
+  checkout_requested_at: string | null
 }
 
 // テーブルの未会計（closed/cancelled 以外）注文を取得する。会計可否判定・集計に使う。
@@ -401,7 +404,7 @@ async function getOpenTableOrderRows(
 ): Promise<OpenOrderRow[]> {
   const rows = await db
     .prepare(
-      `SELECT status, total_amount
+      `SELECT status, total_amount, checkout_requested_at
          FROM orders
         WHERE line_account_id = ? AND table_id = ?
           AND status NOT IN ('closed','cancelled')`,
@@ -415,6 +418,8 @@ export interface TableCheckoutSummary {
   can_checkout: boolean
   unserved_count: number
   open_total: number
+  // お客さんが既に会計依頼済みか（依頼後は LIFF の依頼ボタンを無効化する）。
+  checkout_requested: boolean
 }
 
 // LIFF / 厨房の会計ボタン活性判定用のテーブル集計（同卓の全注文が対象）。
@@ -429,20 +434,50 @@ export async function getTableCheckoutSummary(
     can_checkout: canCheckoutTable(open),
     unserved_count: unserved.length,
     open_total: open.reduce((s, o) => s + o.total_amount, 0),
+    checkout_requested: open.some((o) => o.checkout_requested_at != null),
   }
 }
 
-export type CheckoutTableResult =
-  | { ok: true; settled_count: number; settled_total: number }
+export type RequestCheckoutResult =
+  | { ok: true; requested_count: number; requested_total: number }
   | { ok: false; error: 'nothing_to_settle' | 'not_all_served' }
 
-// テーブルを一括会計する。提供済みの注文をまとめて closed + paid にする。
-// 未提供が残る場合は何も変更せず not_all_served を返す（厨房が作りかけを見失う事故を防ぐ）。
-export async function checkoutTable(
+// お客さん(LIFF)からの会計依頼。提供済みの注文に依頼フラグ（checkout_requested_at）を立てるだけで
+// 会計完了にはしない。厨房承認まで status は 'served' のまま。未提供が残る場合は依頼を受け付けない。
+export async function requestTableCheckout(
   db: D1Database,
   accountId: string,
   tableId: string,
-): Promise<CheckoutTableResult> {
+): Promise<RequestCheckoutResult> {
+  const open = await getOpenTableOrderRows(db, accountId, tableId)
+  if (open.length === 0) return { ok: false, error: 'nothing_to_settle' }
+  if (!canCheckoutTable(open)) return { ok: false, error: 'not_all_served' }
+
+  const served = open.filter((o) => o.status === 'served')
+  const requestedTotal = served.reduce((s, o) => s + o.total_amount, 0)
+  const res = await db
+    .prepare(
+      `UPDATE orders
+          SET checkout_requested_at = datetime('now'), updated_at = datetime('now')
+        WHERE line_account_id = ? AND table_id = ? AND status = 'served'`,
+    )
+    .bind(accountId, tableId)
+    .run()
+  return { ok: true, requested_count: res.meta.changes ?? served.length, requested_total: requestedTotal }
+}
+
+export type ApproveCheckoutResult =
+  | { ok: true; settled_count: number; settled_total: number }
+  | { ok: false; error: 'nothing_to_settle' | 'not_all_served' }
+
+// 厨房ディスプレイからの会計承認（＝会計完了）。提供済みの注文をまとめて closed + paid にする。
+// お客さんの会計依頼を承認するケースと、現金/店頭会計（依頼なし）の両方で使う。
+// 未提供が残る場合は何も変更せず not_all_served を返す（厨房が作りかけを見失う事故を防ぐ）。
+export async function approveTableCheckout(
+  db: D1Database,
+  accountId: string,
+  tableId: string,
+): Promise<ApproveCheckoutResult> {
   const open = await getOpenTableOrderRows(db, accountId, tableId)
   if (open.length === 0) return { ok: false, error: 'nothing_to_settle' }
   if (!canCheckoutTable(open)) return { ok: false, error: 'not_all_served' }

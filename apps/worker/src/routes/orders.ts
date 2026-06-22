@@ -17,9 +17,9 @@ import {
   resolveFriendId,
 } from '../services/liff-identity.js'
 import {
+  approveTableCheckout,
   buildOrderItems,
   canTransitionOrderStatus,
-  checkoutTable,
   getOrderableMenus,
   getOrderStatus,
   getTableCheckoutSummary,
@@ -28,6 +28,7 @@ import {
   listOrdersByTable,
   listOrdersForFriend,
   listTodaysSales,
+  requestTableCheckout,
   resolveTableByToken,
   updateOrderStatus,
   type OrderStatus,
@@ -84,7 +85,8 @@ orders.get('/api/liff/order/me', async (c) => {
   return c.json({ success: true, data: list, summary })
 })
 
-// テーブル一括会計（お客さん側）。同卓の提供済み注文をまとめて会計済みにする。
+// テーブル会計依頼（お客さん側）。提供済み注文に依頼フラグを立てるだけで会計完了にはしない。
+// 厨房ディスプレイで承認されて初めて会計完了になる。
 orders.post('/api/liff/order/checkout', async (c) => {
   const accountId = await resolveAccountIdFromLiff(c)
   if (!accountId) return c.json({ error: 'unknown_liff' }, 404)
@@ -107,7 +109,7 @@ orders.post('/api/liff/order/checkout', async (c) => {
   const table = await resolveTableByToken(c.env.DB, accountId, body.table_token)
   if (!table) return c.json({ error: 'table_not_found' }, 404)
 
-  const result = await checkoutTable(c.env.DB, accountId, table.id)
+  const result = await requestTableCheckout(c.env.DB, accountId, table.id)
   if (!result.ok) {
     // 未提供が残る / 会計対象なし。409 でフロントに理由を返す。
     return c.json({ success: false, error: result.error }, 409)
@@ -116,8 +118,8 @@ orders.post('/api/liff/order/checkout', async (c) => {
     success: true,
     data: {
       table_number: table.table_number,
-      settled_count: result.settled_count,
-      settled_total: result.settled_total,
+      requested_count: result.requested_count,
+      requested_total: result.requested_total,
     },
   })
 })
@@ -301,12 +303,12 @@ orders.get('/api/order/admin/tables/:id/orders', async (c) => {
   return c.json({ success: true, data: list })
 })
 
-// 厨房からのテーブル一括会計（現金・店頭会計などお客さんが操作しないケース用）。
+// 厨房からの会計承認（＝会計完了）。お客さんの会計依頼の承認、または現金/店頭会計で使う。
 orders.post('/api/order/admin/tables/:id/checkout', async (c) => {
   const accountId = await resolveAccountIdAdmin(c)
   if (!accountId) return c.json({ success: false, error: 'account_not_resolved' }, 400)
   const tableId = c.req.param('id')
-  const result = await checkoutTable(c.env.DB, accountId, tableId)
+  const result = await approveTableCheckout(c.env.DB, accountId, tableId)
   if (!result.ok) {
     return c.json({ success: false, error: result.error }, 409)
   }

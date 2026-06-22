@@ -8,9 +8,9 @@ vi.mock('../services/liff-identity.js', () => ({
 }))
 
 vi.mock('../services/orders.js', () => ({
+  approveTableCheckout: vi.fn(),
   buildOrderItems: vi.fn(),
   canTransitionOrderStatus: vi.fn(),
-  checkoutTable: vi.fn(),
   getOrderableMenus: vi.fn(),
   getOrderStatus: vi.fn(),
   getTableCheckoutSummary: vi.fn(),
@@ -19,6 +19,7 @@ vi.mock('../services/orders.js', () => ({
   listOrdersByTable: vi.fn(),
   listOrdersForFriend: vi.fn(),
   listTodaysSales: vi.fn(),
+  requestTableCheckout: vi.fn(),
   resolveTableByToken: vi.fn(),
   updateOrderStatus: vi.fn(),
 }))
@@ -37,9 +38,9 @@ import {
   resolveFriendId,
 } from '../services/liff-identity.js'
 import {
+  approveTableCheckout,
   buildOrderItems,
   canTransitionOrderStatus,
-  checkoutTable,
   getOrderableMenus,
   getOrderStatus,
   getTableCheckoutSummary,
@@ -48,6 +49,7 @@ import {
   listOrdersByTable,
   listOrdersForFriend,
   listTodaysSales,
+  requestTableCheckout,
   resolveTableByToken,
   updateOrderStatus,
 } from '../services/orders.js'
@@ -66,7 +68,8 @@ const mListByTable = vi.mocked(listOrdersByTable)
 const mListForFriend = vi.mocked(listOrdersForFriend)
 const mResolveTable = vi.mocked(resolveTableByToken)
 const mUpdateStatus = vi.mocked(updateOrderStatus)
-const mCheckout = vi.mocked(checkoutTable)
+const mRequestCheckout = vi.mocked(requestTableCheckout)
+const mApproveCheckout = vi.mocked(approveTableCheckout)
 const mSummary = vi.mocked(getTableCheckoutSummary)
 const mTodaysSales = vi.mocked(listTodaysSales)
 
@@ -334,7 +337,7 @@ describe('GET /api/order/admin/orders（厨房一覧）', () => {
   })
 })
 
-describe('POST /api/liff/order/checkout（お客さん側の一括会計）', () => {
+describe('POST /api/liff/order/checkout（お客さん側の会計依頼）', () => {
   it('id_token 検証失敗は 401', async () => {
     mResolveAccount.mockResolvedValue('acc1')
     mVerify.mockResolvedValue(null)
@@ -363,7 +366,7 @@ describe('POST /api/liff/order/checkout（お客さん側の一括会計）', ()
     mVerify.mockResolvedValue('U1')
     mResolveFriend.mockResolvedValue('f1')
     mResolveTable.mockResolvedValue({ id: 'tbl1', table_number: 'A-3' })
-    mCheckout.mockResolvedValue({ ok: false, error: 'not_all_served' })
+    mRequestCheckout.mockResolvedValue({ ok: false, error: 'not_all_served' })
     const res = await app.request(
       '/api/liff/order/checkout?liffId=L1',
       { method: 'POST', body: JSON.stringify({ table_token: 't1' }) },
@@ -373,12 +376,12 @@ describe('POST /api/liff/order/checkout（お客さん側の一括会計）', ()
     expect(await res.json()).toEqual({ success: false, error: 'not_all_served' })
   })
 
-  it('正常系: 会計済みにして件数と合計を返す', async () => {
+  it('正常系: 会計依頼（requestTableCheckout）を呼び件数と合計を返す（会計完了にはしない）', async () => {
     mResolveAccount.mockResolvedValue('acc1')
     mVerify.mockResolvedValue('U1')
     mResolveFriend.mockResolvedValue('f1')
     mResolveTable.mockResolvedValue({ id: 'tbl1', table_number: 'A-3' })
-    mCheckout.mockResolvedValue({ ok: true, settled_count: 2, settled_total: 1950 })
+    mRequestCheckout.mockResolvedValue({ ok: true, requested_count: 2, requested_total: 1950 })
     const res = await app.request(
       '/api/liff/order/checkout?liffId=L1',
       { method: 'POST', body: JSON.stringify({ table_token: 't1' }) },
@@ -387,9 +390,10 @@ describe('POST /api/liff/order/checkout（お客さん側の一括会計）', ()
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
       success: true,
-      data: { table_number: 'A-3', settled_count: 2, settled_total: 1950 },
+      data: { table_number: 'A-3', requested_count: 2, requested_total: 1950 },
     })
-    expect(mCheckout).toHaveBeenCalledWith(expect.anything(), 'acc1', 'tbl1')
+    expect(mRequestCheckout).toHaveBeenCalledWith(expect.anything(), 'acc1', 'tbl1')
+    expect(mApproveCheckout).not.toHaveBeenCalled()
   })
 })
 
@@ -400,21 +404,21 @@ describe('GET /api/liff/order/me（summary 添付）', () => {
     mResolveFriend.mockResolvedValue('f1')
     mResolveTable.mockResolvedValue({ id: 'tbl1', table_number: 'A-3' })
     mListForFriend.mockResolvedValue([])
-    mSummary.mockResolvedValue({ can_checkout: true, unserved_count: 0, open_total: 1200 })
+    mSummary.mockResolvedValue({ can_checkout: true, unserved_count: 0, open_total: 1200, checkout_requested: true })
     const res = await app.request('/api/liff/order/me?liffId=L1&table=tok', { method: 'GET' }, { DB: makeDb(null) })
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
       success: true,
       data: [],
-      summary: { can_checkout: true, unserved_count: 0, open_total: 1200 },
+      summary: { can_checkout: true, unserved_count: 0, open_total: 1200, checkout_requested: true },
     })
     expect(mSummary).toHaveBeenCalledWith(expect.anything(), 'acc1', 'tbl1')
   })
 })
 
-describe('POST /api/order/admin/tables/:id/checkout（厨房の一括会計）', () => {
-  it('正常系: checkoutTable を呼び件数と合計を返す', async () => {
-    mCheckout.mockResolvedValue({ ok: true, settled_count: 1, settled_total: 800 })
+describe('POST /api/order/admin/tables/:id/checkout（厨房の会計承認）', () => {
+  it('正常系: approveTableCheckout を呼び件数と合計を返す', async () => {
+    mApproveCheckout.mockResolvedValue({ ok: true, settled_count: 1, settled_total: 800 })
     const res = await app.request(
       '/api/order/admin/tables/tbl1/checkout',
       { method: 'POST' },
@@ -425,11 +429,11 @@ describe('POST /api/order/admin/tables/:id/checkout（厨房の一括会計）',
       success: true,
       data: { settled_count: 1, settled_total: 800 },
     })
-    expect(mCheckout).toHaveBeenCalledWith(expect.anything(), 'acc1', 'tbl1')
+    expect(mApproveCheckout).toHaveBeenCalledWith(expect.anything(), 'acc1', 'tbl1')
   })
 
   it('未提供が残れば 409', async () => {
-    mCheckout.mockResolvedValue({ ok: false, error: 'not_all_served' })
+    mApproveCheckout.mockResolvedValue({ ok: false, error: 'not_all_served' })
     const res = await app.request(
       '/api/order/admin/tables/tbl1/checkout',
       { method: 'POST' },

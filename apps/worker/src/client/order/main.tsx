@@ -64,7 +64,7 @@ function App() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [checkingOut, setCheckingOut] = useState(false);
   const [checkoutError, setCheckoutError] = useState('');
-  const [paid, setPaid] = useState<CheckoutResult | null>(null);
+  const [requested, setRequested] = useState<CheckoutResult | null>(null);
 
   const reloadHistory = () => {
     fetchMyOrders(ctx).then(({ orders, summary }) => {
@@ -74,13 +74,13 @@ function App() {
   };
 
   const handleCheckout = async () => {
-    if (!window.confirm('お会計をします。よろしいですか？')) return;
+    if (!window.confirm('お会計をお願いします。よろしいですか？')) return;
     setCheckingOut(true);
     setCheckoutError('');
     const res = await checkoutOrder(ctx);
     setCheckingOut(false);
     if (res.ok) {
-      setPaid(res.data);
+      setRequested(res.data);
       setHistoryOpen(false);
       reloadHistory();
     } else if (res.error === 'not_all_served') {
@@ -139,7 +139,7 @@ function App() {
 
   if (loading) return <div className="mo-center">読み込み中…</div>;
   if (loadError) return <div className="mo-center mo-err">{loadError}</div>;
-  if (paid) return <PaidScreen result={paid} onClose={() => setPaid(null)} />;
+  if (requested) return <RequestedScreen result={requested} onClose={() => setRequested(null)} />;
   if (done) return <DoneScreen result={done} onMore={() => setDone(null)} />;
 
   return (
@@ -286,8 +286,8 @@ function HistorySheet({ orders, total, summary, checkingOut, checkoutError, onCh
               onClick={onCheckout}
             >
               {checkingOut
-                ? 'お会計中…'
-                : `お会計をする（${yen(summary?.open_total ?? 0)}）`}
+                ? '送信中…'
+                : `お会計をお願いする（${yen(summary?.open_total ?? 0)}）`}
             </button>
           </>
         )}
@@ -297,15 +297,15 @@ function HistorySheet({ orders, total, summary, checkingOut, checkoutError, onCh
   );
 }
 
-function PaidScreen({ result, onClose }: { result: CheckoutResult; onClose: () => void }) {
+function RequestedScreen({ result, onClose }: { result: CheckoutResult; onClose: () => void }) {
   return (
     <div className="mo-done">
-      <div className="mo-check">✓</div>
-      <h3>お会計ありがとうございました！</h3>
+      <div className="mo-check">🧾</div>
+      <h3>お会計をお願いしました！</h3>
       <p>
         テーブル <b>{result.table_number}</b><br />
-        お会計 <b>{yen(result.settled_total)}</b>（税込・{result.settled_count}件）<br />
-        またのご来店をお待ちしております。
+        お会計 <b>{yen(result.requested_total)}</b>（税込・{result.requested_count}件）<br />
+        スタッフが確認にうかがいます。<br />少々お待ちください。
       </p>
       <button className="mo-ghost" onClick={onClose}>注文画面に戻る</button>
     </div>
@@ -404,7 +404,7 @@ function CartSheet({ cart, total, count, note, setNote, submitting, error, onClo
           <span>合計（{count}点）</span>
           <span className="mo-total-val">{yen(total)}<small>（税込）</small></span>
         </div>
-        <div className="mo-paynote">💴 お会計はお帰りの際に <b>「注文履歴」→「お会計をする」</b> からどうぞ。</div>
+        <div className="mo-paynote">💴 お会計はお帰りの際に <b>「注文履歴」→「お会計をお願いする」</b> からどうぞ。</div>
         {error && <div className="mo-err-box">{error}</div>}
         <button className="mo-submit" disabled={submitting || count === 0} onClick={onSubmit}>
           {submitting ? '送信中…' : 'この内容で注文する'}

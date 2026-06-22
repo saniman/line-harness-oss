@@ -134,6 +134,11 @@ export default function OrdersPage() {
                               <span className="text-xs text-gray-400">
                                 No.{order.id.slice(0, 6)}
                               </span>
+                              {order.checkout_requested_at && (
+                                <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 border border-amber-300">
+                                  🧾 会計依頼中
+                                </span>
+                              )}
                               <span className={`ml-auto text-sm tabular-nums ${URGENCY_CLASS[urgency]}`}>
                                 {elapsedLabel(order.placed_at, now)}
                               </span>
@@ -412,6 +417,10 @@ function TableSlip({ loading, orders, checkingOut, onCheckout }: {
     .reduce((s, o) => s + o.total_amount, 0)
   const canCheckout = canCheckoutTable(orders)
   const hasOpen = openTotal > 0
+  // お客さんからの会計依頼が来ているか（未会計の伝票に依頼フラグが立っている）。
+  const requested = orders.some(
+    (o) => o.status !== 'closed' && o.status !== 'cancelled' && o.checkout_requested_at,
+  )
   return (
     <div className="mt-2 bg-gray-50 rounded-lg p-2">
       {orders.map((o) => (
@@ -438,6 +447,11 @@ function TableSlip({ loading, orders, checkingOut, onCheckout }: {
       </div>
       {hasOpen && (
         <div className="mt-2">
+          {requested && (
+            <div className="text-xs font-bold text-amber-700 mb-1 text-center">
+              🧾 お客様から会計依頼が来ています
+            </div>
+          )}
           <button
             onClick={onCheckout}
             disabled={!canCheckout || checkingOut}
@@ -445,7 +459,9 @@ function TableSlip({ loading, orders, checkingOut, onCheckout }: {
           >
             {checkingOut
               ? '会計処理中…'
-              : `このテーブルを会計（¥${openTotal.toLocaleString('ja-JP')}）`}
+              : requested
+                ? `会計を承認（¥${openTotal.toLocaleString('ja-JP')}）`
+                : `このテーブルを会計（¥${openTotal.toLocaleString('ja-JP')}）`}
           </button>
           {!canCheckout && (
             <div className="text-xs text-amber-600 mt-1 text-center">

@@ -18,6 +18,8 @@ export type KitchenOrder = {
   total_amount: number
   customer_note: string | null
   placed_at: string
+  // お客さんが会計依頼した時刻（厨房承認まで会計完了にしない）。未依頼は null。
+  checkout_requested_at: string | null
   items: KitchenOrderItem[]
 }
 

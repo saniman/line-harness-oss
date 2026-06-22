@@ -37,12 +37,16 @@ export interface TableSummary {
   can_checkout: boolean
   unserved_count: number
   open_total: number
+  // お客さんが既に会計依頼済みか（依頼後は再依頼させない）。
+  checkout_requested: boolean
 }
 
-// お会計ボタンの表示状態（純粋関数）。
-// - 未会計の注文が無い（まだ頼んでいない / 既に会計済み）→ ボタン非表示寄りの disabled
-// - 未提供が残る → disabled + 案内文
-// - 全品提供済み → 活性
+// お会計（会計依頼）ボタンの表示状態（純粋関数）。
+// 会計は厨房承認制のため、押下=「会計依頼」。
+// - 未会計の注文が無い（まだ頼んでいない / 既に会計済み）→ 非表示
+// - 既に依頼済み → 表示するが無効＋「お願い中」案内
+// - 未提供が残る → 無効＋案内
+// - 全品提供済み・未依頼 → 活性
 export function checkoutButtonState(summary: TableSummary | null): {
   visible: boolean
   disabled: boolean
@@ -50,6 +54,9 @@ export function checkoutButtonState(summary: TableSummary | null): {
 } {
   if (!summary || summary.open_total === 0) {
     return { visible: false, disabled: true, note: null }
+  }
+  if (summary.checkout_requested) {
+    return { visible: true, disabled: true, note: 'お会計をお願い中です。スタッフが確認します。' }
   }
   if (!summary.can_checkout) {
     return { visible: true, disabled: true, note: 'まだお作りしている品があります。提供までお待ちください。' }
