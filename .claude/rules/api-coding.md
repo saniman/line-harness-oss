@@ -105,6 +105,34 @@ INSERT INTO x_v2 (id, name, ..., delivery_mode, line_account_id)
 対処: テーブル再作成マイグレーションは migration-planner に任せ、必ず `SELECT sql FROM sqlite_master` で
 実DDLを確認してから書く。schema.sql の該当定義も実DDLに一致するよう同期する。
 
+### enum値を廃止するときは CHECK を変えず「使うのをやめる」だけでよい（2026-06-23 追記）
+
+症状/背景: 「調理中(preparing)」ステータスを廃止したい。
+`orders.status` の CHECK から `preparing` を削除すると、SQLite は CHECK 変更不可のため
+テーブル再作成が必要（上記「CHECK制約変更のテーブル再作成」参照）。
+
+✅ 対処: 値の**廃止**は CHECK を触らず、遷移表（`ORDER_TRANSITIONS`）と UI から経路を消すだけにする
+（値は CHECK 上は許容のまま、運用で使わない）。
+```typescript
+// preparing は遷移先・遷移元なし＝事実上の廃止。CHECK は preparing を許容したままでよい
+const ORDER_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
+  new: ['served', 'cancelled'], preparing: [], served: ['closed'], closed: [], cancelled: [],
+}
+```
+→ enum値の**追加**は CHECK 変更=テーブル再作成が要るが、**廃止（使わない）**は再作成不要。
+（'requested' のように新しい状態が必要なら、CHECK変更を避けて別の nullable 列で表す手もある。例: 811 の `checkout_requested_at`）
+
+### SELECT したカラムをマッピングオブジェクトに入れ忘れると無言で欠落する（2026-06-23 追記）
+
+症状: `getOrderableMenus` は `category_label`/`description` を SELECT していたが、
+`map.set` する戻りオブジェクトに含めておらず、LIFF が `m.category_label`（`as` cast 経由）を
+undefined で読み、カテゴリタブが実質1つしか出ていなかった（無言で機能欠落）。
+原因: SELECT した列と、関数が返すオブジェクトのプロパティが一致しておらず、
+受け手が `as` cast で読むため TypeScript の型エラーも出ない。
+
+✅ 対処: DBヘルパーの戻り型は明示 interface にし、**SELECT列＝戻り値プロパティ**を一致させる。
+クライアント/呼び出し側は `as` cast ではなくその共有型で受ける（castは欠落を隠す）。
+
 ### 「スキーマにカラムがある＝実装済み」ではない（2026-06-13 追記）
 
 `scenarios.delivery_mode`（'relative'/'elapsed'/'absolute_time'）は列が存在したが、

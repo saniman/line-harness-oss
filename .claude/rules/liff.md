@@ -9,6 +9,23 @@ globs: "apps/worker/src/client/**/*.ts"
 - ビルド出力: apps/worker/dist/client/
 - Pagesデプロイ: npx wrangler pages deploy apps/worker/dist/client --project-name=line-harness-liff
 
+## LIFFクライアントのTSはCIのtscで型チェックされない（2026-06-23 追記）
+
+症状: `apps/worker/src/client/**`（order/ の .tsx 含む）の型エラーが CI をすり抜け、実行時まで露見しない。
+原因: `apps/worker/tsconfig.json` が `"exclude": ["src/client"]`。CI（test.yml）の
+`pnpm --filter worker exec tsc --noEmit` はこの除外に従うため client を見ない。
+deploy-liff / deploy-worker は `vite build`（esbuild）で型を剥がすだけで型検査しない。
+→ つまり LIFF クライアントの型は **どのCIジョブでも検査されない**（vitest も型は見ない）。
+
+✅ 対処: `apps/worker/src/client/**`（特に .tsx）を変更したら push 前に手動で型検査する:
+```bash
+npx tsc --noEmit --skipLibCheck --jsx react-jsx --jsxImportSource react \
+  --module esnext --moduleResolution bundler --target es2022 --strict \
+  --types react,vite/client --lib es2022,dom,dom.iterable \
+  apps/worker/src/client/order/main.tsx apps/worker/src/client/order/lib/*.ts
+```
+（`import.meta.env` を使うため `--types vite/client` が必須。無いと `Property 'env' does not exist on type 'ImportMeta'` を誤検出する）
+
 ## 環境変数
 - VITE_LIFF_ID: LIFFアプリID（1661159603-5qlDj5wV）
 - VITE_API_BASE: Worker URL（https://api.walover-co.work）
