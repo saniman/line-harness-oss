@@ -8,11 +8,23 @@ export interface MenuOption {
   extra_price: number;
 }
 
+export type MenuGroup = 'food' | 'drink';
+
 export interface OrderableMenu {
   id: string;
   name: string;
   base_price: number;
+  menu_group: MenuGroup;
+  category_label?: string | null;
+  description?: string | null;
   options: MenuOption[];
+}
+
+// メニューに含まれる大分類（お食事/ドリンク）を表示順で返す。
+// お食事を先頭にし、その種別の商品が1件もなければタブに出さない。
+export function groupsPresent(menus: OrderableMenu[]): MenuGroup[] {
+  const order: MenuGroup[] = ['food', 'drink'];
+  return order.filter((g) => menus.some((m) => m.menu_group === g));
 }
 
 // カート1行。同一メニュー×同一オプション組合せを 1 行に集約する（uid で識別）。

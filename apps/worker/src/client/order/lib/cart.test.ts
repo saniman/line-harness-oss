@@ -6,18 +6,31 @@ import {
   cartCount,
   cartTotal,
   toOrderItems,
+  groupsPresent,
   type OrderableMenu,
   type CartLine,
 } from './cart.js';
 
 const BEER: OrderableMenu = {
-  id: 'm1', name: '生ビール', base_price: 600,
+  id: 'm1', name: '生ビール', base_price: 600, menu_group: 'drink',
   options: [
     { id: 'o1', group_label: 'サイズ', choice_name: '中', extra_price: 0 },
     { id: 'o2', group_label: 'サイズ', choice_name: '大', extra_price: 200 },
   ],
 };
-const EDAMAME: OrderableMenu = { id: 'm2', name: '枝豆', base_price: 350, options: [] };
+const EDAMAME: OrderableMenu = { id: 'm2', name: '枝豆', base_price: 350, menu_group: 'food', options: [] };
+
+describe('groupsPresent（メニューの大分類）', () => {
+  it('お食事を先頭にして存在する種別だけ返す', () => {
+    expect(groupsPresent([BEER, EDAMAME])).toEqual(['food', 'drink']);
+  });
+  it('ドリンクしか無ければドリンクのみ', () => {
+    expect(groupsPresent([BEER])).toEqual(['drink']);
+  });
+  it('空なら空配列', () => {
+    expect(groupsPresent([])).toEqual([]);
+  });
+});
 
 describe('buildLine（カート行の生成）', () => {
   it('オプション無しは base_price をそのまま単価にする', () => {

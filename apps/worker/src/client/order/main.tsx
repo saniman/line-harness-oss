@@ -11,8 +11,10 @@ import {
   cartCount,
   cartTotal,
   toOrderItems,
+  groupsPresent,
   type OrderableMenu,
   type CartLine,
+  type MenuGroup,
 } from './lib/cart.js';
 import {
   fetchMenu,
@@ -46,11 +48,14 @@ function catOf(m: OrderableMenu): string {
   return (m as OrderableMenu & { category_label?: string | null }).category_label || 'メニュー';
 }
 
+const GROUP_LABEL: Record<MenuGroup, string> = { food: '🍽 お食事', drink: '🍷 ドリンク' };
+
 function App() {
   const ctx = useOrderContext();
   const [menus, setMenus] = useState<OrderableMenu[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
+  const [activeGroup, setActiveGroup] = useState<MenuGroup>('food');
   const [activeCat, setActiveCat] = useState<string>('');
   const [cart, setCart] = useState<CartLine[]>([]);
   const [optionTarget, setOptionTarget] = useState<OrderableMenu | null>(null);
@@ -98,7 +103,10 @@ function App() {
     fetchMenu(ctx)
       .then((m) => {
         setMenus(m);
-        const cats = categoriesOf(m);
+        // 既定の大分類（お食事優先。無ければ存在する種別の先頭）とその先頭カテゴリを選ぶ。
+        const g = groupsPresent(m)[0] ?? 'food';
+        setActiveGroup(g);
+        const cats = categoriesOf(m.filter((x) => x.menu_group === g));
         setActiveCat(cats[0] ?? '');
       })
       .catch(() => setLoadError('メニュー情報の取得に失敗しました。'))
@@ -109,9 +117,18 @@ function App() {
 
   const spentSoFar = sumTotals(myOrders);
 
-  const cats = useMemo(() => categoriesOf(menus), [menus]);
+  const groups = useMemo(() => groupsPresent(menus), [menus]);
+  const groupMenus = useMemo(() => menus.filter((m) => m.menu_group === activeGroup), [menus, activeGroup]);
+  const cats = useMemo(() => categoriesOf(groupMenus), [groupMenus]);
   const count = cartCount(cart);
   const total = cartTotal(cart);
+
+  // 大分類（お食事/ドリンク）を切り替えたら、その先頭カテゴリに合わせる。
+  const selectGroup = (g: MenuGroup) => {
+    setActiveGroup(g);
+    const firstCat = categoriesOf(menus.filter((m) => m.menu_group === g))[0] ?? '';
+    setActiveCat(firstCat);
+  };
 
   const handleAdd = (m: OrderableMenu) => {
     if (m.options && m.options.length > 0) setOptionTarget(m);
@@ -152,6 +169,20 @@ function App() {
         </button>
       </div>
 
+      {groups.length > 1 && (
+        <div className="mo-groups">
+          {groups.map((g) => (
+            <button
+              key={g}
+              className={`mo-group${g === activeGroup ? ' active' : ''}`}
+              onClick={() => selectGroup(g)}
+            >
+              {GROUP_LABEL[g]}
+            </button>
+          ))}
+        </div>
+      )}
+
       <div className="mo-cats">
         {cats.map((c) => (
           <button key={c} className={`mo-cat${c === activeCat ? ' active' : ''}`} onClick={() => setActiveCat(c)}>
@@ -161,7 +192,7 @@ function App() {
       </div>
 
       <div className="mo-menu">
-        {menus.filter((m) => catOf(m) === activeCat).map((m) => {
+        {groupMenus.filter((m) => catOf(m) === activeCat).map((m) => {
           const inCart = cart.filter((c) => c.menu_id === m.id).reduce((s, c) => s + c.quantity, 0);
           const hasOpt = m.options && m.options.length > 0;
           return (

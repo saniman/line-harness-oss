@@ -9,23 +9,22 @@ import {
 // 商品マスタ（オプション付き）のテスト用マップ
 const MENUS: Map<string, OrderableMenu> = new Map([
   ['m1', {
-    id: 'm1', name: '生ビール', base_price: 600,
+    id: 'm1', name: '生ビール', base_price: 600, menu_group: 'drink',
+    category_label: 'ドリンク', description: null,
     options: [
       { id: 'o1', group_label: 'サイズ', choice_name: '中ジョッキ', extra_price: 0 },
       { id: 'o2', group_label: 'サイズ', choice_name: '大ジョッキ', extra_price: 200 },
     ],
   }],
   ['m2', {
-    id: 'm2', name: '枝豆', base_price: 350, options: [],
+    id: 'm2', name: '枝豆', base_price: 350, menu_group: 'food',
+    category_label: 'フード', description: null, options: [],
   }],
 ])
 
 describe('canTransitionOrderStatus（注文ステータス遷移）', () => {
-  it('new から preparing へ遷移できる', () => {
-    expect(canTransitionOrderStatus('new', 'preparing')).toBe(true)
-  })
-  it('preparing から served へ遷移できる', () => {
-    expect(canTransitionOrderStatus('preparing', 'served')).toBe(true)
+  it('new から served へ直接遷移できる（調理中ステップを廃止）', () => {
+    expect(canTransitionOrderStatus('new', 'served')).toBe(true)
   })
   it('served から closed へ遷移できる', () => {
     expect(canTransitionOrderStatus('served', 'closed')).toBe(true)
@@ -33,8 +32,8 @@ describe('canTransitionOrderStatus（注文ステータス遷移）', () => {
   it('new から cancelled へ遷移できる', () => {
     expect(canTransitionOrderStatus('new', 'cancelled')).toBe(true)
   })
-  it('new から served へは一足飛びに遷移できない', () => {
-    expect(canTransitionOrderStatus('new', 'served')).toBe(false)
+  it('new から preparing へは遷移しない（preparing は廃止）', () => {
+    expect(canTransitionOrderStatus('new', 'preparing')).toBe(false)
   })
   it('served から cancelled へは遷移できない（提供後はキャンセル不可）', () => {
     expect(canTransitionOrderStatus('served', 'cancelled')).toBe(false)

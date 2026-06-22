@@ -50,6 +50,17 @@ body.mo-active {
 }
 .mo-cat.active { background: #222; color: #fff; }
 
+/* 大分類トグル（お食事 / ドリンク） */
+.mo-groups {
+  display: flex; gap: 8px; padding: 12px 14px 0;
+  background: #fff;
+}
+.mo-group {
+  flex: 1; font-size: 15px; padding: 10px 0; border-radius: 12px;
+  background: #f1f1f1; color: #666; font-weight: 700; border: none; cursor: pointer;
+}
+.mo-group.active { background: #ff4176; color: #fff; }
+
 /* メニューカード */
 .mo-menu { padding: 12px 14px; }
 .mo-card {

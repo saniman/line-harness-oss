@@ -7,10 +7,13 @@
 export type OrderStatus = 'new' | 'preparing' | 'served' | 'closed' | 'cancelled'
 export type PaymentStatus = 'unpaid' | 'paid'
 
-// 許可するステータス遷移。提供後（served）のキャンセルは不可。closed/cancelled は終端。
+// 許可するステータス遷移。
+// 「調理中(preparing)」は廃止し new→served の1ステップにした（ドリンクは調理しないため）。
+// preparing は CHECK 制約上は残るが運用では使わない（遷移先・遷移元なし）。
+// 提供後（served）のキャンセルは不可。closed/cancelled は終端。
 const ORDER_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
-  new: ['preparing', 'cancelled'],
-  preparing: ['served', 'cancelled'],
+  new: ['served', 'cancelled'],
+  preparing: [],
   served: ['closed'],
   closed: [],
   cancelled: [],
@@ -39,10 +42,15 @@ export interface OrderableOption {
   extra_price: number
 }
 
+export type MenuGroup = 'food' | 'drink'
+
 export interface OrderableMenu {
   id: string
   name: string
   base_price: number
+  menu_group: MenuGroup
+  category_label: string | null
+  description: string | null
   options: OrderableOption[]
 }
 
@@ -152,18 +160,34 @@ export async function getOrderableMenus(
 ): Promise<Map<string, OrderableMenu>> {
   const menuRows = await db
     .prepare(
-      `SELECT id, name, category_label, description, base_price, sort_order
+      `SELECT id, name, category_label, description, base_price, menu_group, sort_order
          FROM menus
         WHERE line_account_id = ? AND is_active = 1 AND deleted_at IS NULL
           AND menu_type = 'food'
         ORDER BY sort_order ASC, id ASC`,
     )
     .bind(accountId)
-    .all<{ id: string; name: string; base_price: number }>()
+    .all<{
+      id: string
+      name: string
+      base_price: number
+      menu_group: string
+      category_label: string | null
+      description: string | null
+    }>()
 
   const map = new Map<string, OrderableMenu>()
   for (const m of menuRows.results) {
-    map.set(m.id, { id: m.id, name: m.name, base_price: m.base_price, options: [] })
+    const group: MenuGroup = m.menu_group === 'drink' ? 'drink' : 'food'
+    map.set(m.id, {
+      id: m.id,
+      name: m.name,
+      base_price: m.base_price,
+      menu_group: group,
+      category_label: m.category_label ?? null,
+      description: m.description ?? null,
+      options: [],
+    })
   }
   if (map.size === 0) return map
 
@@ -249,6 +273,7 @@ export async function insertOrder(db: D1Database, input: CreateOrderInput): Prom
 
 export interface KitchenOrder {
   id: string
+  table_id: string | null
   table_number: string
   status: OrderStatus
   payment_status: PaymentStatus
@@ -257,7 +282,7 @@ export interface KitchenOrder {
   placed_at: string
   // お客さんが会計依頼した時刻（厨房承認まで会計完了にしない）。未依頼は null。
   checkout_requested_at: string | null
-  items: Array<{ name_snapshot: string; options_text: string; quantity: number }>
+  items: Array<{ name_snapshot: string; options_text: string; quantity: number; menu_group: MenuGroup }>
 }
 
 // 厨房ディスプレイ向けに、指定ステータスの注文を明細込みで取得する。
@@ -268,27 +293,30 @@ async function hydrateItems(
 ): Promise<KitchenOrder[]> {
   if (orders.length === 0) return []
   const ids = orders.map((o) => o.id)
+  // ドリンク/お食事の分割表示用に menus.menu_group を JOIN で付与する（メニュー削除済みは null→food 扱い）。
   const itemRows = await db
     .prepare(
-      `SELECT order_id, name_snapshot, options_text, quantity
-         FROM order_items
-        WHERE order_id IN (${ids.map(() => '?').join(',')})
-        ORDER BY created_at ASC`,
+      `SELECT oi.order_id, oi.name_snapshot, oi.options_text, oi.quantity, m.menu_group
+         FROM order_items oi
+         LEFT JOIN menus m ON m.id = oi.menu_id
+        WHERE oi.order_id IN (${ids.map(() => '?').join(',')})
+        ORDER BY oi.created_at ASC`,
     )
     .bind(...ids)
-    .all<{ order_id: string; name_snapshot: string; options_text: string; quantity: number }>()
+    .all<{ order_id: string; name_snapshot: string; options_text: string; quantity: number; menu_group: string | null }>()
 
   const byOrder = new Map<string, KitchenOrder['items']>()
   for (const it of itemRows.results) {
     const arr = byOrder.get(it.order_id) ?? []
-    arr.push({ name_snapshot: it.name_snapshot, options_text: it.options_text, quantity: it.quantity })
+    const group: MenuGroup = it.menu_group === 'drink' ? 'drink' : 'food'
+    arr.push({ name_snapshot: it.name_snapshot, options_text: it.options_text, quantity: it.quantity, menu_group: group })
     byOrder.set(it.order_id, arr)
   }
   return orders.map((o) => ({ ...o, items: byOrder.get(o.id) ?? [] }))
 }
 
 const ORDER_HEADER_COLS =
-  'id, table_number, status, payment_status, total_amount, customer_note, placed_at, checkout_requested_at'
+  'id, table_id, table_number, status, payment_status, total_amount, customer_note, placed_at, checkout_requested_at'
 
 export async function listKitchenOrders(
   db: D1Database,

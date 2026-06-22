@@ -3,15 +3,19 @@
 
 export type OrderStatus = 'new' | 'preparing' | 'served' | 'closed' | 'cancelled'
 export type PaymentStatus = 'unpaid' | 'paid'
+export type MenuGroup = 'food' | 'drink'
 
 export type KitchenOrderItem = {
   name_snapshot: string
   options_text: string
   quantity: number
+  // 'drink'（ドリンク・調理不要）/ 'food'（お食事）。厨房カードの分割表示に使う。
+  menu_group: MenuGroup
 }
 
 export type KitchenOrder = {
   id: string
+  table_id: string | null
   table_number: string
   status: OrderStatus
   payment_status: PaymentStatus
@@ -30,13 +34,6 @@ export type TodaysSales = {
   count: number
 }
 
-// 厨房ディスプレイに並べるカラム（closed/cancelled は表示しない）
-export const KITCHEN_COLUMNS: { status: OrderStatus; label: string }[] = [
-  { status: 'new', label: '🔔 新規' },
-  { status: 'preparing', label: '🔥 調理中' },
-  { status: 'served', label: '✅ 提供済み' },
-]
-
 export const STATUS_LABEL: Record<OrderStatus, string> = {
   new: '新規',
   preparing: '調理中',
@@ -46,18 +43,57 @@ export const STATUS_LABEL: Record<OrderStatus, string> = {
 }
 
 // 各ステータスで押せる次アクション。null は操作なし。
-// 会計は伝票ごとではなく「テーブル一括会計」に集約したため、served の個別会計操作は持たない
-// （served は提供完了済みで、あとはテーブル一括会計で closed になる）。
+// 「調理中」は廃止し、新規→提供済みの1ステップにした（ドリンクは調理しないため）。
+// 提供後（served）は会計（テーブル一括承認）で closed になる。
 export function nextAction(
   status: OrderStatus,
 ): { to: OrderStatus; label: string } | null {
   switch (status) {
     case 'new':
-      return { to: 'preparing', label: '調理開始' }
-    case 'preparing':
-      return { to: 'served', label: '提供完了' }
+      return { to: 'served', label: '提供済みにする' }
     default:
       return null
+  }
+}
+
+// active 注文をテーブル単位にまとめる（テーブル中心レイアウト用）。
+// 表示順は「会計依頼が来ているテーブル → 古い注文があるテーブル」を優先。
+export type TableGroup = {
+  table_id: string | null
+  table_number: string
+  orders: KitchenOrder[]
+}
+
+export function groupOrdersByTable(orders: KitchenOrder[]): TableGroup[] {
+  const map = new Map<string, TableGroup>()
+  for (const o of orders) {
+    const key = o.table_id ?? `num:${o.table_number}`
+    const g = map.get(key) ?? { table_id: o.table_id, table_number: o.table_number, orders: [] }
+    g.orders.push(o)
+    map.set(key, g)
+  }
+  const groups = [...map.values()]
+  // 各テーブル内は古い順（先に来た注文が上）。
+  for (const g of groups) {
+    g.orders.sort((a, b) => parsePlacedAt(a.placed_at) - parsePlacedAt(b.placed_at))
+  }
+  // テーブル間は「会計依頼あり」を先頭に、その次に最も古い注文が早いテーブル順。
+  return groups.sort((a, b) => {
+    const ar = a.orders.some((o) => o.checkout_requested_at) ? 0 : 1
+    const br = b.orders.some((o) => o.checkout_requested_at) ? 0 : 1
+    if (ar !== br) return ar - br
+    return parsePlacedAt(a.orders[0]?.placed_at ?? '') - parsePlacedAt(b.orders[0]?.placed_at ?? '')
+  })
+}
+
+// 1伝票の明細をドリンク/お食事に分割する（厨房カードの小見出し表示用）。
+export function splitItemsByGroup(items: KitchenOrderItem[]): {
+  drink: KitchenOrderItem[]
+  food: KitchenOrderItem[]
+} {
+  return {
+    drink: items.filter((it) => it.menu_group === 'drink'),
+    food: items.filter((it) => it.menu_group !== 'drink'),
   }
 }
 

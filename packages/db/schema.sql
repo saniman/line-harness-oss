@@ -697,6 +697,7 @@ CREATE TABLE IF NOT EXISTS menus (
   created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   menu_type             TEXT NOT NULL DEFAULT 'salon',  -- 'salon'（サロン予約）/ 'food'（飲食モバイルオーダー）
+  menu_group            TEXT NOT NULL DEFAULT 'food',   -- 'food'（お食事）/ 'drink'（ドリンク・調理しない）。menu_type='food' で使用
   FOREIGN KEY (line_account_id) REFERENCES line_accounts(id)
 );
 CREATE INDEX IF NOT EXISTS idx_menus_account_sort ON menus (line_account_id, sort_order);
