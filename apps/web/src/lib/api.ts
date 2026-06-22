@@ -654,6 +654,8 @@ export const api = {
         }),
       delete: (id: string) =>
         fetchApi<ApiResponse<{ id: string }>>(`/api/order/admin/tables/${id}`, { method: 'DELETE' }),
+      orders: (id: string) =>
+        fetchApi<ApiResponse<KitchenOrder[]>>(`/api/order/admin/tables/${id}/orders`),
     },
   },
   aiAssistant: {

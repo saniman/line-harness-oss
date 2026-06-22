@@ -5,6 +5,7 @@ import { api } from '@/lib/api'
 import type { DiningTable } from '@/lib/api'
 import {
   KITCHEN_COLUMNS,
+  STATUS_LABEL,
   nextAction,
   elapsedLabel,
   urgencyLevel,
@@ -200,6 +201,27 @@ function TablesPanel() {
   const [open, setOpen] = useState(false)
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  // 伝票確認: 開いているテーブルIDと、その注文一覧
+  const [slipTableId, setSlipTableId] = useState<string | null>(null)
+  const [slipOrders, setSlipOrders] = useState<KitchenOrder[]>([])
+  const [slipLoading, setSlipLoading] = useState(false)
+
+  const toggleSlip = async (id: string) => {
+    if (slipTableId === id) {
+      setSlipTableId(null)
+      return
+    }
+    setSlipTableId(id)
+    setSlipLoading(true)
+    try {
+      const res = await api.orders.tables.orders(id)
+      if (res.success) setSlipOrders(res.data)
+    } catch {
+      setSlipOrders([])
+    } finally {
+      setSlipLoading(false)
+    }
+  }
 
   // LIFF の注文URL。LIFF ID はビルド時の NEXT_PUBLIC_LIFF_ID（無ければ本番ID）を使う。
   const LIFF_ID = process.env.NEXT_PUBLIC_LIFF_ID || '1661159603-5qlDj5wV'
@@ -291,6 +313,12 @@ function TablesPanel() {
                       <span className="font-bold text-sm">{t.table_number}</span>
                       <span className="ml-auto flex gap-2">
                         <button
+                          onClick={() => toggleSlip(t.id)}
+                          className="text-xs font-semibold px-3 py-1 rounded-md bg-blue-50 text-blue-700 hover:bg-blue-100"
+                        >
+                          {slipTableId === t.id ? '伝票を閉じる' : '伝票確認'}
+                        </button>
+                        <button
                           onClick={() => copy(url, t.id)}
                           className="text-xs font-semibold px-3 py-1 rounded-md bg-gray-800 text-white hover:bg-gray-700"
                         >
@@ -308,6 +336,9 @@ function TablesPanel() {
                     <div className="font-mono text-xs text-gray-600 break-all bg-gray-50 rounded px-2 py-1">
                       {url}
                     </div>
+                    {slipTableId === t.id && (
+                      <TableSlip loading={slipLoading} orders={slipOrders} />
+                    )}
                   </div>
                 )
               })}
@@ -315,6 +346,49 @@ function TablesPanel() {
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+// 伝票（指定テーブルの注文一覧 + 合計）。厨房ディスプレイのテーブル管理から開く。
+function TableSlip({ loading, orders }: { loading: boolean; orders: KitchenOrder[] }) {
+  if (loading) {
+    return <div className="mt-2 text-xs text-gray-400">読み込み中…</div>
+  }
+  if (orders.length === 0) {
+    return <div className="mt-2 text-xs text-gray-400">このテーブルの注文はありません</div>
+  }
+  const grand = orders.reduce((s, o) => s + o.total_amount, 0)
+  const fmtTime = (iso: string) => {
+    const ms = iso.includes('T') ? Date.parse(iso) : Date.parse(iso.replace(' ', 'T') + 'Z')
+    if (Number.isNaN(ms)) return ''
+    const d = new Date(ms + 9 * 3600_000)
+    return `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`
+  }
+  return (
+    <div className="mt-2 bg-gray-50 rounded-lg p-2">
+      {orders.map((o) => (
+        <div key={o.id} className="py-1.5 border-b border-gray-200 last:border-0">
+          <div className="flex items-center gap-2 text-xs text-gray-500 mb-0.5">
+            <span>{fmtTime(o.placed_at)}</span>
+            <span className="px-1.5 py-0.5 rounded bg-gray-200 text-gray-700">{STATUS_LABEL[o.status]}</span>
+            {o.payment_status === 'paid' && <span className="text-green-600 font-semibold">支払済</span>}
+            <span className="ml-auto font-bold text-gray-800">¥{o.total_amount.toLocaleString('ja-JP')}</span>
+          </div>
+          <ul className="text-xs text-gray-700">
+            {o.items.map((it, i) => (
+              <li key={i}>
+                <span className="text-amber-600 font-bold">×{it.quantity}</span> {it.name_snapshot}
+                {it.options_text && <span className="text-gray-400"> / {it.options_text}</span>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+      <div className="flex justify-between items-baseline pt-2 mt-1 border-t border-gray-300">
+        <span className="text-xs text-gray-500">合計（{orders.length}伝票）</span>
+        <span className="text-base font-extrabold">¥{grand.toLocaleString('ja-JP')}</span>
+      </div>
     </div>
   )
 }

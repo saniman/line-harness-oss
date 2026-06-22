@@ -14,7 +14,8 @@ import {
   type OrderableMenu,
   type CartLine,
 } from './lib/cart.js';
-import { fetchMenu, createOrder, type CreateOrderResult } from './lib/api.js';
+import { fetchMenu, fetchMyOrders, createOrder, type CreateOrderResult } from './lib/api.js';
+import { USER_STATUS_LABEL, sumTotals, type MyOrder } from './lib/history.js';
 import './styles.css';
 
 const yen = (n: number) => '¥' + n.toLocaleString('ja-JP');
@@ -45,6 +46,10 @@ function App() {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
   const [done, setDone] = useState<CreateOrderResult | null>(null);
+  const [myOrders, setMyOrders] = useState<MyOrder[]>([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
+
+  const reloadHistory = () => { fetchMyOrders(ctx).then(setMyOrders); };
 
   useEffect(() => {
     fetchMenu(ctx)
@@ -55,7 +60,11 @@ function App() {
       })
       .catch(() => setLoadError('メニュー情報の取得に失敗しました。'))
       .finally(() => setLoading(false));
+    reloadHistory();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctx]);
+
+  const spentSoFar = sumTotals(myOrders);
 
   const cats = useMemo(() => categoriesOf(menus), [menus]);
   const count = cartCount(cart);
@@ -75,6 +84,7 @@ function App() {
       setDone(res.data);
       setCart([]);
       setCartOpen(false);
+      reloadHistory();
     } else if (res.error === 'friend_required') {
       setSubmitError('ご注文には友だち追加が必要です。一度トーク画面から友だち追加してください。');
     } else if (res.error === 'table_not_found') {
@@ -90,6 +100,14 @@ function App() {
 
   return (
     <div className="mo-root">
+      <div className="mo-header">
+        <span className="mo-shop">🏮 ご注文</span>
+        <button className="mo-hist-btn" onClick={() => { reloadHistory(); setHistoryOpen(true); }}>
+          注文履歴
+          {myOrders.length > 0 && <span className="mo-hist-total">¥{spentSoFar.toLocaleString('ja-JP')}</span>}
+        </button>
+      </div>
+
       <div className="mo-cats">
         {cats.map((c) => (
           <button key={c} className={`mo-cat${c === activeCat ? ' active' : ''}`} onClick={() => setActiveCat(c)}>
@@ -160,6 +178,49 @@ function App() {
           onSubmit={submit}
         />
       )}
+
+      {historyOpen && (
+        <HistorySheet orders={myOrders} total={spentSoFar} onClose={() => setHistoryOpen(false)} />
+      )}
+    </div>
+  );
+}
+
+function HistorySheet({ orders, total, onClose }: {
+  orders: MyOrder[];
+  total: number;
+  onClose: () => void;
+}) {
+  return (
+    <div className="mo-mask" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="mo-sheet">
+        <h3>注文履歴</h3>
+        <div className="mo-sub">このテーブルでのご注文と状況</div>
+        {orders.length === 0 ? (
+          <div className="mo-hist-empty">まだ注文はありません</div>
+        ) : (
+          <>
+            <div className="mo-total">
+              <span>これまでの合計（{orders.length}件）</span>
+              <span className="mo-total-val">{yen(total)}<small>（税込）</small></span>
+            </div>
+            {orders.map((o) => (
+              <div key={o.id} className="mo-hist-card">
+                <div className="mo-hist-top">
+                  <span className={`mo-badge-status mo-st-${o.status}`}>{USER_STATUS_LABEL[o.status]}</span>
+                  <span className="mo-hist-amount">{yen(o.total_amount)}</span>
+                </div>
+                <ul className="mo-hist-items">
+                  {o.items.map((it, i) => (
+                    <li key={i}>×{it.quantity} {it.name_snapshot}{it.options_text ? ` / ${it.options_text}` : ''}</li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </>
+        )}
+        <button className="mo-ghost" onClick={onClose}>閉じる</button>
+      </div>
     </div>
   );
 }

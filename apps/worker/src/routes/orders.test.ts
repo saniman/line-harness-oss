@@ -14,6 +14,8 @@ vi.mock('../services/orders.js', () => ({
   getOrderStatus: vi.fn(),
   insertOrder: vi.fn(),
   listKitchenOrders: vi.fn(),
+  listOrdersByTable: vi.fn(),
+  listOrdersForFriend: vi.fn(),
   resolveTableByToken: vi.fn(),
   updateOrderStatus: vi.fn(),
 }))
@@ -38,6 +40,8 @@ import {
   getOrderStatus,
   insertOrder,
   listKitchenOrders,
+  listOrdersByTable,
+  listOrdersForFriend,
   resolveTableByToken,
   updateOrderStatus,
 } from '../services/orders.js'
@@ -52,6 +56,8 @@ const mGetMenus = vi.mocked(getOrderableMenus)
 const mGetOrderStatus = vi.mocked(getOrderStatus)
 const mInsert = vi.mocked(insertOrder)
 const mListKitchen = vi.mocked(listKitchenOrders)
+const mListByTable = vi.mocked(listOrdersByTable)
+const mListForFriend = vi.mocked(listOrdersForFriend)
 const mResolveTable = vi.mocked(resolveTableByToken)
 const mUpdateStatus = vi.mocked(updateOrderStatus)
 
@@ -258,6 +264,55 @@ describe('DELETE /api/order/admin/tables/:id（テーブル削除）', () => {
     )
     expect(res.status).toBe(404)
     expect(await res.json()).toEqual({ success: false, error: 'table_not_found' })
+  })
+})
+
+describe('GET /api/liff/order/me（ユーザーの注文履歴）', () => {
+  it('id_token 検証失敗は 401', async () => {
+    mResolveAccount.mockResolvedValue('acc1')
+    mVerify.mockResolvedValue(null)
+    const res = await app.request('/api/liff/order/me?liffId=L1', { method: 'GET' }, { DB: makeDb(null) })
+    expect(res.status).toBe(401)
+  })
+
+  it('友だち未登録は空配列を返す', async () => {
+    mResolveAccount.mockResolvedValue('acc1')
+    mVerify.mockResolvedValue('U1')
+    mResolveFriend.mockResolvedValue(null)
+    const res = await app.request('/api/liff/order/me?liffId=L1', { method: 'GET' }, { DB: makeDb(null) })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ success: true, data: [] })
+    expect(mListForFriend).not.toHaveBeenCalled()
+  })
+
+  it('table トークンが解決できれば、その卓に限定して履歴を返す', async () => {
+    mResolveAccount.mockResolvedValue('acc1')
+    mVerify.mockResolvedValue('U1')
+    mResolveFriend.mockResolvedValue('f1')
+    mResolveTable.mockResolvedValue({ id: 'tbl1', table_number: 'A-3' })
+    mListForFriend.mockResolvedValue([])
+    const res = await app.request('/api/liff/order/me?liffId=L1&table=tok', { method: 'GET' }, { DB: makeDb(null) })
+    expect(res.status).toBe(200)
+    expect(mListForFriend).toHaveBeenCalledWith(expect.anything(), 'acc1', 'f1', 'tbl1')
+  })
+
+  it('table トークンが無効なら空配列（他卓を出さない）', async () => {
+    mResolveAccount.mockResolvedValue('acc1')
+    mVerify.mockResolvedValue('U1')
+    mResolveFriend.mockResolvedValue('f1')
+    mResolveTable.mockResolvedValue(null)
+    const res = await app.request('/api/liff/order/me?liffId=L1&table=bad', { method: 'GET' }, { DB: makeDb(null) })
+    expect(await res.json()).toEqual({ success: true, data: [] })
+    expect(mListForFriend).not.toHaveBeenCalled()
+  })
+})
+
+describe('GET /api/order/admin/tables/:id/orders（伝票確認）', () => {
+  it('指定テーブルの注文一覧を返す', async () => {
+    mListByTable.mockResolvedValue([])
+    const res = await app.request('/api/order/admin/tables/tbl1/orders', { method: 'GET' }, { DB: makeDb(null) })
+    expect(res.status).toBe(200)
+    expect(mListByTable).toHaveBeenCalledWith(expect.anything(), 'acc1', 'tbl1')
   })
 })
 

@@ -23,6 +23,8 @@ import {
   getOrderStatus,
   insertOrder,
   listKitchenOrders,
+  listOrdersByTable,
+  listOrdersForFriend,
   resolveTableByToken,
   updateOrderStatus,
   type OrderStatus,
@@ -52,6 +54,27 @@ orders.get('/api/liff/order/menu', async (c) => {
   const menuMap = await getOrderableMenus(c.env.DB, accountId)
   const menus = [...menuMap.values()]
   return c.json({ menus })
+})
+
+// ユーザーの注文履歴（自分の注文・現在のテーブル分）。友だち未登録は空配列。
+orders.get('/api/liff/order/me', async (c) => {
+  const accountId = await resolveAccountIdFromLiff(c)
+  if (!accountId) return c.json({ error: 'unknown_liff' }, 404)
+  const callerLineUserId = await verifyCallerLineUserId(c)
+  if (!callerLineUserId) return c.json({ error: 'unauthorized' }, 401)
+  const friendId = await resolveFriendId(c.env.DB, callerLineUserId, accountId)
+  if (!friendId) return c.json({ success: true, data: [] })
+
+  // table トークンが渡されたらその卓に限定（現在のテーブルの伝票）。解決できなければ空。
+  const tableToken = c.req.query('table')
+  let tableId: string | null = null
+  if (tableToken) {
+    const table = await resolveTableByToken(c.env.DB, accountId, tableToken)
+    if (!table) return c.json({ success: true, data: [] })
+    tableId = table.id
+  }
+  const list = await listOrdersForFriend(c.env.DB, accountId, friendId, tableId)
+  return c.json({ success: true, data: list })
 })
 
 // 注文作成。友だち登録必須・本人確認・冪等キーで二重送信を防ぐ。
@@ -222,6 +245,15 @@ orders.delete('/api/order/admin/tables/:id', async (c) => {
     return c.json({ success: false, error: 'table_not_found' }, 404)
   }
   return c.json({ success: true, data: { id: tableId } })
+})
+
+// 厨房の「伝票確認」: 指定テーブルの注文一覧（キャンセル除く・新しい順）。
+orders.get('/api/order/admin/tables/:id/orders', async (c) => {
+  const accountId = await resolveAccountIdAdmin(c)
+  if (!accountId) return c.json({ success: false, error: 'account_not_resolved' }, 400)
+  const tableId = c.req.param('id')
+  const list = await listOrdersByTable(c.env.DB, accountId, tableId)
+  return c.json({ success: true, data: list })
 })
 
 export { orders }

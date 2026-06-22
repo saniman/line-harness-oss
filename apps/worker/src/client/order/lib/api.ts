@@ -4,6 +4,7 @@
 import type { OrderContext } from './context.js';
 import type { OrderableMenu } from './cart.js';
 import type { OrderItemPayload } from './cart.js';
+import type { MyOrder } from './history.js';
 
 const API_BASE = import.meta.env?.VITE_API_BASE || '';
 
@@ -23,6 +24,19 @@ export async function fetchMenu(ctx: OrderContext): Promise<OrderableMenu[]> {
   if (!res.ok) throw new Error(`menu ${res.status}`);
   const json = (await res.json()) as { menus: OrderableMenu[] };
   return json.menus ?? [];
+}
+
+// 自分の注文履歴（現在のテーブル分）。失敗時は空配列（履歴は best-effort）。
+export async function fetchMyOrders(ctx: OrderContext): Promise<MyOrder[]> {
+  const path = `/api/liff/order/me?table=${encodeURIComponent(ctx.tableToken)}`;
+  try {
+    const res = await fetch(withLiff(path, ctx), { headers: authHeaders(ctx) });
+    if (!res.ok) return [];
+    const json = (await res.json()) as { success: boolean; data: MyOrder[] };
+    return json.data ?? [];
+  } catch {
+    return [];
+  }
 }
 
 export interface CreateOrderResult {

@@ -250,25 +250,12 @@ export interface KitchenOrder {
 }
 
 // 厨房ディスプレイ向けに、指定ステータスの注文を明細込みで取得する。
-export async function listKitchenOrders(
+// 注文ヘッダ配列に order_items をまとめて 1 クエリで付与する（N+1 回避）。
+async function hydrateItems(
   db: D1Database,
-  accountId: string,
-  statuses: OrderStatus[],
+  orders: Array<Omit<KitchenOrder, 'items'>>,
 ): Promise<KitchenOrder[]> {
-  const placeholders = statuses.map(() => '?').join(',')
-  const orderRows = await db
-    .prepare(
-      `SELECT id, table_number, status, payment_status, total_amount, customer_note, placed_at
-         FROM orders
-        WHERE line_account_id = ? AND status IN (${placeholders})
-        ORDER BY placed_at ASC`,
-    )
-    .bind(accountId, ...statuses)
-    .all<Omit<KitchenOrder, 'items'>>()
-
-  const orders = orderRows.results as Array<Omit<KitchenOrder, 'items'>>
   if (orders.length === 0) return []
-
   const ids = orders.map((o) => o.id)
   const itemRows = await db
     .prepare(
@@ -286,8 +273,66 @@ export async function listKitchenOrders(
     arr.push({ name_snapshot: it.name_snapshot, options_text: it.options_text, quantity: it.quantity })
     byOrder.set(it.order_id, arr)
   }
-
   return orders.map((o) => ({ ...o, items: byOrder.get(o.id) ?? [] }))
+}
+
+const ORDER_HEADER_COLS =
+  'id, table_number, status, payment_status, total_amount, customer_note, placed_at'
+
+export async function listKitchenOrders(
+  db: D1Database,
+  accountId: string,
+  statuses: OrderStatus[],
+): Promise<KitchenOrder[]> {
+  const placeholders = statuses.map(() => '?').join(',')
+  const orderRows = await db
+    .prepare(
+      `SELECT ${ORDER_HEADER_COLS}
+         FROM orders
+        WHERE line_account_id = ? AND status IN (${placeholders})
+        ORDER BY placed_at ASC`,
+    )
+    .bind(accountId, ...statuses)
+    .all<Omit<KitchenOrder, 'items'>>()
+  return hydrateItems(db, orderRows.results as Array<Omit<KitchenOrder, 'items'>>)
+}
+
+// 厨房の「伝票確認」用: 1テーブルの注文（キャンセル除く）を新しい順に。
+export async function listOrdersByTable(
+  db: D1Database,
+  accountId: string,
+  tableId: string,
+): Promise<KitchenOrder[]> {
+  const orderRows = await db
+    .prepare(
+      `SELECT ${ORDER_HEADER_COLS}
+         FROM orders
+        WHERE line_account_id = ? AND table_id = ? AND status <> 'cancelled'
+        ORDER BY placed_at DESC`,
+    )
+    .bind(accountId, tableId)
+    .all<Omit<KitchenOrder, 'items'>>()
+  return hydrateItems(db, orderRows.results as Array<Omit<KitchenOrder, 'items'>>)
+}
+
+// ユーザーの注文履歴用: caller(friend) の注文を新しい順に。tableId 指定時はその卓に限定。
+export async function listOrdersForFriend(
+  db: D1Database,
+  accountId: string,
+  friendId: string,
+  tableId: string | null,
+): Promise<KitchenOrder[]> {
+  const binds: unknown[] = [accountId, friendId]
+  let where = `line_account_id = ? AND friend_id = ? AND status <> 'cancelled'`
+  if (tableId) {
+    where += ` AND table_id = ?`
+    binds.push(tableId)
+  }
+  const orderRows = await db
+    .prepare(`SELECT ${ORDER_HEADER_COLS} FROM orders WHERE ${where} ORDER BY placed_at DESC`)
+    .bind(...binds)
+    .all<Omit<KitchenOrder, 'items'>>()
+  return hydrateItems(db, orderRows.results as Array<Omit<KitchenOrder, 'items'>>)
 }
 
 export interface OrderStatusRow {

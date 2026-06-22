@@ -9,6 +9,32 @@ body.mo-active {
 
 .mo-root { max-width: 480px; margin: 0 auto; padding-bottom: 96px; }
 
+/* ヘッダー（店名 + 注文履歴ボタン） */
+.mo-header {
+  display: flex; align-items: center; gap: 8px; padding: 12px 14px;
+  background: #06C755; color: #fff; position: sticky; top: 0; z-index: 11;
+}
+.mo-shop { font-weight: 700; font-size: 15px; }
+.mo-hist-btn {
+  margin-left: auto; display: inline-flex; align-items: center; gap: 6px;
+  background: rgba(255,255,255,.22); color: #fff; border: none; cursor: pointer;
+  font-size: 13px; font-weight: 600; padding: 6px 12px; border-radius: 999px;
+}
+.mo-hist-total { background: #fff; color: #06C755; border-radius: 999px; padding: 1px 8px; font-weight: 800; font-size: 12px; }
+
+/* 履歴シート */
+.mo-hist-empty { text-align: center; color: #999; font-size: 13px; padding: 24px 0; }
+.mo-hist-card { border: 1px solid #ececec; border-radius: 12px; padding: 10px 12px; margin-bottom: 8px; }
+.mo-hist-top { display: flex; align-items: center; margin-bottom: 6px; }
+.mo-hist-amount { margin-left: auto; font-weight: 800; font-size: 14px; }
+.mo-hist-items { font-size: 12px; color: #555; line-height: 1.7; }
+.mo-badge-status { font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 999px; }
+.mo-st-new       { background: #fdecef; color: #c2185b; }
+.mo-st-preparing { background: #fff4e0; color: #b26a00; }
+.mo-st-served    { background: #e6f7ec; color: #1b8a4b; }
+.mo-st-closed    { background: #eef1f4; color: #555; }
+.mo-st-cancelled { background: #f0f0f0; color: #999; }
+
 .mo-center { padding: 80px 20px; text-align: center; color: #666; font-size: 14px; }
 .mo-err { color: #c2185b; }
 
