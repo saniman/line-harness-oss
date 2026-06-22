@@ -145,8 +145,10 @@ CHECK 制約はALTER TABLEで変更不可。
 - 既存のauto_repliesロジックを勝手に変更しない
 
 ## デプロイコマンド
+通常は `git push origin main` で Worker / 管理画面 / LIFF すべて CI が自動デプロイする。
+以下の手動コマンドは CI が使えない例外時のみ（push 後に併用すると二重デプロイになる）。
 - Worker: pnpm deploy:worker
-- LIFF: 以下をまとめて実行（/deploy スキル参照）
+- LIFF: 以下をまとめて実行（通常は push で自動。手動は /deploy スキル参照）
   VITE_LIFF_ID=1661159603-5qlDj5wV \
   VITE_API_BASE=https://api.walover-co.work \
   VITE_CALENDAR_CONNECTION_ID=0ba404af-3184-4640-bb56-d24c37c1f230 \
