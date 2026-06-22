@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   STATUS_LABEL,
   nextAction,
+  canCheckoutTable,
   parsePlacedAt,
   elapsedLabel,
   urgencyLevel,
@@ -23,14 +24,30 @@ describe('nextAction（次に押せる操作）', () => {
   it('preparing → 提供完了（served へ）', () => {
     expect(nextAction('preparing')).toEqual({ to: 'served', label: '提供完了' })
   })
-  it('served → 会計完了（closed へ）', () => {
-    expect(nextAction('served')).toEqual({ to: 'closed', label: '会計完了' })
+  it('served は操作なし（会計はテーブル一括会計に集約）', () => {
+    expect(nextAction('served')).toBeNull()
   })
   it('closed は操作なし（null）', () => {
     expect(nextAction('closed')).toBeNull()
   })
   it('cancelled は操作なし（null）', () => {
     expect(nextAction('cancelled')).toBeNull()
+  })
+})
+
+describe('canCheckoutTable（テーブル一括会計の可否）', () => {
+  it('未会計が全て提供済みなら会計できる', () => {
+    expect(canCheckoutTable([{ status: 'served' }, { status: 'served' }])).toBe(true)
+  })
+  it('未提供が残れば会計できない', () => {
+    expect(canCheckoutTable([{ status: 'served' }, { status: 'preparing' }])).toBe(false)
+  })
+  it('未会計が無い（空・全て会計済み）なら会計できない', () => {
+    expect(canCheckoutTable([])).toBe(false)
+    expect(canCheckoutTable([{ status: 'closed' }])).toBe(false)
+  })
+  it('キャンセルは除外して判定する', () => {
+    expect(canCheckoutTable([{ status: 'served' }, { status: 'cancelled' }])).toBe(true)
   })
 })
 

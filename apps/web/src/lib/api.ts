@@ -26,7 +26,7 @@ import type {
 } from '@line-crm/shared'
 
 import type { Broadcast } from '@line-crm/shared'
-import type { KitchenOrder, OrderStatus } from './orders'
+import type { KitchenOrder, OrderStatus, TodaysSales } from './orders'
 
 export type DiningTable = {
   id: string
@@ -656,7 +656,14 @@ export const api = {
         fetchApi<ApiResponse<{ id: string }>>(`/api/order/admin/tables/${id}`, { method: 'DELETE' }),
       orders: (id: string) =>
         fetchApi<ApiResponse<KitchenOrder[]>>(`/api/order/admin/tables/${id}/orders`),
+      checkout: (id: string) =>
+        fetchApi<ApiResponse<{ settled_count: number; settled_total: number }>>(
+          `/api/order/admin/tables/${id}/checkout`,
+          { method: 'POST' },
+        ),
     },
+    salesToday: () =>
+      fetchApi<ApiResponse<TodaysSales>>('/api/order/admin/sales/today'),
   },
   aiAssistant: {
     getConfig: () =>

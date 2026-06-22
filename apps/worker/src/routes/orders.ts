@@ -19,12 +19,15 @@ import {
 import {
   buildOrderItems,
   canTransitionOrderStatus,
+  checkoutTable,
   getOrderableMenus,
   getOrderStatus,
+  getTableCheckoutSummary,
   insertOrder,
   listKitchenOrders,
   listOrdersByTable,
   listOrdersForFriend,
+  listTodaysSales,
   resolveTableByToken,
   updateOrderStatus,
   type OrderStatus,
@@ -74,7 +77,49 @@ orders.get('/api/liff/order/me', async (c) => {
     tableId = table.id
   }
   const list = await listOrdersForFriend(c.env.DB, accountId, friendId, tableId)
-  return c.json({ success: true, data: list })
+  // 会計ボタンの活性判定用にテーブル全体（同卓の全員分）の集計を添える。
+  const summary = tableId
+    ? await getTableCheckoutSummary(c.env.DB, accountId, tableId)
+    : null
+  return c.json({ success: true, data: list, summary })
+})
+
+// テーブル一括会計（お客さん側）。同卓の提供済み注文をまとめて会計済みにする。
+orders.post('/api/liff/order/checkout', async (c) => {
+  const accountId = await resolveAccountIdFromLiff(c)
+  if (!accountId) return c.json({ error: 'unknown_liff' }, 404)
+
+  const callerLineUserId = await verifyCallerLineUserId(c)
+  if (!callerLineUserId) return c.json({ error: 'unauthorized' }, 401)
+
+  let body: { table_token?: string }
+  try {
+    body = await c.req.json()
+  } catch {
+    return c.json({ error: 'invalid_json' }, 400)
+  }
+  if (!body.table_token) return c.json({ error: 'missing_table' }, 400)
+
+  // 友だち登録必須ゲート（注文と同じ条件）。
+  const friendId = await resolveFriendId(c.env.DB, callerLineUserId, accountId)
+  if (!friendId) return c.json({ error: 'friend_required' }, 403)
+
+  const table = await resolveTableByToken(c.env.DB, accountId, body.table_token)
+  if (!table) return c.json({ error: 'table_not_found' }, 404)
+
+  const result = await checkoutTable(c.env.DB, accountId, table.id)
+  if (!result.ok) {
+    // 未提供が残る / 会計対象なし。409 でフロントに理由を返す。
+    return c.json({ success: false, error: result.error }, 409)
+  }
+  return c.json({
+    success: true,
+    data: {
+      table_number: table.table_number,
+      settled_count: result.settled_count,
+      settled_total: result.settled_total,
+    },
+  })
 })
 
 // 注文作成。友だち登録必須・本人確認・冪等キーで二重送信を防ぐ。
@@ -254,6 +299,29 @@ orders.get('/api/order/admin/tables/:id/orders', async (c) => {
   const tableId = c.req.param('id')
   const list = await listOrdersByTable(c.env.DB, accountId, tableId)
   return c.json({ success: true, data: list })
+})
+
+// 厨房からのテーブル一括会計（現金・店頭会計などお客さんが操作しないケース用）。
+orders.post('/api/order/admin/tables/:id/checkout', async (c) => {
+  const accountId = await resolveAccountIdAdmin(c)
+  if (!accountId) return c.json({ success: false, error: 'account_not_resolved' }, 400)
+  const tableId = c.req.param('id')
+  const result = await checkoutTable(c.env.DB, accountId, tableId)
+  if (!result.ok) {
+    return c.json({ success: false, error: result.error }, 409)
+  }
+  return c.json({
+    success: true,
+    data: { settled_count: result.settled_count, settled_total: result.settled_total },
+  })
+})
+
+// 本日（JST）の売上: 会計済み伝票一覧 + 合計金額・件数。
+orders.get('/api/order/admin/sales/today', async (c) => {
+  const accountId = await resolveAccountIdAdmin(c)
+  if (!accountId) return c.json({ success: false, error: 'account_not_resolved' }, 400)
+  const sales = await listTodaysSales(c.env.DB, accountId)
+  return c.json({ success: true, data: sales })
 })
 
 export { orders }

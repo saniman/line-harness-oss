@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   canTransitionOrderStatus,
+  canCheckoutTable,
   buildOrderItems,
   type OrderableMenu,
 } from './orders.js'
@@ -43,6 +44,27 @@ describe('canTransitionOrderStatus（注文ステータス遷移）', () => {
   })
   it('cancelled は終端で遷移できない', () => {
     expect(canTransitionOrderStatus('cancelled', 'new')).toBe(false)
+  })
+})
+
+describe('canCheckoutTable（テーブル一括会計の可否）', () => {
+  it('未会計の注文が全て提供済みなら会計できる', () => {
+    expect(canCheckoutTable([{ status: 'served' }, { status: 'served' }])).toBe(true)
+  })
+  it('未提供（new/preparing）が1件でも残っていたら会計できない', () => {
+    expect(canCheckoutTable([{ status: 'served' }, { status: 'preparing' }])).toBe(false)
+    expect(canCheckoutTable([{ status: 'new' }])).toBe(false)
+  })
+  it('未会計の注文が無い（空・全て会計済み/キャンセル）なら会計できない', () => {
+    expect(canCheckoutTable([])).toBe(false)
+    expect(canCheckoutTable([{ status: 'closed' }])).toBe(false)
+    expect(canCheckoutTable([{ status: 'cancelled' }])).toBe(false)
+  })
+  it('キャンセル済みは判定から除外し、残りが全て提供済みなら会計できる', () => {
+    expect(canCheckoutTable([{ status: 'served' }, { status: 'cancelled' }])).toBe(true)
+  })
+  it('会計済みが混ざっていても、未会計分が全て提供済みなら会計できる', () => {
+    expect(canCheckoutTable([{ status: 'closed' }, { status: 'served' }])).toBe(true)
   })
 })
 

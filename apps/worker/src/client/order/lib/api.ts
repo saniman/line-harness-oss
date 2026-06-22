@@ -4,7 +4,7 @@
 import type { OrderContext } from './context.js';
 import type { OrderableMenu } from './cart.js';
 import type { OrderItemPayload } from './cart.js';
-import type { MyOrder } from './history.js';
+import type { MyOrder, TableSummary } from './history.js';
 
 const API_BASE = import.meta.env?.VITE_API_BASE || '';
 
@@ -26,17 +26,51 @@ export async function fetchMenu(ctx: OrderContext): Promise<OrderableMenu[]> {
   return json.menus ?? [];
 }
 
-// 自分の注文履歴（現在のテーブル分）。失敗時は空配列（履歴は best-effort）。
-export async function fetchMyOrders(ctx: OrderContext): Promise<MyOrder[]> {
+export interface MyOrdersResult {
+  orders: MyOrder[];
+  summary: TableSummary | null;
+}
+
+// 自分の注文履歴（現在のテーブル分）+ テーブル会計集計。失敗時は空（履歴は best-effort）。
+export async function fetchMyOrders(ctx: OrderContext): Promise<MyOrdersResult> {
   const path = `/api/liff/order/me?table=${encodeURIComponent(ctx.tableToken)}`;
   try {
     const res = await fetch(withLiff(path, ctx), { headers: authHeaders(ctx) });
-    if (!res.ok) return [];
-    const json = (await res.json()) as { success: boolean; data: MyOrder[] };
-    return json.data ?? [];
+    if (!res.ok) return { orders: [], summary: null };
+    const json = (await res.json()) as { success: boolean; data: MyOrder[]; summary: TableSummary | null };
+    return { orders: json.data ?? [], summary: json.summary ?? null };
   } catch {
-    return [];
+    return { orders: [], summary: null };
   }
+}
+
+export interface CheckoutResult {
+  table_number: string;
+  settled_count: number;
+  settled_total: number;
+}
+
+// テーブル一括会計。全品提供済みでなければサーバが 409 not_all_served を返す。
+export async function checkoutOrder(
+  ctx: OrderContext,
+): Promise<{ ok: true; data: CheckoutResult } | { ok: false; error: string }> {
+  const res = await fetch(withLiff('/api/liff/order/checkout', ctx), {
+    method: 'POST',
+    headers: authHeaders(ctx, { 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ table_token: ctx.tableToken }),
+  });
+  if (res.ok) {
+    const json = (await res.json()) as { success: boolean; data: CheckoutResult };
+    return { ok: true, data: json.data };
+  }
+  let error = `error_${res.status}`;
+  try {
+    const json = (await res.json()) as { error?: string };
+    if (json.error) error = json.error;
+  } catch {
+    /* JSON 以外のエラーボディは無視 */
+  }
+  return { ok: false, error };
 }
 
 export interface CreateOrderResult {

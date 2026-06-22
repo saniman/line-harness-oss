@@ -10,12 +10,15 @@ vi.mock('../services/liff-identity.js', () => ({
 vi.mock('../services/orders.js', () => ({
   buildOrderItems: vi.fn(),
   canTransitionOrderStatus: vi.fn(),
+  checkoutTable: vi.fn(),
   getOrderableMenus: vi.fn(),
   getOrderStatus: vi.fn(),
+  getTableCheckoutSummary: vi.fn(),
   insertOrder: vi.fn(),
   listKitchenOrders: vi.fn(),
   listOrdersByTable: vi.fn(),
   listOrdersForFriend: vi.fn(),
+  listTodaysSales: vi.fn(),
   resolveTableByToken: vi.fn(),
   updateOrderStatus: vi.fn(),
 }))
@@ -36,12 +39,15 @@ import {
 import {
   buildOrderItems,
   canTransitionOrderStatus,
+  checkoutTable,
   getOrderableMenus,
   getOrderStatus,
+  getTableCheckoutSummary,
   insertOrder,
   listKitchenOrders,
   listOrdersByTable,
   listOrdersForFriend,
+  listTodaysSales,
   resolveTableByToken,
   updateOrderStatus,
 } from '../services/orders.js'
@@ -60,6 +66,9 @@ const mListByTable = vi.mocked(listOrdersByTable)
 const mListForFriend = vi.mocked(listOrdersForFriend)
 const mResolveTable = vi.mocked(resolveTableByToken)
 const mUpdateStatus = vi.mocked(updateOrderStatus)
+const mCheckout = vi.mocked(checkoutTable)
+const mSummary = vi.mocked(getTableCheckoutSummary)
+const mTodaysSales = vi.mocked(listTodaysSales)
 
 const app = new Hono()
 app.route('/', orders)
@@ -322,5 +331,120 @@ describe('GET /api/order/admin/orders（厨房一覧）', () => {
     const res = await app.request('/api/order/admin/orders', { method: 'GET' }, { DB: makeDb(null) })
     expect(res.status).toBe(200)
     expect(mListKitchen).toHaveBeenCalledWith(expect.anything(), 'acc1', ['new', 'preparing'])
+  })
+})
+
+describe('POST /api/liff/order/checkout（お客さん側の一括会計）', () => {
+  it('id_token 検証失敗は 401', async () => {
+    mResolveAccount.mockResolvedValue('acc1')
+    mVerify.mockResolvedValue(null)
+    const res = await app.request(
+      '/api/liff/order/checkout?liffId=L1',
+      { method: 'POST', body: JSON.stringify({ table_token: 't1' }) },
+      { DB: makeDb(null) },
+    )
+    expect(res.status).toBe(401)
+  })
+
+  it('友だち未登録は 403 friend_required', async () => {
+    mResolveAccount.mockResolvedValue('acc1')
+    mVerify.mockResolvedValue('U1')
+    mResolveFriend.mockResolvedValue(null)
+    const res = await app.request(
+      '/api/liff/order/checkout?liffId=L1',
+      { method: 'POST', body: JSON.stringify({ table_token: 't1' }) },
+      { DB: makeDb(null) },
+    )
+    expect(res.status).toBe(403)
+  })
+
+  it('未提供が残る場合は 409 not_all_served', async () => {
+    mResolveAccount.mockResolvedValue('acc1')
+    mVerify.mockResolvedValue('U1')
+    mResolveFriend.mockResolvedValue('f1')
+    mResolveTable.mockResolvedValue({ id: 'tbl1', table_number: 'A-3' })
+    mCheckout.mockResolvedValue({ ok: false, error: 'not_all_served' })
+    const res = await app.request(
+      '/api/liff/order/checkout?liffId=L1',
+      { method: 'POST', body: JSON.stringify({ table_token: 't1' }) },
+      { DB: makeDb(null) },
+    )
+    expect(res.status).toBe(409)
+    expect(await res.json()).toEqual({ success: false, error: 'not_all_served' })
+  })
+
+  it('正常系: 会計済みにして件数と合計を返す', async () => {
+    mResolveAccount.mockResolvedValue('acc1')
+    mVerify.mockResolvedValue('U1')
+    mResolveFriend.mockResolvedValue('f1')
+    mResolveTable.mockResolvedValue({ id: 'tbl1', table_number: 'A-3' })
+    mCheckout.mockResolvedValue({ ok: true, settled_count: 2, settled_total: 1950 })
+    const res = await app.request(
+      '/api/liff/order/checkout?liffId=L1',
+      { method: 'POST', body: JSON.stringify({ table_token: 't1' }) },
+      { DB: makeDb(null) },
+    )
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      success: true,
+      data: { table_number: 'A-3', settled_count: 2, settled_total: 1950 },
+    })
+    expect(mCheckout).toHaveBeenCalledWith(expect.anything(), 'acc1', 'tbl1')
+  })
+})
+
+describe('GET /api/liff/order/me（summary 添付）', () => {
+  it('table 解決時はテーブル集計を summary として返す', async () => {
+    mResolveAccount.mockResolvedValue('acc1')
+    mVerify.mockResolvedValue('U1')
+    mResolveFriend.mockResolvedValue('f1')
+    mResolveTable.mockResolvedValue({ id: 'tbl1', table_number: 'A-3' })
+    mListForFriend.mockResolvedValue([])
+    mSummary.mockResolvedValue({ can_checkout: true, unserved_count: 0, open_total: 1200 })
+    const res = await app.request('/api/liff/order/me?liffId=L1&table=tok', { method: 'GET' }, { DB: makeDb(null) })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      success: true,
+      data: [],
+      summary: { can_checkout: true, unserved_count: 0, open_total: 1200 },
+    })
+    expect(mSummary).toHaveBeenCalledWith(expect.anything(), 'acc1', 'tbl1')
+  })
+})
+
+describe('POST /api/order/admin/tables/:id/checkout（厨房の一括会計）', () => {
+  it('正常系: checkoutTable を呼び件数と合計を返す', async () => {
+    mCheckout.mockResolvedValue({ ok: true, settled_count: 1, settled_total: 800 })
+    const res = await app.request(
+      '/api/order/admin/tables/tbl1/checkout',
+      { method: 'POST' },
+      { DB: makeDb(null) },
+    )
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      success: true,
+      data: { settled_count: 1, settled_total: 800 },
+    })
+    expect(mCheckout).toHaveBeenCalledWith(expect.anything(), 'acc1', 'tbl1')
+  })
+
+  it('未提供が残れば 409', async () => {
+    mCheckout.mockResolvedValue({ ok: false, error: 'not_all_served' })
+    const res = await app.request(
+      '/api/order/admin/tables/tbl1/checkout',
+      { method: 'POST' },
+      { DB: makeDb(null) },
+    )
+    expect(res.status).toBe(409)
+  })
+})
+
+describe('GET /api/order/admin/sales/today（本日の売上）', () => {
+  it('listTodaysSales の結果を返す', async () => {
+    mTodaysSales.mockResolvedValue({ orders: [], total: 5400, count: 3 })
+    const res = await app.request('/api/order/admin/sales/today', { method: 'GET' }, { DB: makeDb(null) })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ success: true, data: { orders: [], total: 5400, count: 3 } })
+    expect(mTodaysSales).toHaveBeenCalledWith(expect.anything(), 'acc1')
   })
 })

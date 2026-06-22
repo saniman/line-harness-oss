@@ -20,6 +20,15 @@ export function canTransitionOrderStatus(from: OrderStatus, to: OrderStatus): bo
   return ORDER_TRANSITIONS[from]?.includes(to) ?? false
 }
 
+// テーブル一括会計の可否（純粋関数）。
+// 「未会計（closed/cancelled 以外）」の注文が 1 件以上あり、その全てが提供済み（served）の
+// ときだけ会計できる。未提供（new/preparing）が残るうちは厨房が作りかけを見失うため不可。
+export function canCheckoutTable(orders: Array<{ status: OrderStatus }>): boolean {
+  const open = orders.filter((o) => o.status !== 'cancelled' && o.status !== 'closed')
+  if (open.length === 0) return false
+  return open.every((o) => o.status === 'served')
+}
+
 // ----------------------------------------------------------------
 // 注文明細のビルド（純粋関数）
 
@@ -374,4 +383,108 @@ export async function updateOrderStatus(
       .bind(to, orderId)
       .run()
   }
+}
+
+// ----------------------------------------------------------------
+// テーブル一括会計 / 本日の売上
+
+interface OpenOrderRow {
+  status: OrderStatus
+  total_amount: number
+}
+
+// テーブルの未会計（closed/cancelled 以外）注文を取得する。会計可否判定・集計に使う。
+async function getOpenTableOrderRows(
+  db: D1Database,
+  accountId: string,
+  tableId: string,
+): Promise<OpenOrderRow[]> {
+  const rows = await db
+    .prepare(
+      `SELECT status, total_amount
+         FROM orders
+        WHERE line_account_id = ? AND table_id = ?
+          AND status NOT IN ('closed','cancelled')`,
+    )
+    .bind(accountId, tableId)
+    .all<OpenOrderRow>()
+  return rows.results
+}
+
+export interface TableCheckoutSummary {
+  can_checkout: boolean
+  unserved_count: number
+  open_total: number
+}
+
+// LIFF / 厨房の会計ボタン活性判定用のテーブル集計（同卓の全注文が対象）。
+export async function getTableCheckoutSummary(
+  db: D1Database,
+  accountId: string,
+  tableId: string,
+): Promise<TableCheckoutSummary> {
+  const open = await getOpenTableOrderRows(db, accountId, tableId)
+  const unserved = open.filter((o) => o.status === 'new' || o.status === 'preparing')
+  return {
+    can_checkout: canCheckoutTable(open),
+    unserved_count: unserved.length,
+    open_total: open.reduce((s, o) => s + o.total_amount, 0),
+  }
+}
+
+export type CheckoutTableResult =
+  | { ok: true; settled_count: number; settled_total: number }
+  | { ok: false; error: 'nothing_to_settle' | 'not_all_served' }
+
+// テーブルを一括会計する。提供済みの注文をまとめて closed + paid にする。
+// 未提供が残る場合は何も変更せず not_all_served を返す（厨房が作りかけを見失う事故を防ぐ）。
+export async function checkoutTable(
+  db: D1Database,
+  accountId: string,
+  tableId: string,
+): Promise<CheckoutTableResult> {
+  const open = await getOpenTableOrderRows(db, accountId, tableId)
+  if (open.length === 0) return { ok: false, error: 'nothing_to_settle' }
+  if (!canCheckoutTable(open)) return { ok: false, error: 'not_all_served' }
+
+  const served = open.filter((o) => o.status === 'served')
+  const settledTotal = served.reduce((s, o) => s + o.total_amount, 0)
+  const res = await db
+    .prepare(
+      `UPDATE orders
+          SET status = 'closed', payment_status = 'paid',
+              paid_at = datetime('now'), updated_at = datetime('now')
+        WHERE line_account_id = ? AND table_id = ? AND status = 'served'`,
+    )
+    .bind(accountId, tableId)
+    .run()
+  return { ok: true, settled_count: res.meta.changes ?? served.length, settled_total: settledTotal }
+}
+
+export interface TodaysSales {
+  orders: KitchenOrder[]
+  total: number
+  count: number
+}
+
+// 本日（JST）の会計済み伝票一覧 + 売上合計・件数。
+// paid_at は UTC 保存のため、JST 当日 0 時を UTC に換算して境界にする
+// （datetime('now','+9 hours','start of day','-9 hours')）。
+export async function listTodaysSales(
+  db: D1Database,
+  accountId: string,
+): Promise<TodaysSales> {
+  const orderRows = await db
+    .prepare(
+      `SELECT ${ORDER_HEADER_COLS}
+         FROM orders
+        WHERE line_account_id = ? AND status = 'closed'
+          AND paid_at >= datetime('now','+9 hours','start of day','-9 hours')
+        ORDER BY paid_at DESC`,
+    )
+    .bind(accountId)
+    .all<Omit<KitchenOrder, 'items'>>()
+  const orders = await hydrateItems(db, orderRows.results as Array<Omit<KitchenOrder, 'items'>>)
+  const total = orders.reduce((s, o) => s + o.total_amount, 0)
+  return { orders, total, count: orders.length }
 }

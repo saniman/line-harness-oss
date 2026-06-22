@@ -21,6 +21,13 @@ export type KitchenOrder = {
   items: KitchenOrderItem[]
 }
 
+// 本日（JST）の売上: 会計済み伝票一覧 + 合計金額・件数。
+export type TodaysSales = {
+  orders: KitchenOrder[]
+  total: number
+  count: number
+}
+
 // 厨房ディスプレイに並べるカラム（closed/cancelled は表示しない）
 export const KITCHEN_COLUMNS: { status: OrderStatus; label: string }[] = [
   { status: 'new', label: '🔔 新規' },
@@ -36,7 +43,9 @@ export const STATUS_LABEL: Record<OrderStatus, string> = {
   cancelled: 'キャンセル',
 }
 
-// 各ステータスで押せる次アクション。null は操作なし（終端）。
+// 各ステータスで押せる次アクション。null は操作なし。
+// 会計は伝票ごとではなく「テーブル一括会計」に集約したため、served の個別会計操作は持たない
+// （served は提供完了済みで、あとはテーブル一括会計で closed になる）。
 export function nextAction(
   status: OrderStatus,
 ): { to: OrderStatus; label: string } | null {
@@ -45,11 +54,18 @@ export function nextAction(
       return { to: 'preparing', label: '調理開始' }
     case 'preparing':
       return { to: 'served', label: '提供完了' }
-    case 'served':
-      return { to: 'closed', label: '会計完了' }
     default:
       return null
   }
+}
+
+// テーブル一括会計の可否（厨房UIの「このテーブルを会計」ボタン活性判定）。
+// 未会計（closed/cancelled 以外）が1件以上あり、その全てが提供済み（served）なら true。
+// サーバ側 services/orders.ts の canCheckoutTable と同じ判定。
+export function canCheckoutTable(orders: { status: OrderStatus }[]): boolean {
+  const open = orders.filter((o) => o.status !== 'cancelled' && o.status !== 'closed')
+  if (open.length === 0) return false
+  return open.every((o) => o.status === 'served')
 }
 
 // D1 の datetime('now') は "YYYY-MM-DD HH:MM:SS"（UTC・タイムゾーン無し）で入る。

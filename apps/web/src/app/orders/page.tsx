@@ -7,10 +7,12 @@ import {
   KITCHEN_COLUMNS,
   STATUS_LABEL,
   nextAction,
+  canCheckoutTable,
   elapsedLabel,
   urgencyLevel,
   type KitchenOrder,
   type OrderStatus,
+  type TodaysSales,
 } from '@/lib/orders'
 import Header from '@/components/layout/header'
 
@@ -187,6 +189,7 @@ export default function OrdersPage() {
           </div>
         )}
 
+        <TodaysSalesPanel />
         <TablesPanel />
       </div>
     </div>
@@ -205,6 +208,23 @@ function TablesPanel() {
   const [slipTableId, setSlipTableId] = useState<string | null>(null)
   const [slipOrders, setSlipOrders] = useState<KitchenOrder[]>([])
   const [slipLoading, setSlipLoading] = useState(false)
+  const [checkingOutId, setCheckingOutId] = useState<string | null>(null)
+
+  // テーブル一括会計（現金・店頭会計などお客さんが操作しないケース用）。
+  const checkout = async (tableId: string) => {
+    if (!window.confirm('このテーブルを会計しますか？（提供済みの伝票がまとめて会計済みになります）')) return
+    setCheckingOutId(tableId)
+    try {
+      const res = await api.orders.tables.checkout(tableId)
+      if (res.success) {
+        // 伝票表示を最新化（会計済みは厨房ボードから次回ポーリングで消える）。
+        const r = await api.orders.tables.orders(tableId)
+        if (r.success) setSlipOrders(r.data)
+      }
+    } finally {
+      setCheckingOutId(null)
+    }
+  }
 
   const toggleSlip = async (id: string) => {
     if (slipTableId === id) {
@@ -314,22 +334,31 @@ function TablesPanel() {
                       <span className="ml-auto flex gap-2">
                         <button
                           onClick={() => toggleSlip(t.id)}
-                          className="text-xs font-semibold px-3 py-1 rounded-md bg-blue-50 text-blue-700 hover:bg-blue-100"
+                          className="text-xs font-semibold px-3 py-1.5 rounded-md bg-blue-50 text-blue-700 hover:bg-blue-100"
                         >
                           {slipTableId === t.id ? '伝票を閉じる' : '伝票確認'}
                         </button>
+                        {/* モバイルで見やすいようコピーはアイコンのみ */}
                         <button
                           onClick={() => copy(url, t.id)}
-                          className="text-xs font-semibold px-3 py-1 rounded-md bg-gray-800 text-white hover:bg-gray-700"
+                          aria-label="注文URLをコピー"
+                          title="注文URLをコピー"
+                          className="text-sm px-3 py-1.5 rounded-md bg-gray-800 text-white hover:bg-gray-700 min-w-[40px]"
                         >
-                          {copiedId === t.id ? 'コピーしました' : 'URLをコピー'}
+                          {copiedId === t.id ? '✓' : '📋'}
                         </button>
+                        {/* 削除はモバイルではアイコンのみ、md以上で文字併記 */}
                         <button
                           onClick={() => remove(t.id, t.table_number)}
                           disabled={deletingId === t.id}
-                          className="text-xs font-semibold px-3 py-1 rounded-md bg-red-50 text-red-600 hover:bg-red-100 disabled:opacity-50"
+                          aria-label="テーブルを削除"
+                          title="テーブルを削除"
+                          className="text-sm px-3 py-1.5 rounded-md bg-red-50 text-red-600 hover:bg-red-100 disabled:opacity-50 min-w-[40px]"
                         >
-                          {deletingId === t.id ? '削除中…' : '削除'}
+                          <span className="md:hidden">{deletingId === t.id ? '…' : '🗑'}</span>
+                          <span className="hidden md:inline text-xs font-semibold">
+                            {deletingId === t.id ? '削除中…' : '削除'}
+                          </span>
                         </button>
                       </span>
                     </div>
@@ -337,7 +366,12 @@ function TablesPanel() {
                       {url}
                     </div>
                     {slipTableId === t.id && (
-                      <TableSlip loading={slipLoading} orders={slipOrders} />
+                      <TableSlip
+                        loading={slipLoading}
+                        orders={slipOrders}
+                        checkingOut={checkingOutId === t.id}
+                        onCheckout={() => checkout(t.id)}
+                      />
                     )}
                   </div>
                 )
@@ -350,8 +384,21 @@ function TablesPanel() {
   )
 }
 
-// 伝票（指定テーブルの注文一覧 + 合計）。厨房ディスプレイのテーブル管理から開く。
-function TableSlip({ loading, orders }: { loading: boolean; orders: KitchenOrder[] }) {
+// 伝票確認の時刻フォーマット（UTC ISO → JST HH:MM）。
+function fmtSlipTime(iso: string): string {
+  const ms = iso.includes('T') ? Date.parse(iso) : Date.parse(iso.replace(' ', 'T') + 'Z')
+  if (Number.isNaN(ms)) return ''
+  const d = new Date(ms + 9 * 3600_000)
+  return `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`
+}
+
+// 伝票（指定テーブルの注文一覧 + 合計 + テーブル一括会計）。テーブル管理から開く。
+function TableSlip({ loading, orders, checkingOut, onCheckout }: {
+  loading: boolean
+  orders: KitchenOrder[]
+  checkingOut: boolean
+  onCheckout: () => void
+}) {
   if (loading) {
     return <div className="mt-2 text-xs text-gray-400">読み込み中…</div>
   }
@@ -359,18 +406,18 @@ function TableSlip({ loading, orders }: { loading: boolean; orders: KitchenOrder
     return <div className="mt-2 text-xs text-gray-400">このテーブルの注文はありません</div>
   }
   const grand = orders.reduce((s, o) => s + o.total_amount, 0)
-  const fmtTime = (iso: string) => {
-    const ms = iso.includes('T') ? Date.parse(iso) : Date.parse(iso.replace(' ', 'T') + 'Z')
-    if (Number.isNaN(ms)) return ''
-    const d = new Date(ms + 9 * 3600_000)
-    return `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`
-  }
+  // 未会計（closed/cancelled 以外）の合計＝今回の会計対象額。
+  const openTotal = orders
+    .filter((o) => o.status !== 'closed' && o.status !== 'cancelled')
+    .reduce((s, o) => s + o.total_amount, 0)
+  const canCheckout = canCheckoutTable(orders)
+  const hasOpen = openTotal > 0
   return (
     <div className="mt-2 bg-gray-50 rounded-lg p-2">
       {orders.map((o) => (
         <div key={o.id} className="py-1.5 border-b border-gray-200 last:border-0">
           <div className="flex items-center gap-2 text-xs text-gray-500 mb-0.5">
-            <span>{fmtTime(o.placed_at)}</span>
+            <span>{fmtSlipTime(o.placed_at)}</span>
             <span className="px-1.5 py-0.5 rounded bg-gray-200 text-gray-700">{STATUS_LABEL[o.status]}</span>
             {o.payment_status === 'paid' && <span className="text-green-600 font-semibold">支払済</span>}
             <span className="ml-auto font-bold text-gray-800">¥{o.total_amount.toLocaleString('ja-JP')}</span>
@@ -389,6 +436,98 @@ function TableSlip({ loading, orders }: { loading: boolean; orders: KitchenOrder
         <span className="text-xs text-gray-500">合計（{orders.length}伝票）</span>
         <span className="text-base font-extrabold">¥{grand.toLocaleString('ja-JP')}</span>
       </div>
+      {hasOpen && (
+        <div className="mt-2">
+          <button
+            onClick={onCheckout}
+            disabled={!canCheckout || checkingOut}
+            className="w-full text-sm font-bold px-3 py-2 rounded-lg bg-green-600 text-white hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {checkingOut
+              ? '会計処理中…'
+              : `このテーブルを会計（¥${openTotal.toLocaleString('ja-JP')}）`}
+          </button>
+          {!canCheckout && (
+            <div className="text-xs text-amber-600 mt-1 text-center">
+              未提供（調理中・新規）の伝票があるため、まだ会計できません
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// 本日（JST）の売上パネル。会計済み伝票の合計・件数・一覧を表示する。
+function TodaysSalesPanel() {
+  const [sales, setSales] = useState<TodaysSales | null>(null)
+  const [open, setOpen] = useState(false)
+  const [loading, setLoading] = useState(false)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const res = await api.orders.salesToday()
+      if (res.success) setSales(res.data)
+    } catch {
+      /* 売上取得失敗は致命的でないため握りつぶす */
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (open) load()
+  }, [open, load])
+
+  return (
+    <div className="mt-8">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="text-sm text-gray-600 hover:text-gray-900 font-medium"
+      >
+        {open ? '▼' : '▶'} 本日の売上
+        {sales && !open && (
+          <span className="ml-2 text-green-700 font-bold">
+            ¥{sales.total.toLocaleString('ja-JP')}（{sales.count}件）
+          </span>
+        )}
+      </button>
+      {open && (
+        <div className="mt-3 bg-white rounded-xl border border-gray-200 p-4">
+          {loading ? (
+            <div className="text-gray-400 text-xs">読み込み中…</div>
+          ) : !sales || sales.count === 0 ? (
+            <div className="text-gray-400 text-xs">本日の会計済み伝票はまだありません</div>
+          ) : (
+            <>
+              <div className="flex justify-between items-baseline pb-3 mb-3 border-b border-gray-200">
+                <span className="text-sm text-gray-500">本日の売上（{sales.count}件）</span>
+                <span className="text-2xl font-extrabold text-green-700">
+                  ¥{sales.total.toLocaleString('ja-JP')}
+                </span>
+              </div>
+              <div className="flex flex-col gap-1">
+                {sales.orders.map((o) => (
+                  <div key={o.id} className="flex items-center gap-2 text-xs py-1 border-b border-gray-100 last:border-0">
+                    <span className="text-gray-400">{fmtSlipTime(o.placed_at)}</span>
+                    <span className="font-bold text-gray-800">{o.table_number}</span>
+                    <span className="text-gray-500 truncate">
+                      {o.items.map((it) => `${it.name_snapshot}×${it.quantity}`).join('・')}
+                    </span>
+                    <span className="ml-auto font-bold text-gray-800 shrink-0">
+                      ¥{o.total_amount.toLocaleString('ja-JP')}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <button onClick={load} className="mt-3 text-xs text-blue-600 hover:text-blue-800">
+                ↻ 更新
+              </button>
+            </>
+          )}
+        </div>
+      )}
     </div>
   )
 }
