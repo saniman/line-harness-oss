@@ -19,6 +19,35 @@ globs: "apps/worker/src/**/*.ts"
 - IDは必ず crypto.randomUUID() を使う
 - 日時は全て ISO 8601 形式で保存（JST変換はクライアント側で行う）
 
+### D1 は UNION ALL を多数連結した INSERT...SELECT が通らない（2026-06-22 追記）
+
+症状: シード/一括INSERTで `too many terms in compound SELECT [code: 7500]`。
+原因: D1 はコンパウンドSELECT（`SELECT … UNION ALL SELECT …` の連結）の項数上限が低い。
+複数行を1文の UNION ALL でまとめると超過する。
+
+❌ 誤（多数の UNION ALL を1文に連結）
+```sql
+INSERT OR IGNORE INTO menus (...) SELECT 'a',... UNION ALL SELECT 'b',... UNION ALL ... ; -- 12件連結 → 7500
+```
+
+✅ 正（1行=1 INSERT に分解 or VALUES を使う）
+```sql
+INSERT OR IGNORE INTO menus (...) SELECT 'a',(SELECT id FROM line_accounts ...),... ;
+INSERT OR IGNORE INTO menus (...) SELECT 'b',(SELECT id FROM line_accounts ...),... ;
+-- もしくは固定値だけなら VALUES（コンパウンドSELECT非該当）
+INSERT OR IGNORE INTO menu_options (...) VALUES (...),(...),(...);
+```
+対処: 行ごとに account 等の subquery を埋めたい場合は「1行=1 INSERT…SELECT」に分解する。
+固定値の一括投入は `INSERT … VALUES (...),(...)` を使う。例: `packages/db/seeds/mobile-order-seed.sql`。
+
+### d1 execute の実行方法（wrangler バージョン / 貼り付け崩れに注意・2026-06-22 追記）
+
+- `--file` を使うときは **`npx wrangler@latest`（4.97+）必須**。`pnpm exec`（4.0.0）は
+  `--file` で `A FileHandle object was closed during garbage collection [ERR_INVALID_STATE]` になる
+- 長い SQL を `--command` で手貼りすると改行混入・文字欠落で壊れる
+  → シードはファイル化し、`pnpm exec wrangler d1 execute … --command="$(cat seed.sql)"` で読み込む
+  （`pnpm exec` の `--command` は速く確認プロンプトも出ない。`--remote` でも対話なし）
+
 ### CHECK制約変更のテーブル再作成は実DBのカラム順に厳密一致させる（2026-06-13 追記）
 
 症状: schema.sql の定義が実DBと乖離していることがある。後続の `ALTER TABLE ADD COLUMN` の
