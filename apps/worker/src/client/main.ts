@@ -18,6 +18,7 @@
 import { initBooking } from './booking.js';
 import { initForm } from './form.js';
 import { initEventBooking } from './event-booking.js';
+import { safeRedirectTarget } from '../lib/safe-redirect.js';
 
 declare const liff: {
   init(config: { liffId: string }): Promise<void>;
@@ -72,8 +73,11 @@ function getPage(): string | null {
 }
 
 function getRedirectUrl(): string | null {
+  // Guard the client-side navigation sink (window.location.href below) against
+  // dangerous schemes (javascript:, data:, ...) and protocol-relative //host
+  // open-redirect targets supplied via the ?redirect= param.
   const params = new URLSearchParams(window.location.search);
-  return params.get('redirect');
+  return safeRedirectTarget(params.get('redirect'));
 }
 
 function getRef(): string | null {

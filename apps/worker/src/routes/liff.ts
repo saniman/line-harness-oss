@@ -18,6 +18,7 @@ import {
   jstNow,
 } from '@line-crm/db';
 import { buildIntroMessage } from '../services/intro-message.js';
+import { safeRedirectTarget } from '../lib/safe-redirect.js';
 import type { Env } from '../index.js';
 
 const liffRoutes = new Hono<Env>();
@@ -632,9 +633,13 @@ liffRoutes.get('/auth/callback', async (c) => {
       console.error('OAuth scenario enrollment error:', err);
     }
 
-    // Redirect or show completion
-    if (redirect) {
-      return c.redirect(redirect);
+    // Redirect or show completion. The redirect target is attacker-controllable
+    // (it is restored from the OAuth state, which originates from the ?redirect=
+    // query param), so it must be validated against dangerous schemes before it
+    // is handed to c.redirect(). Unsafe values fall back to the completion screen.
+    const safeRedirect = safeRedirectTarget(redirect);
+    if (safeRedirect) {
+      return c.redirect(safeRedirect);
     }
 
     // Send form link as LINE message if form param was passed
@@ -1109,12 +1114,21 @@ liffRoutes.post('/api/links/wrap', async (c) => {
       return c.json({ success: false, error: 'url is required' }, 400);
     }
 
+    // Reject dangerous redirect targets early: this URL is packed into the
+    // ?redirect= param of a LIFF link and ultimately reaches the /auth/callback
+    // redirect sink, so guarding here gives a clear 400 instead of a silently
+    // dropped redirect later.
+    const safeUrl = safeRedirectTarget(body.url);
+    if (!safeUrl) {
+      return c.json({ success: false, error: 'unsafe redirect url' }, 400);
+    }
+
     const liffUrl = c.env.LIFF_URL;
     if (!liffUrl) {
       return c.json({ success: false, error: 'LIFF_URL not configured' }, 500);
     }
 
-    const params = new URLSearchParams({ redirect: body.url });
+    const params = new URLSearchParams({ redirect: safeUrl });
     if (body.ref) {
       params.set('ref', body.ref);
     }
