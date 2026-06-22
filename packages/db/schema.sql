@@ -696,9 +696,11 @@ CREATE TABLE IF NOT EXISTS menus (
   auto_tag_id           TEXT REFERENCES tags(id) ON DELETE SET NULL,
   created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  menu_type             TEXT NOT NULL DEFAULT 'salon',  -- 'salon'（サロン予約）/ 'food'（飲食モバイルオーダー）
   FOREIGN KEY (line_account_id) REFERENCES line_accounts(id)
 );
 CREATE INDEX IF NOT EXISTS idx_menus_account_sort ON menus (line_account_id, sort_order);
+CREATE INDEX IF NOT EXISTS idx_menus_account_type ON menus (line_account_id, menu_type, sort_order);
 
 CREATE TABLE IF NOT EXISTS staff (
   id                       TEXT PRIMARY KEY,

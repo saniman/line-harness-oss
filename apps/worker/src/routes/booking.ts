@@ -218,6 +218,7 @@ booking.get('/api/liff/booking/menus', async (c) => {
               base_price, sort_order
          FROM menus
         WHERE line_account_id = ? AND is_active = 1 AND deleted_at IS NULL
+          AND menu_type = 'salon'
         ORDER BY sort_order ASC, id ASC`,
     )
     .bind(accountId)
@@ -522,6 +523,7 @@ booking.get('/api/booking/admin/menus', async (c) => {
               base_price, sort_order, is_active
          FROM menus
         WHERE line_account_id = ? AND deleted_at IS NULL
+          AND menu_type = 'salon'
         ORDER BY sort_order ASC, id ASC`,
     )
     .bind(accountId)

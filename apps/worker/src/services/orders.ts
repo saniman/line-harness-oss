@@ -146,6 +146,7 @@ export async function getOrderableMenus(
       `SELECT id, name, category_label, description, base_price, sort_order
          FROM menus
         WHERE line_account_id = ? AND is_active = 1 AND deleted_at IS NULL
+          AND menu_type = 'food'
         ORDER BY sort_order ASC, id ASC`,
     )
     .bind(accountId)

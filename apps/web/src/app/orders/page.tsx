@@ -198,6 +198,33 @@ function TablesPanel() {
   const [tableNumber, setTableNumber] = useState('')
   const [creating, setCreating] = useState(false)
   const [open, setOpen] = useState(false)
+  const [copiedId, setCopiedId] = useState<string | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+
+  // LIFF の注文URL。LIFF ID はビルド時の NEXT_PUBLIC_LIFF_ID（無ければ本番ID）を使う。
+  const LIFF_ID = process.env.NEXT_PUBLIC_LIFF_ID || '1661159603-5qlDj5wV'
+  const orderUrl = (token: string) => `https://liff.line.me/${LIFF_ID}?page=order&table=${token}`
+
+  const copy = async (text: string, id: string) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopiedId(id)
+      setTimeout(() => setCopiedId((cur) => (cur === id ? null : cur)), 1500)
+    } catch {
+      /* clipboard 不可環境では何もしない */
+    }
+  }
+
+  const remove = async (id: string, label: string) => {
+    if (!window.confirm(`テーブル「${label}」を削除しますか？`)) return
+    setDeletingId(id)
+    try {
+      await api.orders.tables.delete(id)
+      await load()
+    } finally {
+      setDeletingId(null)
+    }
+  }
 
   const load = useCallback(async () => {
     try {
@@ -252,22 +279,39 @@ function TablesPanel() {
           {tables.length === 0 ? (
             <div className="text-gray-400 text-xs">テーブル未登録</div>
           ) : (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-gray-500 border-b border-gray-200">
-                  <th className="py-2">テーブル</th>
-                  <th className="py-2">注文URLパラメータ（?table=）</th>
-                </tr>
-              </thead>
-              <tbody>
-                {tables.map((t) => (
-                  <tr key={t.id} className="border-b border-gray-100">
-                    <td className="py-2 font-semibold">{t.table_number}</td>
-                    <td className="py-2 font-mono text-xs text-gray-600 break-all">{t.qr_token}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <div className="flex flex-col gap-2">
+              <div className="text-xs text-gray-500">
+                各テーブルの注文URL。これをQRコードにして卓上に貼ってください。
+              </div>
+              {tables.map((t) => {
+                const url = orderUrl(t.qr_token)
+                return (
+                  <div key={t.id} className="border border-gray-200 rounded-lg p-3">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="font-bold text-sm">{t.table_number}</span>
+                      <span className="ml-auto flex gap-2">
+                        <button
+                          onClick={() => copy(url, t.id)}
+                          className="text-xs font-semibold px-3 py-1 rounded-md bg-gray-800 text-white hover:bg-gray-700"
+                        >
+                          {copiedId === t.id ? 'コピーしました' : 'URLをコピー'}
+                        </button>
+                        <button
+                          onClick={() => remove(t.id, t.table_number)}
+                          disabled={deletingId === t.id}
+                          className="text-xs font-semibold px-3 py-1 rounded-md bg-red-50 text-red-600 hover:bg-red-100 disabled:opacity-50"
+                        >
+                          {deletingId === t.id ? '削除中…' : '削除'}
+                        </button>
+                      </span>
+                    </div>
+                    <div className="font-mono text-xs text-gray-600 break-all bg-gray-50 rounded px-2 py-1">
+                      {url}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
           )}
         </div>
       )}

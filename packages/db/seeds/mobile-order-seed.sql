@@ -12,31 +12,35 @@
 -- 手動:        npx wrangler@latest d1 execute line-harness --remote --file=packages/db/seeds/mobile-order-seed.sql
 
 -- ── メニュー本体（1行=1 INSERT。line_account_id は最古の有効アカウントを参照）──
--- 列: id, line_account_id, name, category_label, description, duration_minutes, buffer_after_minutes, base_price, sort_order, is_active
-INSERT OR IGNORE INTO menus (id,line_account_id,name,category_label,description,duration_minutes,buffer_after_minutes,base_price,sort_order,is_active)
-  SELECT 'seedmo-sashimi',(SELECT id FROM line_accounts WHERE is_active=1 ORDER BY created_at ASC LIMIT 1),'本日の刺身5点盛り','おすすめ','沖縄近海の鮮魚をその日仕入れで',0,0,1280,0,1;
-INSERT OR IGNORE INTO menus (id,line_account_id,name,category_label,description,duration_minutes,buffer_after_minutes,base_price,sort_order,is_active)
-  SELECT 'seedmo-margherita',(SELECT id FROM line_accounts WHERE is_active=1 ORDER BY created_at ASC LIMIT 1),'マルゲリータ','おすすめ','石窯焼き・バジルの香り',0,0,1080,1,1;
-INSERT OR IGNORE INTO menus (id,line_account_id,name,category_label,description,duration_minutes,buffer_after_minutes,base_price,sort_order,is_active)
-  SELECT 'seedmo-beer',(SELECT id FROM line_accounts WHERE is_active=1 ORDER BY created_at ASC LIMIT 1),'生ビール','ドリンク','キンキンに冷えた一杯',0,0,600,10,1;
-INSERT OR IGNORE INTO menus (id,line_account_id,name,category_label,description,duration_minutes,buffer_after_minutes,base_price,sort_order,is_active)
-  SELECT 'seedmo-highball',(SELECT id FROM line_accounts WHERE is_active=1 ORDER BY created_at ASC LIMIT 1),'ハイボール','ドリンク','角・濃いめ',0,0,500,11,1;
-INSERT OR IGNORE INTO menus (id,line_account_id,name,category_label,description,duration_minutes,buffer_after_minutes,base_price,sort_order,is_active)
-  SELECT 'seedmo-sour',(SELECT id FROM line_accounts WHERE is_active=1 ORDER BY created_at ASC LIMIT 1),'自家製レモンサワー','ドリンク','丸ごとレモン',0,0,550,12,1;
-INSERT OR IGNORE INTO menus (id,line_account_id,name,category_label,description,duration_minutes,buffer_after_minutes,base_price,sort_order,is_active)
-  SELECT 'seedmo-oolong',(SELECT id FROM line_accounts WHERE is_active=1 ORDER BY created_at ASC LIMIT 1),'ウーロン茶','ドリンク',NULL,0,0,350,13,1;
-INSERT OR IGNORE INTO menus (id,line_account_id,name,category_label,description,duration_minutes,buffer_after_minutes,base_price,sort_order,is_active)
-  SELECT 'seedmo-karaage',(SELECT id FROM line_accounts WHERE is_active=1 ORDER BY created_at ASC LIMIT 1),'鶏の唐揚げ','フード','国産鶏・5個',0,0,680,20,1;
-INSERT OR IGNORE INTO menus (id,line_account_id,name,category_label,description,duration_minutes,buffer_after_minutes,base_price,sort_order,is_active)
-  SELECT 'seedmo-edamame',(SELECT id FROM line_accounts WHERE is_active=1 ORDER BY created_at ASC LIMIT 1),'枝豆','フード','沖縄県産',0,0,350,21,1;
-INSERT OR IGNORE INTO menus (id,line_account_id,name,category_label,description,duration_minutes,buffer_after_minutes,base_price,sort_order,is_active)
-  SELECT 'seedmo-caesar',(SELECT id FROM line_accounts WHERE is_active=1 ORDER BY created_at ASC LIMIT 1),'シーザーサラダ','フード','半熟卵とベーコン',0,0,580,22,1;
-INSERT OR IGNORE INTO menus (id,line_account_id,name,category_label,description,duration_minutes,buffer_after_minutes,base_price,sort_order,is_active)
-  SELECT 'seedmo-mentaiko',(SELECT id FROM line_accounts WHERE is_active=1 ORDER BY created_at ASC LIMIT 1),'明太子パスタ','フード','大葉と刻み海苔',0,0,880,23,1;
-INSERT OR IGNORE INTO menus (id,line_account_id,name,category_label,description,duration_minutes,buffer_after_minutes,base_price,sort_order,is_active)
-  SELECT 'seedmo-icecream',(SELECT id FROM line_accounts WHERE is_active=1 ORDER BY created_at ASC LIMIT 1),'バニラアイス','デザート','黒糖ソースがけ',0,0,380,30,1;
-INSERT OR IGNORE INTO menus (id,line_account_id,name,category_label,description,duration_minutes,buffer_after_minutes,base_price,sort_order,is_active)
-  SELECT 'seedmo-gateau',(SELECT id FROM line_accounts WHERE is_active=1 ORDER BY created_at ASC LIMIT 1),'ガトーショコラ','デザート','温かい状態でご提供',0,0,480,31,1;
+-- 列: id, line_account_id, name, category_label, description, duration_minutes, buffer_after_minutes, base_price, sort_order, is_active, menu_type
+-- menu_type='food' で飲食モバイルオーダー用。サロン予約一覧には出ない。
+INSERT OR IGNORE INTO menus (id,line_account_id,name,category_label,description,duration_minutes,buffer_after_minutes,base_price,sort_order,is_active,menu_type)
+  SELECT 'seedmo-sashimi',(SELECT id FROM line_accounts WHERE is_active=1 ORDER BY created_at ASC LIMIT 1),'本日の刺身5点盛り','おすすめ','沖縄近海の鮮魚をその日仕入れで',0,0,1280,0,1,'food';
+INSERT OR IGNORE INTO menus (id,line_account_id,name,category_label,description,duration_minutes,buffer_after_minutes,base_price,sort_order,is_active,menu_type)
+  SELECT 'seedmo-margherita',(SELECT id FROM line_accounts WHERE is_active=1 ORDER BY created_at ASC LIMIT 1),'マルゲリータ','おすすめ','石窯焼き・バジルの香り',0,0,1080,1,1,'food';
+INSERT OR IGNORE INTO menus (id,line_account_id,name,category_label,description,duration_minutes,buffer_after_minutes,base_price,sort_order,is_active,menu_type)
+  SELECT 'seedmo-beer',(SELECT id FROM line_accounts WHERE is_active=1 ORDER BY created_at ASC LIMIT 1),'生ビール','ドリンク','キンキンに冷えた一杯',0,0,600,10,1,'food';
+INSERT OR IGNORE INTO menus (id,line_account_id,name,category_label,description,duration_minutes,buffer_after_minutes,base_price,sort_order,is_active,menu_type)
+  SELECT 'seedmo-highball',(SELECT id FROM line_accounts WHERE is_active=1 ORDER BY created_at ASC LIMIT 1),'ハイボール','ドリンク','角・濃いめ',0,0,500,11,1,'food';
+INSERT OR IGNORE INTO menus (id,line_account_id,name,category_label,description,duration_minutes,buffer_after_minutes,base_price,sort_order,is_active,menu_type)
+  SELECT 'seedmo-sour',(SELECT id FROM line_accounts WHERE is_active=1 ORDER BY created_at ASC LIMIT 1),'自家製レモンサワー','ドリンク','丸ごとレモン',0,0,550,12,1,'food';
+INSERT OR IGNORE INTO menus (id,line_account_id,name,category_label,description,duration_minutes,buffer_after_minutes,base_price,sort_order,is_active,menu_type)
+  SELECT 'seedmo-oolong',(SELECT id FROM line_accounts WHERE is_active=1 ORDER BY created_at ASC LIMIT 1),'ウーロン茶','ドリンク',NULL,0,0,350,13,1,'food';
+INSERT OR IGNORE INTO menus (id,line_account_id,name,category_label,description,duration_minutes,buffer_after_minutes,base_price,sort_order,is_active,menu_type)
+  SELECT 'seedmo-karaage',(SELECT id FROM line_accounts WHERE is_active=1 ORDER BY created_at ASC LIMIT 1),'鶏の唐揚げ','フード','国産鶏・5個',0,0,680,20,1,'food';
+INSERT OR IGNORE INTO menus (id,line_account_id,name,category_label,description,duration_minutes,buffer_after_minutes,base_price,sort_order,is_active,menu_type)
+  SELECT 'seedmo-edamame',(SELECT id FROM line_accounts WHERE is_active=1 ORDER BY created_at ASC LIMIT 1),'枝豆','フード','沖縄県産',0,0,350,21,1,'food';
+INSERT OR IGNORE INTO menus (id,line_account_id,name,category_label,description,duration_minutes,buffer_after_minutes,base_price,sort_order,is_active,menu_type)
+  SELECT 'seedmo-caesar',(SELECT id FROM line_accounts WHERE is_active=1 ORDER BY created_at ASC LIMIT 1),'シーザーサラダ','フード','半熟卵とベーコン',0,0,580,22,1,'food';
+INSERT OR IGNORE INTO menus (id,line_account_id,name,category_label,description,duration_minutes,buffer_after_minutes,base_price,sort_order,is_active,menu_type)
+  SELECT 'seedmo-mentaiko',(SELECT id FROM line_accounts WHERE is_active=1 ORDER BY created_at ASC LIMIT 1),'明太子パスタ','フード','大葉と刻み海苔',0,0,880,23,1,'food';
+INSERT OR IGNORE INTO menus (id,line_account_id,name,category_label,description,duration_minutes,buffer_after_minutes,base_price,sort_order,is_active,menu_type)
+  SELECT 'seedmo-icecream',(SELECT id FROM line_accounts WHERE is_active=1 ORDER BY created_at ASC LIMIT 1),'バニラアイス','デザート','黒糖ソースがけ',0,0,380,30,1,'food';
+INSERT OR IGNORE INTO menus (id,line_account_id,name,category_label,description,duration_minutes,buffer_after_minutes,base_price,sort_order,is_active,menu_type)
+  SELECT 'seedmo-gateau',(SELECT id FROM line_accounts WHERE is_active=1 ORDER BY created_at ASC LIMIT 1),'ガトーショコラ','デザート','温かい状態でご提供',0,0,480,31,1,'food';
+
+-- 既に menu_type 列追加(810)より前に投入済みの行は 'salon' になっているため 'food' に補正する（冪等）
+UPDATE menus SET menu_type='food' WHERE id LIKE 'seedmo-%' AND menu_type<>'food';
 
 -- ── メニューオプション（サイズ・味変）。VALUES なのでコンパウンドSELECT非該当 ──
 -- 列: id, menu_id, group_label, choice_name, extra_price, sort_order, is_active

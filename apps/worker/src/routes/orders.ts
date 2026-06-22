@@ -209,4 +209,19 @@ orders.post('/api/order/admin/tables', async (c) => {
   return c.json({ success: true, data: { id, table_number: body.table_number.trim(), qr_token: qrToken } }, 201)
 })
 
+// テーブル削除。テナント分離のため account スコープで削除する。
+orders.delete('/api/order/admin/tables/:id', async (c) => {
+  const accountId = await resolveAccountIdAdmin(c)
+  if (!accountId) return c.json({ success: false, error: 'account_not_resolved' }, 400)
+  const tableId = c.req.param('id')
+  const res = await c.env.DB
+    .prepare(`DELETE FROM dining_tables WHERE id = ? AND line_account_id = ?`)
+    .bind(tableId, accountId)
+    .run()
+  if (!res.meta.changes) {
+    return c.json({ success: false, error: 'table_not_found' }, 404)
+  }
+  return c.json({ success: true, data: { id: tableId } })
+})
+
 export { orders }

@@ -226,6 +226,41 @@ describe('PUT /api/order/admin/orders/:id/status（ステータス更新）', ()
   })
 })
 
+describe('DELETE /api/order/admin/tables/:id（テーブル削除）', () => {
+  // run() の meta.changes を差し替えられる DB モック
+  function makeDbWithChanges(changes: number) {
+    return {
+      prepare: () => ({
+        bind: () => ({
+          first: vi.fn().mockResolvedValue(null),
+          all: vi.fn().mockResolvedValue({ results: [] }),
+          run: vi.fn().mockResolvedValue({ meta: { changes } }),
+        }),
+      }),
+    } as unknown as D1Database
+  }
+
+  it('削除できたら 200 を返す', async () => {
+    const res = await app.request(
+      '/api/order/admin/tables/t1',
+      { method: 'DELETE' },
+      { DB: makeDbWithChanges(1) },
+    )
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ success: true, data: { id: 't1' } })
+  })
+
+  it('対象が無ければ 404 table_not_found', async () => {
+    const res = await app.request(
+      '/api/order/admin/tables/none',
+      { method: 'DELETE' },
+      { DB: makeDbWithChanges(0) },
+    )
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ success: false, error: 'table_not_found' })
+  })
+})
+
 describe('GET /api/order/admin/orders（厨房一覧）', () => {
   it('既定で new+preparing を取得する', async () => {
     mListKitchen.mockResolvedValue([])

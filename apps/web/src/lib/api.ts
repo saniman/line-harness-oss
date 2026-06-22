@@ -652,6 +652,8 @@ export const api = {
           method: 'POST',
           body: JSON.stringify({ table_number }),
         }),
+      delete: (id: string) =>
+        fetchApi<ApiResponse<{ id: string }>>(`/api/order/admin/tables/${id}`, { method: 'DELETE' }),
     },
   },
   aiAssistant: {
