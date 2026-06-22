@@ -1,0 +1,737 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>LINE モバイルオーダー デモ — WALOVER</title>
+<style>
+  :root {
+    --pink-start: #ff6b9d;
+    --pink-end: #ff4176;
+    --line-green: #06C755;
+    --bg: #eef1f4;
+    --card: #ffffff;
+    --text: #222222;
+    --sub: #666666;
+    --muted: #999999;
+    --border: #ececec;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", sans-serif;
+    background: var(--bg); color: var(--text);
+    min-height: 100vh;
+  }
+  button { font-family: inherit; cursor: pointer; border: none; }
+
+  /* ===== レイアウト ===== */
+  .demo-bar {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 20px; background: #1f2733; color: #fff;
+    position: sticky; top: 0; z-index: 50;
+  }
+  .demo-bar .logo { font-weight: 700; font-size: 15px; letter-spacing: .02em; }
+  .demo-bar .tag {
+    font-size: 11px; background: rgba(255,255,255,.15);
+    padding: 3px 8px; border-radius: 6px; color: #cfd6df;
+  }
+  .demo-bar .spacer { flex: 1; }
+  .demo-bar button {
+    background: rgba(255,255,255,.12); color: #fff; font-size: 12px;
+    padding: 7px 12px; border-radius: 8px;
+  }
+  .demo-bar button:hover { background: rgba(255,255,255,.22); }
+
+  .stage {
+    display: flex; gap: 28px; justify-content: center;
+    padding: 28px 20px 60px; flex-wrap: wrap; align-items: flex-start;
+  }
+  .stage-col { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+  .stage-label { font-size: 13px; color: var(--sub); font-weight: 600; }
+  .stage-label span { color: var(--muted); font-weight: 400; }
+
+  /* ===== スマホ枠 ===== */
+  .phone {
+    width: 375px; height: 750px; background: #000; border-radius: 44px;
+    padding: 12px; box-shadow: 0 24px 60px rgba(0,0,0,.28); position: relative;
+  }
+  .phone-screen {
+    background: #f7f7f7; width: 100%; height: 100%; border-radius: 34px;
+    overflow: hidden; position: relative; display: flex; flex-direction: column;
+  }
+  .notch {
+    position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+    width: 130px; height: 26px; background: #000; border-radius: 0 0 16px 16px; z-index: 30;
+  }
+
+  /* LINE風ヘッダー */
+  .app-header {
+    background: var(--line-green); color: #fff; padding: 30px 18px 12px;
+    display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+  }
+  .app-header .shop-emoji { font-size: 22px; }
+  .app-header .shop-name { font-weight: 700; font-size: 16px; }
+  .table-badge {
+    margin-left: auto; background: rgba(255,255,255,.22); border-radius: 8px;
+    padding: 5px 10px; font-size: 12px; font-weight: 600; text-align: center; line-height: 1.3;
+  }
+  .table-badge b { font-size: 15px; display: block; }
+
+  /* カテゴリタブ */
+  .cats {
+    display: flex; gap: 6px; padding: 10px 14px; overflow-x: auto;
+    background: #fff; border-bottom: 1px solid var(--border); flex-shrink: 0;
+  }
+  .cats::-webkit-scrollbar { display: none; }
+  .cat {
+    white-space: nowrap; font-size: 13px; padding: 7px 14px; border-radius: 999px;
+    background: #f1f1f1; color: var(--sub); font-weight: 600;
+  }
+  .cat.active { background: var(--text); color: #fff; }
+
+  /* メニュー一覧 */
+  .menu-scroll { flex: 1; overflow-y: auto; padding: 12px 14px 120px; }
+  .menu-card {
+    background: var(--card); border-radius: 14px; padding: 12px;
+    display: flex; gap: 12px; align-items: center; margin-bottom: 10px;
+    box-shadow: 0 2px 8px rgba(0,0,0,.06);
+  }
+  .menu-emoji {
+    width: 56px; height: 56px; border-radius: 12px; background: #fafafa;
+    display: flex; align-items: center; justify-content: center; font-size: 30px; flex-shrink: 0;
+  }
+  .menu-info { flex: 1; min-width: 0; }
+  .menu-name { font-size: 14px; font-weight: 700; }
+  .menu-desc { font-size: 11px; color: var(--muted); margin-top: 2px; line-height: 1.4; }
+  .menu-price { font-size: 14px; font-weight: 700; margin-top: 5px; color: var(--text); }
+  .menu-price small { font-size: 11px; font-weight: 400; color: var(--muted); }
+  .add-btn {
+    width: 34px; height: 34px; border-radius: 50%; flex-shrink: 0;
+    background: linear-gradient(135deg, var(--pink-start), var(--pink-end));
+    color: #fff; font-size: 22px; line-height: 1; font-weight: 300;
+    box-shadow: 0 4px 12px rgba(255,65,118,.35);
+  }
+  .add-btn:active { transform: scale(.92); }
+
+  /* 数量ステッパー（カード内） */
+  .stepper { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+  .stepper button {
+    width: 30px; height: 30px; border-radius: 50%; background: #f1f1f1;
+    font-size: 18px; color: var(--text); font-weight: 600; line-height: 1;
+  }
+  .stepper .qty { font-size: 15px; font-weight: 700; min-width: 18px; text-align: center; }
+
+  /* 下部カートバー */
+  .cart-bar {
+    position: absolute; bottom: 0; left: 0; right: 0; padding: 14px 16px 18px;
+    background: linear-gradient(to top, #fff 70%, rgba(255,255,255,0));
+    transform: translateY(120%); transition: transform .28s cubic-bezier(.2,.8,.2,1); z-index: 20;
+  }
+  .cart-bar.show { transform: translateY(0); }
+  .cart-btn {
+    width: 100%; background: linear-gradient(135deg, var(--pink-start), var(--pink-end));
+    color: #fff; padding: 15px; border-radius: 14px; font-size: 16px; font-weight: 700;
+    box-shadow: 0 6px 20px rgba(255,65,118,.4); display: flex; align-items: center; justify-content: center; gap: 8px;
+  }
+  .cart-btn .badge {
+    background: #fff; color: var(--pink-end); border-radius: 999px; min-width: 22px; height: 22px;
+    font-size: 13px; display: inline-flex; align-items: center; justify-content: center; padding: 0 6px;
+  }
+  .cart-btn:active { transform: scale(.985); }
+
+  /* オーバーレイ（カート確認 / オプション / 完了） */
+  .sheet-mask {
+    position: absolute; inset: 0; background: rgba(0,0,0,.4); z-index: 40;
+    display: none; align-items: flex-end; border-radius: 34px; overflow: hidden;
+  }
+  .sheet-mask.show { display: flex; }
+  .sheet {
+    background: #fff; width: 100%; border-radius: 22px 22px 0 0; padding: 18px 16px 22px;
+    max-height: 80%; overflow-y: auto; animation: slideUp .28s cubic-bezier(.2,.8,.2,1);
+  }
+  @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+  .sheet h3 { font-size: 16px; margin-bottom: 4px; }
+  .sheet .sub { font-size: 12px; color: var(--muted); margin-bottom: 14px; }
+
+  .cart-line { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+  .cart-line .ci-emoji { font-size: 24px; }
+  .cart-line .ci-info { flex: 1; }
+  .cart-line .ci-name { font-size: 14px; font-weight: 600; }
+  .cart-line .ci-opt { font-size: 11px; color: var(--muted); }
+  .cart-line .ci-price { font-size: 13px; font-weight: 700; }
+
+  .cart-total { display: flex; justify-content: space-between; align-items: baseline; margin: 16px 0; }
+  .cart-total .t-label { font-size: 14px; color: var(--sub); }
+  .cart-total .t-val { font-size: 24px; font-weight: 800; }
+  .cart-total .t-val small { font-size: 13px; font-weight: 600; }
+  .pay-note {
+    background: #fff7fa; border: 1px solid #ffd9e6; color: #c2185b;
+    font-size: 12px; padding: 10px 12px; border-radius: 10px; margin-bottom: 14px; line-height: 1.5;
+  }
+  .submit-btn {
+    width: 100%; background: linear-gradient(135deg, var(--pink-start), var(--pink-end));
+    color: #fff; padding: 16px; border-radius: 14px; font-size: 17px; font-weight: 700;
+    box-shadow: 0 6px 20px rgba(255,65,118,.4);
+  }
+  .submit-btn:active { transform: scale(.985); }
+
+  /* オプション選択 */
+  .opt-group { margin-bottom: 14px; }
+  .opt-group .og-label { font-size: 13px; font-weight: 700; margin-bottom: 8px; }
+  .opt-row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 12px 14px; border: 1.5px solid var(--border); border-radius: 12px; margin-bottom: 8px; font-size: 14px;
+  }
+  .opt-row.sel { border-color: var(--pink-end); background: #fff5f8; }
+  .opt-row .op-price { font-size: 12px; color: var(--muted); }
+
+  /* 完了画面 */
+  .done-wrap { text-align: center; padding: 24px 10px 10px; }
+  .done-check {
+    width: 76px; height: 76px; border-radius: 50%; background: var(--line-green); color: #fff;
+    font-size: 42px; display: flex; align-items: center; justify-content: center; margin: 0 auto 16px;
+    animation: pop .4s cubic-bezier(.2,1.4,.5,1);
+  }
+  @keyframes pop { from { transform: scale(0); } to { transform: scale(1); } }
+  .done-wrap h3 { font-size: 19px; margin-bottom: 8px; }
+  .done-wrap p { font-size: 13px; color: var(--sub); line-height: 1.7; }
+  .done-order-no { font-weight: 800; font-size: 16px; color: var(--text); }
+  .ghost-btn {
+    margin-top: 20px; width: 100%; padding: 14px; border-radius: 12px;
+    background: #f1f1f1; color: var(--sub); font-size: 15px; font-weight: 600;
+  }
+
+  /* ===== 起動フロー（QR / 友だちゲート） ===== */
+  .startup {
+    position: absolute; inset: 0; z-index: 35; border-radius: 34px; overflow: hidden;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; padding: 36px 26px;
+  }
+  /* QRスキャン画面 */
+  .startup.qr { background: #f7f7f7; }
+  .qr-tent {
+    background: #fff; border-radius: 18px; padding: 24px 22px; width: 100%;
+    box-shadow: 0 8px 24px rgba(0,0,0,.1); border: 1px solid var(--border);
+  }
+  .qr-shop { font-size: 13px; color: var(--sub); font-weight: 600; }
+  .qr-table { font-size: 30px; font-weight: 800; margin: 4px 0 18px; }
+  .qr-table small { font-size: 14px; color: var(--muted); font-weight: 600; }
+  .qr-grid {
+    width: 168px; height: 168px; margin: 0 auto 16px; display: grid;
+    grid-template-columns: repeat(21, 1fr); grid-template-rows: repeat(21, 1fr);
+    padding: 8px; background: #fff; border: 1px solid #eee; border-radius: 8px;
+  }
+  .qr-grid i { display: block; }
+  .qr-grid i.on { background: #1a1a1a; }
+  .qr-cap { font-size: 12px; color: var(--muted); line-height: 1.6; }
+  .scan-btn {
+    margin-top: 20px; width: 100%; padding: 14px; border-radius: 12px; font-size: 15px; font-weight: 700;
+    background: var(--text); color: #fff; display: flex; align-items: center; justify-content: center; gap: 8px;
+  }
+  .scan-btn:active { transform: scale(.98); }
+  .startup .hint {
+    margin-top: 18px; font-size: 11px; color: var(--muted); line-height: 1.6;
+  }
+  .scan-anim { position: relative; }
+  .scan-line {
+    position: absolute; left: 8px; right: 8px; height: 2px; background: var(--line-green);
+    box-shadow: 0 0 8px var(--line-green); top: 8px; animation: scanmove 1.1s ease-in-out infinite alternate;
+  }
+  @keyframes scanmove { from { top: 10px; } to { top: 158px; } }
+
+  /* 友だち追加ゲート */
+  .startup.gate { background: linear-gradient(160deg, #06C755 0%, #04a647 100%); color: #fff; }
+  .gate-icon {
+    width: 88px; height: 88px; border-radius: 24px; background: #fff; color: var(--line-green);
+    font-size: 46px; display: flex; align-items: center; justify-content: center; margin-bottom: 20px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.18);
+  }
+  .gate h2 { font-size: 20px; margin-bottom: 10px; }
+  .gate p { font-size: 13px; line-height: 1.8; opacity: .95; margin-bottom: 4px; }
+  .gate .table-pill {
+    display: inline-block; background: rgba(255,255,255,.2); border-radius: 999px;
+    padding: 5px 14px; font-size: 13px; font-weight: 700; margin: 14px 0 24px;
+  }
+  .friend-btn {
+    width: 100%; padding: 15px; border-radius: 12px; font-size: 16px; font-weight: 700;
+    background: #fff; color: var(--line-green); display: flex; align-items: center; justify-content: center; gap: 8px;
+    box-shadow: 0 6px 18px rgba(0,0,0,.16);
+  }
+  .friend-btn:active { transform: scale(.98); }
+  .gate .added-check {
+    width: 88px; height: 88px; border-radius: 50%; background: #fff; color: var(--line-green);
+    font-size: 50px; display: flex; align-items: center; justify-content: center; margin-bottom: 18px;
+    animation: pop .4s cubic-bezier(.2,1.4,.5,1);
+  }
+
+  /* ===== 厨房ディスプレイ ===== */
+  .kds {
+    width: 560px; background: #11161d; border-radius: 18px; overflow: hidden;
+    box-shadow: 0 24px 60px rgba(0,0,0,.28); display: flex; flex-direction: column; height: 750px;
+  }
+  .kds-head {
+    background: #0b0f14; color: #fff; padding: 14px 18px; display: flex; align-items: center; gap: 10px;
+    flex-shrink: 0; border-bottom: 1px solid #1e2630;
+  }
+  .kds-head .k-title { font-weight: 700; font-size: 15px; }
+  .kds-head .k-emoji { font-size: 18px; }
+  .kds-head .k-stats { margin-left: auto; display: flex; gap: 8px; }
+  .kds-chip { font-size: 12px; padding: 4px 10px; border-radius: 999px; font-weight: 700; }
+  .kds-chip.new { background: #2b1d1d; color: #ff7a7a; }
+  .kds-chip.cook { background: #2a2410; color: #ffce5a; }
+  .kds-cols { flex: 1; display: flex; gap: 10px; padding: 12px; overflow: hidden; }
+  .kds-col { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .kds-col-title { color: #8a97a6; font-size: 12px; font-weight: 700; margin-bottom: 8px; padding-left: 4px; letter-spacing: .04em; }
+  .kds-col-body { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding-right: 2px; }
+  .kds-empty { color: #3d4855; font-size: 12px; text-align: center; padding: 30px 0; }
+
+  .ticket {
+    background: #1b222c; border-radius: 12px; padding: 12px; border-left: 4px solid #ff7a7a;
+    animation: ticketIn .35s ease; color: #e6ebf1;
+  }
+  .ticket.cook { border-left-color: #ffce5a; }
+  .ticket.done { border-left-color: #06C755; opacity: .8; }
+  @keyframes ticketIn { from { transform: translateY(-8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+  .ticket-top { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .ticket-table { font-size: 15px; font-weight: 800; }
+  .ticket-no { font-size: 11px; color: #6b7886; }
+  .ticket-time { margin-left: auto; font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .ticket-time.warn { color: #ffce5a; }
+  .ticket-time.late { color: #ff7a7a; }
+  .ticket-items { list-style: none; display: flex; flex-direction: column; gap: 5px; margin-bottom: 10px; }
+  .ticket-items li { font-size: 13px; display: flex; gap: 6px; }
+  .ticket-items .qx { color: #ffce5a; font-weight: 800; flex-shrink: 0; }
+  .ticket-items .opt { color: #7e8b99; font-size: 11px; }
+  .ticket-act { width: 100%; padding: 9px; border-radius: 9px; font-size: 13px; font-weight: 700; }
+  .ticket-act.start { background: #ffce5a; color: #1b222c; }
+  .ticket-act.finish { background: #06C755; color: #fff; }
+  .ticket-act:active { transform: scale(.98); }
+
+  @media (max-width: 980px) {
+    .stage { gap: 36px; }
+    .kds { width: 375px; }
+    .kds-cols { flex-direction: column; overflow-y: auto; }
+  }
+
+  /* 厨房単独表示モード（タブレット用） */
+  body.kitchen-only .stage { padding: 0; }
+  body.kitchen-only .kds { width: 100vw; height: 100vh; border-radius: 0; }
+  body.kitchen-only .stage-label { display: none; }
+</style>
+</head>
+<body>
+  <div class="demo-bar">
+    <span class="logo">🍽 LINE モバイルオーダー</span>
+    <span class="tag">デモ / WALOVER合同会社</span>
+    <span class="spacer"></span>
+    <button id="resetBtn">リセット</button>
+    <button id="popKitchenBtn">厨房を別画面で開く ↗</button>
+  </div>
+
+  <div class="stage" id="stage">
+    <!-- 顧客スマホ -->
+    <div class="stage-col" id="phoneCol">
+      <div class="stage-label">📱 お客様のスマホ <span>（テーブルのQRから開く）</span></div>
+      <div class="phone">
+        <div class="phone-screen">
+          <div class="notch"></div>
+
+          <!-- 起動フロー（QRスキャン → 友だち追加ゲート）。完了するとメニューが表示される -->
+          <div class="startup" id="startup"></div>
+
+          <div class="app-header">
+            <span class="shop-emoji">🏮</span>
+            <span class="shop-name">海風ダイニング 那覇店</span>
+            <span class="table-badge">テーブル<b id="tableNo">A-3</b></span>
+          </div>
+          <div class="cats" id="cats"></div>
+          <div class="menu-scroll" id="menuScroll"></div>
+
+          <div class="cart-bar" id="cartBar">
+            <button class="cart-btn" id="openCartBtn">
+              <span class="badge" id="cartCount">0</span>
+              注文内容を確認 <span id="cartBarTotal">¥0</span>
+            </button>
+          </div>
+
+          <!-- シート（カート / オプション / 完了 を切替） -->
+          <div class="sheet-mask" id="sheetMask">
+            <div class="sheet" id="sheet"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 厨房ディスプレイ -->
+    <div class="stage-col" id="kitchenCol">
+      <div class="stage-label">🍳 厨房ディスプレイ <span>（タブレット／PCで表示）</span></div>
+      <div class="kds" id="kds"></div>
+    </div>
+  </div>
+
+<script>
+"use strict";
+
+/* ============ メニューデータ ============ */
+const MENU = [
+  { id:'m1', cat:'おすすめ', emoji:'🍣', name:'本日の刺身5点盛り', desc:'沖縄近海の鮮魚をその日仕入れで', price:1280 },
+  { id:'m2', cat:'おすすめ', emoji:'🍺', name:'生ビール', desc:'キンキンに冷えた一杯', price:600,
+    options:[{label:'サイズ', choices:[{name:'中ジョッキ',add:0},{name:'大ジョッキ',add:200}]}] },
+  { id:'m3', cat:'フード',  emoji:'🍗', name:'鶏の唐揚げ', desc:'国産鶏・5個', price:680,
+    options:[{label:'味変', choices:[{name:'そのまま',add:0},{name:'特製マヨ',add:50},{name:'レモン塩',add:0}]}] },
+  { id:'m4', cat:'フード',  emoji:'🫛', name:'枝豆', desc:'沖縄県産', price:350 },
+  { id:'m5', cat:'フード',  emoji:'🥗', name:'シーザーサラダ', desc:'半熟卵とベーコン', price:580 },
+  { id:'m6', cat:'フード',  emoji:'🍝', name:'明太子パスタ', desc:'大葉と刻み海苔', price:880 },
+  { id:'m7', cat:'フード',  emoji:'🍕', name:'マルゲリータ', desc:'石窯焼き', price:1080 },
+  { id:'m8', cat:'ドリンク', emoji:'🥃', name:'ハイボール', desc:'角・濃いめ', price:500 },
+  { id:'m9', cat:'ドリンク', emoji:'🍋', name:'自家製レモンサワー', desc:'丸ごとレモン', price:550 },
+  { id:'m10',cat:'ドリンク', emoji:'🫖', name:'ウーロン茶', desc:'', price:350 },
+  { id:'m11',cat:'デザート', emoji:'🍨', name:'バニラアイス', desc:'黒糖ソースがけ', price:380 },
+  { id:'m12',cat:'デザート', emoji:'🍰', name:'ガトーショコラ', desc:'温かい状態でご提供', price:480 },
+];
+const CATS = ['おすすめ','ドリンク','フード','デザート'];
+
+/* ============ 状態 ============ */
+const isKitchenOnly = new URLSearchParams(location.search).has('kitchen');
+const yen = n => '¥' + n.toLocaleString('ja-JP');
+
+let activeCat = 'おすすめ';
+let cart = [];          // {uid, id, emoji, name, price, qty, optText}
+let orders = [];        // 厨房側 {no, table, items:[{qty,name,optText}], status, placedAt}
+let orderSeq = 1;
+let screen = 'qr';      // 'qr' → 'gate' → 'menu' （起動フロー）
+let isFriend = false;   // LINE友だち登録済みか（実装では liff.getFriendship() で判定）
+
+// テーブル番号は QR / LIFF URL のクエリから受け取る想定: ?page=order&table=A-3
+const TABLE = new URLSearchParams(location.search).get('table') || 'A-3';
+
+/* ブラウザ間同期（厨房を別ウィンドウで開いたとき用） */
+const bc = ('BroadcastChannel' in window) ? new BroadcastChannel('walover-mo') : null;
+if (bc) {
+  bc.onmessage = (e) => {
+    const m = e.data;
+    if (m.type === 'orders') { orders = m.orders; renderKitchen(); }
+    if (m.type === 'sync-request') broadcastOrders();
+  };
+}
+function broadcastOrders(){ if (bc) bc.postMessage({ type:'orders', orders }); }
+
+/* ============ 起動フロー（QR → 友だちゲート → メニュー） ============ */
+// それっぽいQRコードを生成（テーブル番号をシードにしたパターン＋3隅のファインダー）
+function qrCells(seed){
+  let h = 0; for (const ch of seed) h = (h*31 + ch.charCodeAt(0)) >>> 0;
+  const N = 21, on = [];
+  const finder = (r,c) => (r<7&&c<7) || (r<7&&c>=N-7) || (r>=N-7&&c<7);
+  for (let r=0;r<N;r++) for (let c=0;c<N;c++){
+    if (finder(r,c)){
+      const rr = r%7 === 0 || r%7 === 6 || c%7 === 0 || c%7 === 6;
+      const inner = (r%7>=2&&r%7<=4)&&(c%7>=2&&c%7<=4);
+      on.push(rr||inner ? 1 : 0);
+    } else {
+      h = (h*1103515245 + 12345) & 0x7fffffff;
+      on.push((h >> 8) & 1);
+    }
+  }
+  return on;
+}
+
+function renderStartup(){
+  const el = document.getElementById('startup');
+  if (screen === 'menu'){ el.style.display = 'none'; return; }
+  el.style.display = 'flex';
+
+  if (screen === 'qr'){
+    el.className = 'startup qr';
+    el.innerHTML = `
+      <div class="qr-tent">
+        <div class="qr-shop">🏮 海風ダイニング 那覇店</div>
+        <div class="qr-table">テーブル ${TABLE} <small>のQR</small></div>
+        <div class="qr-grid scan-anim" id="qrGrid"><div class="scan-line"></div></div>
+        <div class="qr-cap">スマホのカメラでQRを読み取ると<br>ご注文ページ（LINE）が開きます</div>
+        <button class="scan-btn" id="scanBtn">📷 QRを読み取る（デモ）</button>
+      </div>
+      <div class="hint">実装では各テーブルに固有QRを貼付<br>→ <b>liff.line.me/…?page=order&table=${TABLE}</b> を開く</div>`;
+    const grid = document.getElementById('qrGrid');
+    qrCells('table-'+TABLE).forEach(v=>{ const i=document.createElement('i'); if(v)i.className='on'; grid.appendChild(i); });
+    document.getElementById('scanBtn').onclick = ()=>{ screen='gate'; renderStartup(); };
+    return;
+  }
+
+  if (screen === 'gate'){
+    el.className = 'startup gate';
+    if (!isFriend){
+      el.innerHTML = `
+        <div class="gate">
+          <div class="gate-icon">🏮</div>
+          <h2>ご注文には友だち追加が必要です</h2>
+          <p>海風ダイニングのLINE公式アカウントを<br>友だち追加するとご注文いただけます。</p>
+          <p style="opacity:.85">注文履歴の確認・お得なクーポンも届きます🎫</p>
+          <span class="table-pill">📍 テーブル ${TABLE}</span>
+          <button class="friend-btn" id="addFriendBtn">＋ 友だち追加して注文する</button>
+        </div>`;
+      document.getElementById('addFriendBtn').onclick = ()=>{
+        isFriend = true; renderStartup();
+        setTimeout(()=>{ screen='menu'; renderStartup(); }, 1100);
+      };
+    } else {
+      el.innerHTML = `
+        <div class="gate">
+          <div class="added-check">✓</div>
+          <h2>友だち追加ありがとうございます！</h2>
+          <p>メニューを開いています…</p>
+        </div>`;
+    }
+    return;
+  }
+}
+
+/* ============ 顧客画面の描画 ============ */
+function renderCats(){
+  const el = document.getElementById('cats');
+  el.innerHTML = '';
+  CATS.forEach(c => {
+    const b = document.createElement('button');
+    b.className = 'cat' + (c === activeCat ? ' active' : '');
+    b.textContent = c;
+    b.onclick = () => { activeCat = c; renderCats(); renderMenu(); };
+    el.appendChild(b);
+  });
+}
+
+function renderMenu(){
+  const el = document.getElementById('menuScroll');
+  el.innerHTML = '';
+  MENU.filter(m => m.cat === activeCat).forEach(m => {
+    const inCart = cart.filter(c => c.id === m.id).reduce((s,c)=>s+c.qty,0);
+    const card = document.createElement('div');
+    card.className = 'menu-card';
+    card.innerHTML = `
+      <div class="menu-emoji">${m.emoji}</div>
+      <div class="menu-info">
+        <div class="menu-name">${m.name}</div>
+        ${m.desc ? `<div class="menu-desc">${m.desc}</div>` : ''}
+        <div class="menu-price">${yen(m.price)}${m.options ? ' <small>〜</small>' : ''}</div>
+      </div>`;
+    const ctrl = document.createElement('div');
+    if (inCart > 0 && !m.options) {
+      ctrl.className = 'stepper';
+      ctrl.innerHTML = `<button>−</button><span class="qty">${inCart}</span><button>＋</button>`;
+      ctrl.children[0].onclick = () => changeQty(m.id, -1);
+      ctrl.children[2].onclick = () => changeQty(m.id, +1);
+    } else {
+      const add = document.createElement('button');
+      add.className = 'add-btn'; add.textContent = '＋';
+      add.onclick = () => m.options ? openOptions(m) : addToCart(m, 1, '');
+      ctrl.appendChild(add);
+    }
+    card.appendChild(ctrl);
+    el.appendChild(card);
+  });
+}
+
+function addToCart(m, qty, optText, optAdd=0){
+  const key = m.id + '|' + optText;
+  const exist = cart.find(c => c.uid === key);
+  if (exist) exist.qty += qty;
+  else cart.push({ uid:key, id:m.id, emoji:m.emoji, name:m.name, price:m.price+optAdd, qty, optText });
+  renderMenu(); renderCartBar();
+}
+
+function changeQty(id, delta){
+  // オプション無し商品の増減（uid = id|''）
+  const line = cart.find(c => c.id === id && c.optText === '');
+  if (!line) return;
+  line.qty += delta;
+  if (line.qty <= 0) cart = cart.filter(c => c !== line);
+  renderMenu(); renderCartBar();
+}
+
+function renderCartBar(){
+  const count = cart.reduce((s,c)=>s+c.qty,0);
+  const total = cart.reduce((s,c)=>s+c.price*c.qty,0);
+  document.getElementById('cartCount').textContent = count;
+  document.getElementById('cartBarTotal').textContent = yen(total);
+  document.getElementById('cartBar').classList.toggle('show', count > 0);
+}
+
+/* ---- オプション選択シート ---- */
+function openOptions(m){
+  const sel = m.options.map(g => 0); // 各グループの選択index
+  const render = () => {
+    const add = m.options.reduce((s,g,i)=> s + g.choices[sel[i]].add, 0);
+    document.getElementById('sheet').innerHTML = `
+      <h3>${m.emoji} ${m.name}</h3>
+      <div class="sub">オプションを選択してください</div>
+      ${m.options.map((g,gi)=>`
+        <div class="opt-group">
+          <div class="og-label">${g.label}</div>
+          ${g.choices.map((ch,ci)=>`
+            <div class="opt-row ${sel[gi]===ci?'sel':''}" data-g="${gi}" data-c="${ci}">
+              <span>${ch.name}</span>
+              <span class="op-price">${ch.add>0?'+'+yen(ch.add):'±0'}</span>
+            </div>`).join('')}
+        </div>`).join('')}
+      <button class="submit-btn" id="optAdd">${yen(m.price+add)} をカートに追加</button>`;
+    document.querySelectorAll('#sheet .opt-row').forEach(row=>{
+      row.onclick = () => { sel[+row.dataset.g] = +row.dataset.c; render(); };
+    });
+    document.getElementById('optAdd').onclick = () => {
+      const optText = m.options.map((g,i)=>g.choices[sel[i]].name).join(' / ');
+      addToCart(m, 1, optText, add);
+      closeSheet();
+    };
+  };
+  render();
+  openSheet();
+}
+
+/* ---- カート確認シート ---- */
+function openCart(){
+  if (cart.length === 0) return;
+  const total = cart.reduce((s,c)=>s+c.price*c.qty,0);
+  document.getElementById('sheet').innerHTML = `
+    <h3>ご注文内容</h3>
+    <div class="sub">テーブル ${TABLE}</div>
+    <div id="cartLines"></div>
+    <div class="cart-total">
+      <span class="t-label">合計（${cart.reduce((s,c)=>s+c.qty,0)}点）</span>
+      <span class="t-val">${yen(total)}<small>（税込）</small></span>
+    </div>
+    <div class="pay-note">💴 お会計はお席ではなく <b>レジ（店頭）</b> でお願いします。ご注文はそのまま厨房に届きます。</div>
+    <button class="submit-btn" id="placeBtn">この内容で注文する</button>`;
+  const lines = document.getElementById('cartLines');
+  cart.forEach(c=>{
+    const row = document.createElement('div');
+    row.className = 'cart-line';
+    row.innerHTML = `
+      <span class="ci-emoji">${c.emoji}</span>
+      <div class="ci-info">
+        <div class="ci-name">${c.name}</div>
+        ${c.optText?`<div class="ci-opt">${c.optText}</div>`:''}
+      </div>
+      <div class="stepper">
+        <button>−</button><span class="qty">${c.qty}</span><button>＋</button>
+      </div>
+      <span class="ci-price">${yen(c.price*c.qty)}</span>`;
+    const stp = row.querySelector('.stepper');
+    stp.children[0].onclick = () => { c.qty--; if(c.qty<=0) cart=cart.filter(x=>x!==c); refreshCart(); };
+    stp.children[2].onclick = () => { c.qty++; refreshCart(); };
+    lines.appendChild(row);
+  });
+  document.getElementById('placeBtn').onclick = placeOrder;
+  openSheet();
+}
+function refreshCart(){ renderMenu(); renderCartBar(); if(cart.length) openCart(); else closeSheet(); }
+
+/* ---- 注文確定 → 厨房へ ---- */
+function placeOrder(){
+  const no = orderSeq++;
+  orders.unshift({
+    no, table: TABLE,
+    items: cart.map(c=>({ qty:c.qty, name:c.name, optText:c.optText })),
+    status: 'new', placedAt: Date.now(),
+  });
+  cart = [];
+  renderMenu(); renderCartBar(); renderKitchen(); broadcastOrders();
+  showDone(no);
+}
+
+function showDone(no){
+  document.getElementById('sheet').innerHTML = `
+    <div class="done-wrap">
+      <div class="done-check">✓</div>
+      <h3>ご注文を承りました！</h3>
+      <p>受付番号 <span class="done-order-no">No.${String(no).padStart(3,'0')}</span><br>
+      厨房で順番にお作りします。<br>できあがりまで少々お待ちください。</p>
+      <button class="ghost-btn" id="backMenu">メニューに戻る</button>
+    </div>`;
+  document.getElementById('backMenu').onclick = closeSheet;
+}
+
+function openSheet(){ document.getElementById('sheetMask').classList.add('show'); }
+function closeSheet(){ document.getElementById('sheetMask').classList.remove('show'); }
+
+/* ============ 厨房ディスプレイの描画 ============ */
+function elapsed(ms){
+  const s = Math.floor((Date.now()-ms)/1000);
+  const m = Math.floor(s/60);
+  return `${m}:${String(s%60).padStart(2,'0')}`;
+}
+function timeClass(ms){
+  const m = (Date.now()-ms)/60000;
+  return m >= 10 ? 'late' : m >= 5 ? 'warn' : '';
+}
+
+function renderKitchen(){
+  const kds = document.getElementById('kds');
+  const groups = { new: [], cook: [], done: [] };
+  orders.forEach(o => groups[o.status === 'preparing' ? 'cook' : o.status === 'served' ? 'done' : 'new'].push(o));
+
+  const col = (title, list, statusClass, actLabel, actClass, nextFn) => `
+    <div class="kds-col">
+      <div class="kds-col-title">${title}（${list.length}）</div>
+      <div class="kds-col-body">
+        ${list.length === 0 ? '<div class="kds-empty">伝票なし</div>' :
+          list.map(o => `
+          <div class="ticket ${statusClass}">
+            <div class="ticket-top">
+              <span class="ticket-table">${o.table}</span>
+              <span class="ticket-no">No.${String(o.no).padStart(3,'0')}</span>
+              <span class="ticket-time ${timeClass(o.placedAt)}">${elapsed(o.placedAt)}</span>
+            </div>
+            <ul class="ticket-items">
+              ${o.items.map(it=>`<li><span class="qx">×${it.qty}</span><span>${it.name}${it.optText?` <span class="opt">/ ${it.optText}</span>`:''}</span></li>`).join('')}
+            </ul>
+            ${actLabel ? `<button class="ticket-act ${actClass}" data-no="${o.no}" data-act="${nextFn}">${actLabel}</button>` : ''}
+          </div>`).join('')}
+      </div>
+    </div>`;
+
+  kds.innerHTML = `
+    <div class="kds-head">
+      <span class="k-emoji">🍳</span><span class="k-title">海風ダイニング 厨房ディスプレイ</span>
+      <div class="k-stats">
+        <span class="kds-chip new">新規 ${groups.new.length}</span>
+        <span class="kds-chip cook">調理中 ${groups.cook.length}</span>
+      </div>
+    </div>
+    <div class="kds-cols">
+      ${col('🔔 新規', groups.new, 'new', '調理開始', 'start', 'preparing')}
+      ${col('🔥 調理中', groups.cook, 'cook', '提供完了', 'finish', 'served')}
+      ${col('✅ 提供済み', groups.done, 'done', '', '', '')}
+    </div>`;
+
+  kds.querySelectorAll('.ticket-act').forEach(btn=>{
+    btn.onclick = () => {
+      const o = orders.find(x => x.no === +btn.dataset.no);
+      if (o) { o.status = btn.dataset.act; renderKitchen(); broadcastOrders(); }
+    };
+  });
+}
+
+/* ============ 初期化 ============ */
+function init(){
+  if (isKitchenOnly) {
+    document.body.classList.add('kitchen-only');
+    document.getElementById('phoneCol').style.display = 'none';
+    document.querySelector('.demo-bar .spacer').nextElementSibling.remove(); // reset
+    document.getElementById('popKitchenBtn').remove();
+    if (bc) bc.postMessage({ type:'sync-request' });
+  } else {
+    document.getElementById('tableNo').textContent = TABLE;
+    renderCats(); renderMenu(); renderCartBar(); renderStartup();
+    document.getElementById('openCartBtn').onclick = openCart;
+    document.getElementById('sheetMask').onclick = (e)=>{ if(e.target.id==='sheetMask') closeSheet(); };
+    document.getElementById('popKitchenBtn').onclick = ()=> window.open(location.pathname+'?kitchen&table='+encodeURIComponent(TABLE),'_blank','width=640,height=820');
+    document.getElementById('resetBtn').onclick = ()=>{
+      orders=[]; orderSeq=1; cart=[]; isFriend=false; screen='qr';
+      renderMenu(); renderCartBar(); renderKitchen(); closeSheet(); renderStartup(); broadcastOrders();
+    };
+  }
+  renderKitchen();
+  setInterval(renderKitchen, 1000); // 経過時間を毎秒更新
+}
+init();
+</script>
+</body>
+</html>
