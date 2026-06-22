@@ -813,3 +813,67 @@ CREATE TABLE IF NOT EXISTS ai_assistant_usage (
   count     INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (friend_id, ymd)
 );
+
+-- ============================================================
+-- 飲食店モバイルオーダー（migration 809_mobile_order.sql）
+-- menus を商品マスタとして再利用。決済は店頭/現金併用（Stripe 非依存）
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS dining_tables (
+  id              TEXT PRIMARY KEY,
+  line_account_id TEXT NOT NULL,
+  table_number    TEXT NOT NULL,
+  qr_token        TEXT NOT NULL,
+  is_active       INTEGER NOT NULL DEFAULT 1,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (line_account_id) REFERENCES line_accounts(id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_dining_tables_qr ON dining_tables (qr_token);
+CREATE INDEX IF NOT EXISTS idx_dining_tables_account ON dining_tables (line_account_id, is_active);
+
+CREATE TABLE IF NOT EXISTS menu_options (
+  id          TEXT PRIMARY KEY,
+  menu_id     TEXT NOT NULL,
+  group_label TEXT NOT NULL,
+  choice_name TEXT NOT NULL,
+  extra_price INTEGER NOT NULL DEFAULT 0,
+  sort_order  INTEGER NOT NULL DEFAULT 0,
+  is_active   INTEGER NOT NULL DEFAULT 1,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (menu_id) REFERENCES menus(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_menu_options_menu ON menu_options (menu_id, sort_order);
+
+CREATE TABLE IF NOT EXISTS orders (
+  id              TEXT PRIMARY KEY,
+  line_account_id TEXT NOT NULL,
+  table_id        TEXT REFERENCES dining_tables(id) ON DELETE SET NULL,
+  table_number    TEXT NOT NULL,
+  friend_id       TEXT REFERENCES friends(id) ON DELETE SET NULL,
+  status          TEXT NOT NULL DEFAULT 'new'
+                    CHECK (status IN ('new','preparing','served','closed','cancelled')),
+  payment_status  TEXT NOT NULL DEFAULT 'unpaid'
+                    CHECK (payment_status IN ('unpaid','paid')),
+  total_amount    INTEGER NOT NULL DEFAULT 0,
+  customer_note   TEXT,
+  placed_at       TEXT NOT NULL DEFAULT (datetime('now')),
+  paid_at         TEXT,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (line_account_id) REFERENCES line_accounts(id)
+);
+CREATE INDEX IF NOT EXISTS idx_orders_account_status ON orders (line_account_id, status, placed_at);
+
+CREATE TABLE IF NOT EXISTS order_items (
+  id            TEXT PRIMARY KEY,
+  order_id      TEXT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+  menu_id       TEXT REFERENCES menus(id) ON DELETE SET NULL,
+  name_snapshot TEXT NOT NULL,
+  options_text  TEXT NOT NULL DEFAULT '',
+  unit_price    INTEGER NOT NULL,
+  quantity      INTEGER NOT NULL,
+  line_total    INTEGER NOT NULL,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items (order_id);

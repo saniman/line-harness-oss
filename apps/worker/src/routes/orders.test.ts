@@ -1,0 +1,236 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { Hono } from 'hono'
+
+vi.mock('../services/liff-identity.js', () => ({
+  resolveAccountIdFromLiff: vi.fn(),
+  verifyCallerLineUserId: vi.fn(),
+  resolveFriendId: vi.fn(),
+}))
+
+vi.mock('../services/orders.js', () => ({
+  buildOrderItems: vi.fn(),
+  canTransitionOrderStatus: vi.fn(),
+  getOrderableMenus: vi.fn(),
+  getOrderStatus: vi.fn(),
+  insertOrder: vi.fn(),
+  listKitchenOrders: vi.fn(),
+  resolveTableByToken: vi.fn(),
+  updateOrderStatus: vi.fn(),
+}))
+
+vi.mock('../services/default-line-account.js', () => ({
+  ensureDefaultLineAccount: vi.fn().mockResolvedValue(undefined),
+}))
+
+vi.mock('@line-crm/db', () => ({
+  getLineAccounts: vi.fn().mockResolvedValue([{ id: 'acc1' }]),
+}))
+
+import {
+  resolveAccountIdFromLiff,
+  verifyCallerLineUserId,
+  resolveFriendId,
+} from '../services/liff-identity.js'
+import {
+  buildOrderItems,
+  canTransitionOrderStatus,
+  getOrderableMenus,
+  getOrderStatus,
+  insertOrder,
+  listKitchenOrders,
+  resolveTableByToken,
+  updateOrderStatus,
+} from '../services/orders.js'
+import { orders } from './orders.js'
+
+const mResolveAccount = vi.mocked(resolveAccountIdFromLiff)
+const mVerify = vi.mocked(verifyCallerLineUserId)
+const mResolveFriend = vi.mocked(resolveFriendId)
+const mBuild = vi.mocked(buildOrderItems)
+const mCanTransition = vi.mocked(canTransitionOrderStatus)
+const mGetMenus = vi.mocked(getOrderableMenus)
+const mGetOrderStatus = vi.mocked(getOrderStatus)
+const mInsert = vi.mocked(insertOrder)
+const mListKitchen = vi.mocked(listKitchenOrders)
+const mResolveTable = vi.mocked(resolveTableByToken)
+const mUpdateStatus = vi.mocked(updateOrderStatus)
+
+const app = new Hono()
+app.route('/', orders)
+
+// friend lookup 用の最小モック DB。first() の戻りを差し替えて使う。
+function makeDb(firstResult: unknown) {
+  return {
+    prepare: () => ({
+      bind: () => ({
+        first: vi.fn().mockResolvedValue(firstResult),
+        all: vi.fn().mockResolvedValue({ results: [] }),
+        run: vi.fn().mockResolvedValue({}),
+      }),
+    }),
+  } as unknown as D1Database
+}
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  mGetMenus.mockResolvedValue(new Map())
+})
+
+describe('POST /api/liff/order/orders（注文作成）', () => {
+  it('id_token 検証に失敗したら 401 unauthorized', async () => {
+    mResolveAccount.mockResolvedValue('acc1')
+    mVerify.mockResolvedValue(null)
+    const res = await app.request(
+      '/api/liff/order/orders?liffId=L1',
+      { method: 'POST', body: JSON.stringify({ table_token: 't1', items: [] }) },
+      { DB: makeDb(null) },
+    )
+    expect(res.status).toBe(401)
+  })
+
+  it('友だち未登録なら 403 friend_required', async () => {
+    mResolveAccount.mockResolvedValue('acc1')
+    mVerify.mockResolvedValue('U123')
+    mResolveFriend.mockResolvedValue(null)
+    const res = await app.request(
+      '/api/liff/order/orders?liffId=L1',
+      { method: 'POST', body: JSON.stringify({ table_token: 't1', items: [{ menu_id: 'm1', quantity: 1 }] }) },
+      { DB: makeDb(null) },
+    )
+    expect(res.status).toBe(403)
+    expect(await res.json()).toEqual({ error: 'friend_required' })
+  })
+
+  it('フォロー解除済み（is_following=0）なら 403 friend_required', async () => {
+    mResolveAccount.mockResolvedValue('acc1')
+    mVerify.mockResolvedValue('U123')
+    mResolveFriend.mockResolvedValue('f1')
+    const res = await app.request(
+      '/api/liff/order/orders?liffId=L1',
+      { method: 'POST', body: JSON.stringify({ table_token: 't1', items: [{ menu_id: 'm1', quantity: 1 }] }) },
+      { DB: makeDb({ is_following: 0 }) },
+    )
+    expect(res.status).toBe(403)
+  })
+
+  it('テーブルが見つからなければ 404 table_not_found', async () => {
+    mResolveAccount.mockResolvedValue('acc1')
+    mVerify.mockResolvedValue('U123')
+    mResolveFriend.mockResolvedValue('f1')
+    mResolveTable.mockResolvedValue(null)
+    const res = await app.request(
+      '/api/liff/order/orders?liffId=L1',
+      { method: 'POST', body: JSON.stringify({ table_token: 'bad', items: [{ menu_id: 'm1', quantity: 1 }] }) },
+      { DB: makeDb({ is_following: 1 }) },
+    )
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'table_not_found' })
+  })
+
+  it('明細ビルドに失敗したら 422 をそのまま返す', async () => {
+    mResolveAccount.mockResolvedValue('acc1')
+    mVerify.mockResolvedValue('U123')
+    mResolveFriend.mockResolvedValue('f1')
+    mResolveTable.mockResolvedValue({ id: 'tbl1', table_number: 'A-3' })
+    mBuild.mockReturnValue({ ok: false, error: 'invalid_option' })
+    const res = await app.request(
+      '/api/liff/order/orders?liffId=L1',
+      { method: 'POST', body: JSON.stringify({ table_token: 't1', items: [{ menu_id: 'm1', quantity: 1, option_ids: ['x'] }] }) },
+      { DB: makeDb({ is_following: 1 }) },
+    )
+    expect(res.status).toBe(422)
+    expect(await res.json()).toEqual({ error: 'invalid_option' })
+  })
+
+  it('正常系: 201 で order_id と合計を返し insertOrder を呼ぶ', async () => {
+    mResolveAccount.mockResolvedValue('acc1')
+    mVerify.mockResolvedValue('U123')
+    mResolveFriend.mockResolvedValue('f1')
+    mResolveTable.mockResolvedValue({ id: 'tbl1', table_number: 'A-3' })
+    mBuild.mockReturnValue({
+      ok: true,
+      total: 950,
+      items: [{ menu_id: 'm1', name_snapshot: '生ビール', options_text: '大ジョッキ', unit_price: 800, quantity: 1, line_total: 800 }],
+    })
+    mInsert.mockResolvedValue('order-uuid')
+    const res = await app.request(
+      '/api/liff/order/orders?liffId=L1',
+      { method: 'POST', body: JSON.stringify({ table_token: 't1', items: [{ menu_id: 'm1', quantity: 1 }], customer_note: '辛さ控えめ' }) },
+      { DB: makeDb({ is_following: 1 }) },
+    )
+    expect(res.status).toBe(201)
+    expect(await res.json()).toEqual({
+      success: true,
+      data: { order_id: 'order-uuid', table_number: 'A-3', total: 950 },
+    })
+    expect(mInsert).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ accountId: 'acc1', tableId: 'tbl1', friendId: 'f1', total: 950, customerNote: '辛さ控えめ' }),
+    )
+  })
+})
+
+describe('PUT /api/order/admin/orders/:id/status（ステータス更新）', () => {
+  it('存在しない注文は 404', async () => {
+    mGetOrderStatus.mockResolvedValue(null)
+    const res = await app.request(
+      '/api/order/admin/orders/o1/status',
+      { method: 'PUT', body: JSON.stringify({ status: 'preparing' }) },
+      { DB: makeDb(null) },
+    )
+    expect(res.status).toBe(404)
+  })
+
+  it('不正な遷移は 409 invalid_transition', async () => {
+    mGetOrderStatus.mockResolvedValue({ status: 'new', line_account_id: 'acc1' })
+    mCanTransition.mockReturnValue(false)
+    const res = await app.request(
+      '/api/order/admin/orders/o1/status',
+      { method: 'PUT', body: JSON.stringify({ status: 'served' }) },
+      { DB: makeDb(null) },
+    )
+    expect(res.status).toBe(409)
+  })
+
+  it('別アカウントの注文は 404（テナント分離）', async () => {
+    mGetOrderStatus.mockResolvedValue({ status: 'new', line_account_id: 'OTHER' })
+    const res = await app.request(
+      '/api/order/admin/orders/o1/status',
+      { method: 'PUT', body: JSON.stringify({ status: 'preparing' }) },
+      { DB: makeDb(null) },
+    )
+    expect(res.status).toBe(404)
+  })
+
+  it('served → closed は markPaid=true で会計完了を記録する', async () => {
+    mGetOrderStatus.mockResolvedValue({ status: 'served', line_account_id: 'acc1' })
+    mCanTransition.mockReturnValue(true)
+    const res = await app.request(
+      '/api/order/admin/orders/o1/status',
+      { method: 'PUT', body: JSON.stringify({ status: 'closed' }) },
+      { DB: makeDb(null) },
+    )
+    expect(res.status).toBe(200)
+    expect(mUpdateStatus).toHaveBeenCalledWith(expect.anything(), 'o1', 'closed', true)
+  })
+
+  it('new → preparing は markPaid=false', async () => {
+    mGetOrderStatus.mockResolvedValue({ status: 'new', line_account_id: 'acc1' })
+    mCanTransition.mockReturnValue(true)
+    await app.request(
+      '/api/order/admin/orders/o1/status',
+      { method: 'PUT', body: JSON.stringify({ status: 'preparing' }) },
+      { DB: makeDb(null) },
+    )
+    expect(mUpdateStatus).toHaveBeenCalledWith(expect.anything(), 'o1', 'preparing', false)
+  })
+})
+
+describe('GET /api/order/admin/orders（厨房一覧）', () => {
+  it('既定で new+preparing を取得する', async () => {
+    mListKitchen.mockResolvedValue([])
+    const res = await app.request('/api/order/admin/orders', { method: 'GET' }, { DB: makeDb(null) })
+    expect(res.status).toBe(200)
+    expect(mListKitchen).toHaveBeenCalledWith(expect.anything(), 'acc1', ['new', 'preparing'])
+  })
+})

@@ -52,6 +52,7 @@ import { businessHours } from './routes/business-hours.js';
 import { events } from './routes/events.js';
 import { aiAssistant } from './routes/ai-assistant.js';
 import booking from './routes/booking.js';
+import { orders } from './routes/orders.js';
 
 export type Env = {
   Bindings: {
@@ -134,6 +135,7 @@ app.route('/', businessHours);
 app.route('/', events);
 app.route('/', aiAssistant);
 app.route('/', booking);
+app.route('/', orders);
 
 // Self-hosted QR code proxy — prevents leaking ref tokens to third-party services
 app.get('/api/qr', async (c) => {
