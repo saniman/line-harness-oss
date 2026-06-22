@@ -40,6 +40,34 @@ INSERT OR IGNORE INTO menu_options (...) VALUES (...),(...),(...);
 対処: 行ごとに account 等の subquery を埋めたい場合は「1行=1 INSERT…SELECT」に分解する。
 固定値の一括投入は `INSERT … VALUES (...),(...)` を使う。例: `packages/db/seeds/mobile-order-seed.sql`。
 
+### 既存テーブルを別機能で共用するなら判別列＋全リーダーのフィルタ＋既存行のバックフィル（2026-06-22 追記）
+
+症状: `menus` をサロン予約と飲食モバイルオーダーで共用したら、飲食メニューがサロン予約の一覧に出た。
+原因: (1) 種別を判別する列が無く全メニューが同一視された (2) そのテーブルを読む既存クエリを絞らなかった。
+
+❌ 誤（共用テーブルに種別を持たせず、新機能だけ別扱いしたつもりになる）
+```sql
+-- salon も food も同じ menus に入れる。salon 側クエリは全件取得のまま
+SELECT * FROM menus WHERE line_account_id = ? AND is_active = 1;  -- food も混ざる
+```
+
+✅ 正
+```sql
+-- 1) 判別列を足す（ADD COLUMN + DEFAULT。CHECK変更ではないので再作成不要）
+ALTER TABLE menus ADD COLUMN menu_type TEXT NOT NULL DEFAULT 'salon';
+-- 2) そのテーブルを読む既存クエリを「全て」grep して種別で絞る（漏れると混在する）
+SELECT ... FROM menus WHERE line_account_id = ? AND menu_type = 'salon';  -- salon側
+SELECT ... FROM menus WHERE line_account_id = ? AND menu_type = 'food';   -- 新機能側
+-- 3) 列追加より前に入っていた行は DEFAULT になる → 別種別にすべき既存行は冪等UPDATEで補正
+UPDATE menus SET menu_type='food' WHERE id LIKE 'seedmo-%' AND menu_type<>'food';
+```
+
+対処:
+1. 判別列を足す（例 `menu_type TEXT NOT NULL DEFAULT '<既存の意味>'`）
+2. **そのテーブルを読む既存クエリを全て** grep して種別フィルタを足す（LIFF/admin 両方など漏らさない）
+3. **列追加より前に入っていた行は DEFAULT 値になる**。別種別にすべき既存行は補正 `UPDATE` を流す
+   （今回 810 適用後、既投入の飲食12件が 'salon' のままで、seed の補正 UPDATE 再実行で 'food' にした）
+
 ### d1 execute の実行方法（wrangler バージョン / 貼り付け崩れに注意・2026-06-22 追記）
 
 - `--file` を使うときは **`npx wrangler@latest`（4.97+）必須**。`pnpm exec`（4.0.0）は
