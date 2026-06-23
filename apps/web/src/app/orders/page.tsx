@@ -103,6 +103,11 @@ export default function OrdersPage() {
       <Header
         title="厨房ディスプレイ"
         description="テーブルごとの注文をリアルタイムで確認・提供・会計できます（5秒ごとに自動更新）"
+        action={
+          <span className="inline-flex items-center text-xs font-bold text-white px-3 py-1.5 rounded-full bg-gradient-to-br from-[#ff6b9d] to-[#ff4176] shadow-sm">
+            WALOVER オーダーシステム
+          </span>
+        }
       />
 
       <div className="px-6 py-4">

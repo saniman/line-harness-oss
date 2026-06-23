@@ -162,7 +162,10 @@ function App() {
   return (
     <div className="mo-root">
       <div className="mo-header">
-        <span className="mo-shop">🏮 ご注文</span>
+        <div className="mo-brand">
+          <span className="mo-brand-name">WALOVER オーダーシステム</span>
+          <span className="mo-shop">🏮 ご注文</span>
+        </div>
         <button className="mo-hist-btn" onClick={() => { reloadHistory(); setHistoryOpen(true); }}>
           注文履歴
           {myOrders.length > 0 && <span className="mo-hist-total">¥{spentSoFar.toLocaleString('ja-JP')}</span>}

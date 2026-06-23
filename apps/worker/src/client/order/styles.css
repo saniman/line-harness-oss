@@ -14,6 +14,8 @@ body.mo-active {
   display: flex; align-items: center; gap: 8px; padding: 12px 14px;
   background: #06C755; color: #fff; position: sticky; top: 0; z-index: 11;
 }
+.mo-brand { display: flex; flex-direction: column; line-height: 1.15; }
+.mo-brand-name { font-size: 10px; font-weight: 700; opacity: .85; letter-spacing: .04em; }
 .mo-shop { font-weight: 700; font-size: 15px; }
 .mo-hist-btn {
   margin-left: auto; display: inline-flex; align-items: center; gap: 6px;
