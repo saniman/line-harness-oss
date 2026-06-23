@@ -24,14 +24,24 @@ export type KitchenOrder = {
   placed_at: string
   // お客さんが会計依頼した時刻（厨房承認まで会計完了にしない）。未依頼は null。
   checkout_requested_at: string | null
+  // 来店セッションの開始時刻（滞在時間表示用）。無ければ最古注文の placed_at をフォールバック。
+  session_started_at?: string | null
   items: KitchenOrderItem[]
 }
 
-// 本日（JST）の売上: 会計済み伝票一覧 + 合計金額・件数。
+// 本日（JST）の来店分析。
+export type TodaysStats = {
+  count: number          // 組数（締まったセッション数）
+  avg_stay_min: number   // 平均滞在時間（分）
+  avg_spend: number      // 平均客単価（卓単価）
+}
+
+// 本日（JST）の売上: 会計済み伝票一覧 + 合計金額・件数 + 来店分析。
 export type TodaysSales = {
   orders: KitchenOrder[]
   total: number
   count: number
+  stats?: TodaysStats
 }
 
 export const STATUS_LABEL: Record<OrderStatus, string> = {
@@ -134,4 +144,26 @@ export function urgencyLevel(placedAtIso: string, nowMs: number): 'normal' | 'wa
   if (min >= 10) return 'late'
   if (min >= 5) return 'warn'
   return 'normal'
+}
+
+// 滞在分（来店からの経過・分単位の整数）。負値・不正は 0。
+// 分単位なので秒のカウントアップにはならない（1分ごとにしか変わらない）。
+export function stayMinutes(startedAtIso: string, nowMs: number): number {
+  const started = parsePlacedAt(startedAtIso)
+  if (Number.isNaN(started)) return 0
+  return Math.max(0, Math.floor((nowMs - started) / 60000))
+}
+
+// UTC ISO → JST の HH:MM。
+function jstHHMM(iso: string): string {
+  const ms = parsePlacedAt(iso)
+  if (Number.isNaN(ms)) return ''
+  const d = new Date(ms + 9 * 3600_000)
+  return `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`
+}
+
+// 滞在時間の表示（カウントアップではなく分単位）。例: "来店 18:42・滞在 約35分"。
+export function formatStay(startedAtIso: string, nowMs: number): string {
+  const min = stayMinutes(startedAtIso, nowMs)
+  return `来店 ${jstHHMM(startedAtIso)}・滞在 約${min}分`
 }

@@ -11,6 +11,7 @@ vi.mock('../services/orders.js', () => ({
   approveTableCheckout: vi.fn(),
   buildOrderItems: vi.fn(),
   canTransitionOrderStatus: vi.fn(),
+  ensureOpenSession: vi.fn(),
   getOrderableMenus: vi.fn(),
   getOrderStatus: vi.fn(),
   getTableCheckoutSummary: vi.fn(),
@@ -41,6 +42,7 @@ import {
   approveTableCheckout,
   buildOrderItems,
   canTransitionOrderStatus,
+  ensureOpenSession,
   getOrderableMenus,
   getOrderStatus,
   getTableCheckoutSummary,
@@ -72,6 +74,7 @@ const mRequestCheckout = vi.mocked(requestTableCheckout)
 const mApproveCheckout = vi.mocked(approveTableCheckout)
 const mSummary = vi.mocked(getTableCheckoutSummary)
 const mTodaysSales = vi.mocked(listTodaysSales)
+const mEnsureSession = vi.mocked(ensureOpenSession)
 
 const app = new Hono()
 app.route('/', orders)
@@ -443,12 +446,41 @@ describe('POST /api/order/admin/tables/:id/checkout（厨房の会計承認）',
   })
 })
 
-describe('GET /api/order/admin/sales/today（本日の売上）', () => {
-  it('listTodaysSales の結果を返す', async () => {
-    mTodaysSales.mockResolvedValue({ orders: [], total: 5400, count: 3 })
+describe('GET /api/order/admin/sales/today（本日の売上 + 分析）', () => {
+  it('listTodaysSales の結果（stats込み）を返す', async () => {
+    const stats = { count: 3, avg_stay_min: 42, avg_spend: 1800 }
+    mTodaysSales.mockResolvedValue({ orders: [], total: 5400, count: 3, stats })
     const res = await app.request('/api/order/admin/sales/today', { method: 'GET' }, { DB: makeDb(null) })
     expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ success: true, data: { orders: [], total: 5400, count: 3 } })
+    expect(await res.json()).toEqual({ success: true, data: { orders: [], total: 5400, count: 3, stats } })
     expect(mTodaysSales).toHaveBeenCalledWith(expect.anything(), 'acc1')
+  })
+})
+
+describe('POST /api/liff/order/session/touch（来店セッション開始記録）', () => {
+  it('テーブルが見つからなければ 404', async () => {
+    mResolveAccount.mockResolvedValue('acc1')
+    mResolveTable.mockResolvedValue(null)
+    const res = await app.request(
+      '/api/liff/order/session/touch?liffId=L1',
+      { method: 'POST', body: JSON.stringify({ table_token: 'bad' }) },
+      { DB: makeDb(null) },
+    )
+    expect(res.status).toBe(404)
+  })
+
+  it('正常系: ensureOpenSession を呼び started_at を返す（友だちゲートなし）', async () => {
+    mResolveAccount.mockResolvedValue('acc1')
+    mResolveTable.mockResolvedValue({ id: 'tbl1', table_number: 'A-3' })
+    mEnsureSession.mockResolvedValue({ id: 'sess1', started_at: '2026-06-23 09:00:00' })
+    const res = await app.request(
+      '/api/liff/order/session/touch?liffId=L1',
+      { method: 'POST', body: JSON.stringify({ table_token: 'tok' }) },
+      { DB: makeDb(null) },
+    )
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ success: true, data: { started_at: '2026-06-23 09:00:00' } })
+    expect(mEnsureSession).toHaveBeenCalledWith(expect.anything(), 'acc1', 'tbl1', 'A-3')
+    expect(mResolveFriend).not.toHaveBeenCalled()
   })
 })

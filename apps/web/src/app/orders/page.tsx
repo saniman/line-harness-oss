@@ -11,6 +11,7 @@ import {
   splitItemsByGroup,
   elapsedLabel,
   urgencyLevel,
+  formatStay,
   type KitchenOrder,
   type KitchenOrderItem,
   type TableGroup,
@@ -159,19 +160,26 @@ function TableCard({ group, now, serving, checkingOut, onServe, onCheckout }: {
   const openTotal = group.orders.reduce((s, o) => s + o.total_amount, 0)
   const canCheckout = canCheckoutTable(group.orders)
   const borderClass = requested ? 'border-amber-400' : 'border-gray-200'
+  // 滞在の起点: 来店セッション開始（無ければ最古注文の placed_at にフォールバック）。
+  const stayStart = group.orders[0]?.session_started_at || group.orders[0]?.placed_at
 
   return (
     <div className={`bg-white rounded-xl shadow-sm border ${borderClass} flex flex-col`}>
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-100">
-        <span className="text-lg font-extrabold text-gray-900">{group.table_number}</span>
-        {requested && (
-          <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 border border-amber-300">
-            🧾 会計依頼中
+      <div className="px-3 py-2 border-b border-gray-100">
+        <div className="flex items-center gap-2">
+          <span className="text-lg font-extrabold text-gray-900">{group.table_number}</span>
+          {requested && (
+            <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 border border-amber-300">
+              🧾 会計依頼中
+            </span>
+          )}
+          <span className="ml-auto text-xs text-gray-500">
+            {group.orders.length}伝票 / ¥{openTotal.toLocaleString('ja-JP')}
           </span>
+        </div>
+        {stayStart && (
+          <div className="mt-0.5 text-xs text-gray-500">🕐 {formatStay(stayStart, now)}</div>
         )}
-        <span className="ml-auto text-xs text-gray-500">
-          {group.orders.length}伝票 / ¥{openTotal.toLocaleString('ja-JP')}
-        </span>
       </div>
 
       <div className="flex flex-col gap-2 p-3">
@@ -230,9 +238,12 @@ function OrderSlip({ order, now, serving, onServe }: {
           {STATUS_LABEL[order.status]}
         </span>
         <span className="text-xs text-gray-400">No.{order.id.slice(0, 6)}</span>
-        <span className={`ml-auto text-sm tabular-nums ${URGENCY_CLASS[urgency]}`}>
-          {elapsedLabel(order.placed_at, now)}
-        </span>
+        {/* カウントアップは未提供（新規）の待ち時間のみ。提供済みは非表示。 */}
+        {isNew && (
+          <span className={`ml-auto text-sm tabular-nums ${URGENCY_CLASS[urgency]}`}>
+            {elapsedLabel(order.placed_at, now)}
+          </span>
+        )}
       </div>
 
       {drink.length > 0 && <ItemGroup label="🍷 ドリンク" items={drink} />}
@@ -475,6 +486,22 @@ function TodaysSalesPanel() {
                   ¥{sales.total.toLocaleString('ja-JP')}
                 </span>
               </div>
+              {sales.stats && (
+                <div className="grid grid-cols-3 gap-2 pb-3 mb-3 border-b border-gray-200 text-center">
+                  <div>
+                    <div className="text-[11px] text-gray-400">組数</div>
+                    <div className="text-base font-bold text-gray-800">{sales.stats.count}組</div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] text-gray-400">平均滞在</div>
+                    <div className="text-base font-bold text-gray-800">約{sales.stats.avg_stay_min}分</div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] text-gray-400">平均客単価</div>
+                    <div className="text-base font-bold text-gray-800">¥{sales.stats.avg_spend.toLocaleString('ja-JP')}</div>
+                  </div>
+                </div>
+              )}
               <div className="flex flex-col gap-1">
                 {sales.orders.map((o) => (
                   <div key={o.id} className="flex items-center gap-2 text-xs py-1 border-b border-gray-100 last:border-0">

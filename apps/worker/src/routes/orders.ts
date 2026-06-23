@@ -20,6 +20,7 @@ import {
   approveTableCheckout,
   buildOrderItems,
   canTransitionOrderStatus,
+  ensureOpenSession,
   getOrderableMenus,
   getOrderStatus,
   getTableCheckoutSummary,
@@ -58,6 +59,27 @@ orders.get('/api/liff/order/menu', async (c) => {
   const menuMap = await getOrderableMenus(c.env.DB, accountId)
   const menus = [...menuMap.values()]
   return c.json({ menus })
+})
+
+// 来店セッションの開始記録（滞在時間の起点）。注文ページを開いたら best-effort で叩く。
+// 友だちゲートは課さない（注文前の閲覧時間も滞在に含めるため）。冪等。
+orders.post('/api/liff/order/session/touch', async (c) => {
+  const accountId = await resolveAccountIdFromLiff(c)
+  if (!accountId) return c.json({ error: 'unknown_liff' }, 404)
+
+  let body: { table_token?: string }
+  try {
+    body = await c.req.json()
+  } catch {
+    return c.json({ error: 'invalid_json' }, 400)
+  }
+  if (!body.table_token) return c.json({ error: 'missing_table' }, 400)
+
+  const table = await resolveTableByToken(c.env.DB, accountId, body.table_token)
+  if (!table) return c.json({ error: 'table_not_found' }, 404)
+
+  const session = await ensureOpenSession(c.env.DB, accountId, table.id, table.table_number)
+  return c.json({ success: true, data: { started_at: session.started_at } })
 })
 
 // ユーザーの注文履歴（自分の注文・現在のテーブル分）。友だち未登録は空配列。

@@ -864,6 +864,8 @@ CREATE TABLE IF NOT EXISTS orders (
   paid_at         TEXT,
   -- お客さん(LIFF)が会計依頼した時刻。厨房承認までは会計完了にしない（811）。
   checkout_requested_at TEXT,
+  -- どの来店セッションの注文か（813）。
+  session_id      TEXT,
   created_at      TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (line_account_id) REFERENCES line_accounts(id)
@@ -882,3 +884,19 @@ CREATE TABLE IF NOT EXISTS order_items (
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items (order_id);
+
+-- 来店セッション（テーブルの1回の利用＝着席〜会計）。滞在時間・客単価分析に使う（813）。
+CREATE TABLE IF NOT EXISTS dining_sessions (
+  id              TEXT PRIMARY KEY,
+  line_account_id TEXT NOT NULL,
+  table_id        TEXT REFERENCES dining_tables(id) ON DELETE SET NULL,
+  table_number    TEXT NOT NULL,
+  started_at      TEXT NOT NULL DEFAULT (datetime('now')),  -- 初回アクセス（滞在の起点）
+  ended_at        TEXT,                                     -- 会計承認の時刻。NULL=滞在中
+  order_count     INTEGER NOT NULL DEFAULT 0,
+  total_amount    INTEGER NOT NULL DEFAULT 0,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (line_account_id) REFERENCES line_accounts(id)
+);
+CREATE INDEX IF NOT EXISTS idx_dining_sessions_open  ON dining_sessions (line_account_id, table_id, ended_at);
+CREATE INDEX IF NOT EXISTS idx_dining_sessions_ended ON dining_sessions (line_account_id, ended_at);

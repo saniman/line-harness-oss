@@ -5,6 +5,8 @@ import {
   canCheckoutTable,
   groupOrdersByTable,
   splitItemsByGroup,
+  stayMinutes,
+  formatStay,
   parsePlacedAt,
   elapsedLabel,
   urgencyLevel,
@@ -93,6 +95,20 @@ describe('splitItemsByGroup（ドリンク/お食事分割）', () => {
     ])
     expect(drink.map((i) => i.name_snapshot)).toEqual(['生ビール', 'ハイボール'])
     expect(food.map((i) => i.name_snapshot)).toEqual(['枝豆'])
+  })
+})
+
+describe('stayMinutes / formatStay（滞在時間）', () => {
+  const start = Date.UTC(2026, 5, 23, 9, 42, 0) // 09:42 UTC = 18:42 JST
+  it('経過分を整数で返す（35分7秒→35）', () => {
+    expect(stayMinutes('2026-06-23 09:42:00', start + (35 * 60 + 7) * 1000)).toBe(35)
+  })
+  it('未来や不正は 0', () => {
+    expect(stayMinutes('2026-06-23 09:42:00', start - 1000)).toBe(0)
+    expect(stayMinutes('', start)).toBe(0)
+  })
+  it('formatStay は来店時刻(JST)と滞在分を返す', () => {
+    expect(formatStay('2026-06-23 09:42:00', start + 35 * 60 * 1000)).toBe('来店 18:42・滞在 約35分')
   })
 })
 

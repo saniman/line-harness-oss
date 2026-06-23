@@ -44,6 +44,20 @@ export async function fetchMyOrders(ctx: OrderContext): Promise<MyOrdersResult> 
   }
 }
 
+// 来店セッションの開始記録（滞在時間の起点）。注文ページを開いたら best-effort で1回叩く。
+// 失敗しても注文フローには影響しないため握りつぶす。
+export async function touchSession(ctx: OrderContext): Promise<void> {
+  try {
+    await fetch(withLiff('/api/liff/order/session/touch', ctx), {
+      method: 'POST',
+      headers: authHeaders(ctx, { 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ table_token: ctx.tableToken }),
+    });
+  } catch {
+    /* 滞在計測は best-effort。失敗は無視 */
+  }
+}
+
 export interface CheckoutResult {
   table_number: string;
   requested_count: number;

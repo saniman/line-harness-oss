@@ -225,8 +225,42 @@ export interface CreateOrderInput {
   customerNote: string | null
 }
 
-// 注文ヘッダ + 明細を 1 バッチで原子的に INSERT する。
+// テーブルの未終了（滞在中）セッションを返す。無ければ started_at=now で新規作成する（冪等）。
+// LIFF アクセス時（touch）と注文作成時の両方から呼び、滞在の起点を「最初のアクセス」に揃える。
+export async function ensureOpenSession(
+  db: D1Database,
+  accountId: string,
+  tableId: string,
+  tableNumber: string,
+): Promise<{ id: string; started_at: string }> {
+  const existing = await db
+    .prepare(
+      `SELECT id, started_at FROM dining_sessions
+        WHERE line_account_id = ? AND table_id = ? AND ended_at IS NULL
+        ORDER BY started_at DESC LIMIT 1`,
+    )
+    .bind(accountId, tableId)
+    .first<{ id: string; started_at: string }>()
+  if (existing) return existing
+
+  const id = crypto.randomUUID()
+  await db
+    .prepare(
+      `INSERT INTO dining_sessions (id, line_account_id, table_id, table_number)
+       VALUES (?,?,?,?)`,
+    )
+    .bind(id, accountId, tableId, tableNumber)
+    .run()
+  const row = await db
+    .prepare(`SELECT id, started_at FROM dining_sessions WHERE id = ?`)
+    .bind(id)
+    .first<{ id: string; started_at: string }>()
+  return row ?? { id, started_at: new Date().toISOString() }
+}
+
+// 注文ヘッダ + 明細を 1 バッチで原子的に INSERT する。来店セッションに紐付ける。
 export async function insertOrder(db: D1Database, input: CreateOrderInput): Promise<string> {
+  const session = await ensureOpenSession(db, input.accountId, input.tableId, input.tableNumber)
   const orderId = crypto.randomUUID()
   const stmts: D1PreparedStatement[] = []
   stmts.push(
@@ -234,8 +268,8 @@ export async function insertOrder(db: D1Database, input: CreateOrderInput): Prom
       .prepare(
         `INSERT INTO orders
           (id, line_account_id, table_id, table_number, friend_id, status,
-           payment_status, total_amount, customer_note)
-         VALUES (?,?,?,?,?, 'new', 'unpaid', ?, ?)`,
+           payment_status, total_amount, customer_note, session_id)
+         VALUES (?,?,?,?,?, 'new', 'unpaid', ?, ?, ?)`,
       )
       .bind(
         orderId,
@@ -245,6 +279,7 @@ export async function insertOrder(db: D1Database, input: CreateOrderInput): Prom
         input.friendId,
         input.total,
         input.customerNote,
+        session.id,
       ),
   )
   for (const it of input.items) {
@@ -282,6 +317,8 @@ export interface KitchenOrder {
   placed_at: string
   // お客さんが会計依頼した時刻（厨房承認まで会計完了にしない）。未依頼は null。
   checkout_requested_at: string | null
+  // 来店セッションの開始時刻（滞在時間表示用）。listKitchenOrders のみ付与。
+  session_started_at?: string | null
   items: Array<{ name_snapshot: string; options_text: string; quantity: number; menu_group: MenuGroup }>
 }
 
@@ -324,12 +361,17 @@ export async function listKitchenOrders(
   statuses: OrderStatus[],
 ): Promise<KitchenOrder[]> {
   const placeholders = statuses.map(() => '?').join(',')
+  // 来店セッションの開始時刻も付与する（滞在時間表示用）。
+  // dining_sessions は orders と同名カラム（table_id 等）を持つため orders を o. で修飾する。
   const orderRows = await db
     .prepare(
-      `SELECT ${ORDER_HEADER_COLS}
-         FROM orders
-        WHERE line_account_id = ? AND status IN (${placeholders})
-        ORDER BY placed_at ASC`,
+      `SELECT o.id, o.table_id, o.table_number, o.status, o.payment_status,
+              o.total_amount, o.customer_note, o.placed_at, o.checkout_requested_at,
+              s.started_at AS session_started_at
+         FROM orders o
+         LEFT JOIN dining_sessions s ON s.id = o.session_id
+        WHERE o.line_account_id = ? AND o.status IN (${placeholders})
+        ORDER BY o.placed_at ASC`,
     )
     .bind(accountId, ...statuses)
     .all<Omit<KitchenOrder, 'items'>>()
@@ -521,16 +563,59 @@ export async function approveTableCheckout(
     )
     .bind(accountId, tableId)
     .run()
+
+  // 来店セッションを締める（滞在時間・卓単価分析用）。order_count/total_amount を確定。
+  await db
+    .prepare(
+      `UPDATE dining_sessions
+          SET ended_at = datetime('now'),
+              order_count = (SELECT COUNT(*) FROM orders o
+                              WHERE o.session_id = dining_sessions.id AND o.status <> 'cancelled'),
+              total_amount = (SELECT COALESCE(SUM(o.total_amount),0) FROM orders o
+                              WHERE o.session_id = dining_sessions.id AND o.status <> 'cancelled')
+        WHERE line_account_id = ? AND table_id = ? AND ended_at IS NULL`,
+    )
+    .bind(accountId, tableId)
+    .run()
+
   return { ok: true, settled_count: res.meta.changes ?? served.length, settled_total: settledTotal }
+}
+
+export interface TodaysStats {
+  count: number          // 本日の組数（締まったセッション数）
+  avg_stay_min: number   // 平均滞在時間（分）
+  avg_spend: number      // 平均客単価（卓単価＝1セッションあたり平均金額）
 }
 
 export interface TodaysSales {
   orders: KitchenOrder[]
   total: number
   count: number
+  stats: TodaysStats
 }
 
-// 本日（JST）の会計済み伝票一覧 + 売上合計・件数。
+// 本日（JST）に締まった来店セッションから 組数・平均滞在(分)・平均卓単価 を算出する。
+export async function getTodaysStats(db: D1Database, accountId: string): Promise<TodaysStats> {
+  const row = await db
+    .prepare(
+      `SELECT COUNT(*) AS count,
+              COALESCE(AVG((julianday(ended_at) - julianday(started_at)) * 24 * 60), 0) AS avg_stay_min,
+              COALESCE(AVG(total_amount), 0) AS avg_spend
+         FROM dining_sessions
+        WHERE line_account_id = ?
+          AND ended_at IS NOT NULL
+          AND ended_at >= datetime('now','+9 hours','start of day','-9 hours')`,
+    )
+    .bind(accountId)
+    .first<{ count: number; avg_stay_min: number; avg_spend: number }>()
+  return {
+    count: row?.count ?? 0,
+    avg_stay_min: Math.round(row?.avg_stay_min ?? 0),
+    avg_spend: Math.round(row?.avg_spend ?? 0),
+  }
+}
+
+// 本日（JST）の会計済み伝票一覧 + 売上合計・件数 + 来店分析。
 // paid_at は UTC 保存のため、JST 当日 0 時を UTC に換算して境界にする
 // （datetime('now','+9 hours','start of day','-9 hours')）。
 export async function listTodaysSales(
@@ -549,5 +634,6 @@ export async function listTodaysSales(
     .all<Omit<KitchenOrder, 'items'>>()
   const orders = await hydrateItems(db, orderRows.results as Array<Omit<KitchenOrder, 'items'>>)
   const total = orders.reduce((s, o) => s + o.total_amount, 0)
-  return { orders, total, count: orders.length }
+  const stats = await getTodaysStats(db, accountId)
+  return { orders, total, count: orders.length, stats }
 }

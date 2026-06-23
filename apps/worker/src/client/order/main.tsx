@@ -21,6 +21,7 @@ import {
   fetchMyOrders,
   createOrder,
   checkoutOrder,
+  touchSession,
   type CreateOrderResult,
   type CheckoutResult,
 } from './lib/api.js';
@@ -112,6 +113,8 @@ function App() {
       .catch(() => setLoadError('メニュー情報の取得に失敗しました。'))
       .finally(() => setLoading(false));
     reloadHistory();
+    // 来店セッションの起点を記録（滞在時間計測。best-effort）。
+    touchSession(ctx);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctx]);
 
