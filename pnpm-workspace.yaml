@@ -1,3 +1,11 @@
 packages:
   - "apps/*"
   - "packages/*"
+
+# サプライチェーン対策: 公開から一定時間（7日 = 10080分）未満の新しいバージョンは
+# インストールしない（マルウェア混入版が公開直後に取り込まれるのを防ぐ）。pnpm 10.16+ の機能。
+# 緊急で新しい版が必要なときは `pnpm install --config.minimumReleaseAge=0` で一時回避できる。
+minimumReleaseAge: 10080
+# 信頼するパッケージを即時許可したい場合はここに追加（例: 自社内製パッケージ）。
+# minimumReleaseAgeExclude:
+#   - "@line-crm/*"

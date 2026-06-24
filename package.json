@@ -14,7 +14,7 @@
     "deploy:setup": "node packages/create-line-harness/dist/index.js",
     "deploy:update": "node packages/create-line-harness/dist/index.js update"
   },
-  "packageManager": "pnpm@9.15.4",
+  "packageManager": "pnpm@10.34.4",
   "engines": {
     "node": ">=20"
   },
