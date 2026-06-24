@@ -4,6 +4,15 @@ globs: ""
 ---
 # デプロイルール
 
+## 依存のサプライチェーン対策（minimumReleaseAge・2026-06-24 追記）
+
+`pnpm-workspace.yaml` に `minimumReleaseAge: 10080`（7日）を設定済み（pnpm 10.34.4）。
+**公開から7日未満のバージョンはインストールされない**（マルウェア混入版の即時取り込みを防ぐ）。
+
+→ 依存追加・`pnpm update` で「最新パッチが7日未満」だと install が止まる。これは仕様。
+   日数を待つか、緊急時のみ `pnpm install --config.minimumReleaseAge=0` で一時回避する（設定自体は消さない）。
+   詳細・新規設定手順は `/supply-chain` スキル参照。
+
 ## git push によるデプロイ
 
 - デプロイは `git push origin main` で行う
