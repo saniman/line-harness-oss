@@ -76,6 +76,10 @@ body.mo-active {
   background: #fff; border-radius: 14px; padding: 12px; display: flex; gap: 12px;
   align-items: center; margin-bottom: 10px; box-shadow: 0 2px 8px rgba(0,0,0,.06);
 }
+.mo-thumb {
+  width: 64px; height: 64px; flex-shrink: 0; border-radius: 10px;
+  object-fit: cover; background: #f0f0f0;
+}
 .mo-info { flex: 1; min-width: 0; }
 .mo-name { font-size: 14px; font-weight: 700; }
 .mo-desc { font-size: 11px; color: #999; margin-top: 2px; line-height: 1.4; }

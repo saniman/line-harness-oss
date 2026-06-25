@@ -17,6 +17,7 @@ export interface OrderableMenu {
   menu_group: MenuGroup;
   category_label?: string | null;
   description?: string | null;
+  image_url?: string | null;
   options: MenuOption[];
 }
 

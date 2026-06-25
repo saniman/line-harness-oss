@@ -10,7 +10,7 @@ import {
 const MENUS: Map<string, OrderableMenu> = new Map([
   ['m1', {
     id: 'm1', name: '生ビール', base_price: 600, menu_group: 'drink',
-    category_label: 'ドリンク', description: null,
+    category_label: 'ドリンク', description: null, image_url: null,
     options: [
       { id: 'o1', group_label: 'サイズ', choice_name: '中ジョッキ', extra_price: 0 },
       { id: 'o2', group_label: 'サイズ', choice_name: '大ジョッキ', extra_price: 200 },
@@ -18,7 +18,7 @@ const MENUS: Map<string, OrderableMenu> = new Map([
   }],
   ['m2', {
     id: 'm2', name: '枝豆', base_price: 350, menu_group: 'food',
-    category_label: 'フード', description: null, options: [],
+    category_label: 'フード', description: null, image_url: null, options: [],
   }],
 ])
 

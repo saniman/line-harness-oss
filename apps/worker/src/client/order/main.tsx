@@ -226,6 +226,9 @@ function App() {
           const hasOpt = m.options && m.options.length > 0;
           return (
             <div key={m.id} className="mo-card">
+              {m.image_url && (
+                <img className="mo-thumb" src={m.image_url} alt={m.name} loading="lazy" />
+              )}
               <div className="mo-info">
                 <div className="mo-name">{m.name}</div>
                 {(m as { description?: string | null }).description && (

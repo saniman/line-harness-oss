@@ -466,7 +466,7 @@ describe('GET /api/order/admin/sales/today（本日の売上 + 分析）', () =>
 describe('GET /api/liff/order/menu（言語）', () => {
   const jaMenu = {
     id: 'm1', name: '生ビール', base_price: 600, menu_group: 'drink' as const,
-    category_label: 'ドリンク', description: null, options: [],
+    category_label: 'ドリンク', description: null, image_url: null, options: [],
   }
   it('lang 未指定（ja）は翻訳を通さず日本語を返す', async () => {
     mResolveAccount.mockResolvedValue('acc1')

@@ -51,6 +51,7 @@ export interface OrderableMenu {
   menu_group: MenuGroup
   category_label: string | null
   description: string | null
+  image_url: string | null
   options: OrderableOption[]
 }
 
@@ -160,7 +161,7 @@ export async function getOrderableMenus(
 ): Promise<Map<string, OrderableMenu>> {
   const menuRows = await db
     .prepare(
-      `SELECT id, name, category_label, description, base_price, menu_group, sort_order
+      `SELECT id, name, category_label, description, base_price, menu_group, image_url, sort_order
          FROM menus
         WHERE line_account_id = ? AND is_active = 1 AND deleted_at IS NULL
           AND menu_type = 'food'
@@ -174,6 +175,7 @@ export async function getOrderableMenus(
       menu_group: string
       category_label: string | null
       description: string | null
+      image_url: string | null
     }>()
 
   const map = new Map<string, OrderableMenu>()
@@ -186,6 +188,7 @@ export async function getOrderableMenus(
       menu_group: group,
       category_label: m.category_label ?? null,
       description: m.description ?? null,
+      image_url: m.image_url ?? null,
       options: [],
     })
   }

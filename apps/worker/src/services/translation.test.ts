@@ -13,6 +13,7 @@ const MENU: OrderableMenu = {
   menu_group: 'drink',
   category_label: 'ドリンク',
   description: 'よく冷えた一杯',
+  image_url: null,
   options: [
     { id: 'o1', group_label: 'サイズ', choice_name: '中', extra_price: 0 },
     { id: 'o2', group_label: 'サイズ', choice_name: '大', extra_price: 200 },
