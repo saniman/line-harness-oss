@@ -14,14 +14,15 @@ body.mo-active {
   display: flex; align-items: center; gap: 8px; padding: 12px 14px;
   background: #06C755; color: #fff; position: sticky; top: 0; z-index: 11;
 }
-.mo-brand { display: flex; flex-direction: column; line-height: 1.15; }
-.mo-brand-name { font-size: 10px; font-weight: 700; opacity: .85; letter-spacing: .04em; }
-.mo-shop { font-weight: 700; font-size: 15px; }
-.mo-header-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
-.mo-lang { display: inline-flex; border: 1px solid rgba(255,255,255,.6); border-radius: 999px; overflow: hidden; }
+.mo-brand { display: flex; flex-direction: column; line-height: 1.15; min-width: 0; }
+/* 語中で割れないよう、スペース位置でのみ折り返す（「オーダーシス／テム」を防ぐ） */
+.mo-brand-name { font-size: 10px; font-weight: 700; opacity: .85; letter-spacing: .04em; word-break: keep-all; }
+.mo-shop { font-weight: 700; font-size: 15px; white-space: nowrap; }
+.mo-header-right { margin-left: auto; flex-shrink: 0; display: flex; align-items: center; gap: 8px; }
+.mo-lang { display: inline-flex; flex-shrink: 0; border: 1px solid rgba(255,255,255,.6); border-radius: 999px; overflow: hidden; }
 .mo-lang button {
   background: transparent; color: #fff; border: none; cursor: pointer;
-  font-size: 12px; font-weight: 700; padding: 4px 9px;
+  font-size: 12px; font-weight: 700; padding: 4px 9px; white-space: nowrap;
 }
 .mo-lang button.active { background: #fff; color: #06C755; }
 .mo-hist-btn {
