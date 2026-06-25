@@ -78,7 +78,7 @@ body.mo-active {
 }
 .mo-thumb {
   width: 64px; height: 64px; flex-shrink: 0; border-radius: 10px;
-  object-fit: cover; background: #f0f0f0;
+  object-fit: contain; background: #fff;
 }
 .mo-info { flex: 1; min-width: 0; }
 .mo-name { font-size: 14px; font-weight: 700; }
