@@ -11,6 +11,7 @@ import { Hono, type Context } from 'hono'
 import { getLineAccounts } from '@line-crm/db'
 import type { Env } from '../index.js'
 import { ensureDefaultLineAccount } from '../services/default-line-account.js'
+import { localizeMenus } from '../services/translation.js'
 import {
   resolveAccountIdFromLiff,
   verifyCallerLineUserId,
@@ -53,11 +54,18 @@ async function resolveAccountIdAdmin(c: Context<Env>): Promise<string | null> {
 // ================================================================
 
 // メニュー（オプション込み）を取得。カテゴリ単位でグルーピングしやすい形で返す。
+// ?lang=en で英語に翻訳して返す（既定 'ja' は日本語のまま・翻訳処理を通さない）。
+// 翻訳失敗・APIキー無し時は日本語にフォールバック（注文フローは止めない）。
 orders.get('/api/liff/order/menu', async (c) => {
   const accountId = await resolveAccountIdFromLiff(c)
   if (!accountId) return c.json({ error: 'unknown_liff' }, 404)
   const menuMap = await getOrderableMenus(c.env.DB, accountId)
-  const menus = [...menuMap.values()]
+  let menus = [...menuMap.values()]
+
+  const lang = c.req.query('lang')
+  if (lang && lang !== 'ja') {
+    menus = await localizeMenus(c.env.DB, c.env.ANTHROPIC_API_KEY, lang, menus)
+  }
   return c.json({ menus })
 })
 

@@ -17,8 +17,15 @@ body.mo-active {
 .mo-brand { display: flex; flex-direction: column; line-height: 1.15; }
 .mo-brand-name { font-size: 10px; font-weight: 700; opacity: .85; letter-spacing: .04em; }
 .mo-shop { font-weight: 700; font-size: 15px; }
+.mo-header-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.mo-lang { display: inline-flex; border: 1px solid rgba(255,255,255,.6); border-radius: 999px; overflow: hidden; }
+.mo-lang button {
+  background: transparent; color: #fff; border: none; cursor: pointer;
+  font-size: 12px; font-weight: 700; padding: 4px 9px;
+}
+.mo-lang button.active { background: #fff; color: #06C755; }
 .mo-hist-btn {
-  margin-left: auto; display: inline-flex; align-items: center; gap: 6px;
+  display: inline-flex; align-items: center; gap: 6px;
   background: rgba(255,255,255,.22); color: #fff; border: none; cursor: pointer;
   font-size: 13px; font-weight: 600; padding: 6px 12px; border-radius: 999px;
 }

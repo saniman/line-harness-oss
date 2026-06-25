@@ -900,3 +900,13 @@ CREATE TABLE IF NOT EXISTS dining_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_dining_sessions_open  ON dining_sessions (line_account_id, table_id, ended_at);
 CREATE INDEX IF NOT EXISTS idx_dining_sessions_ended ON dining_sessions (line_account_id, ended_at);
+
+-- メニュー翻訳キャッシュ（英語対応・814）。(target_lang, source_text) で原文ごとに1回だけ翻訳。
+CREATE TABLE IF NOT EXISTS translation_cache (
+  id              TEXT PRIMARY KEY,
+  target_lang     TEXT NOT NULL,
+  source_text     TEXT NOT NULL,
+  translated_text TEXT NOT NULL,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_translation_cache ON translation_cache (target_lang, source_text);

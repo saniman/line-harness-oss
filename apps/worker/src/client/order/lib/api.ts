@@ -19,8 +19,9 @@ function authHeaders(ctx: OrderContext, extra: Record<string, string> = {}): Rec
   return { Authorization: `Bearer ${ctx.idToken}`, ...extra };
 }
 
-export async function fetchMenu(ctx: OrderContext): Promise<OrderableMenu[]> {
-  const res = await fetch(withLiff('/api/liff/order/menu', ctx), { headers: authHeaders(ctx) });
+export async function fetchMenu(ctx: OrderContext, lang: string = 'ja'): Promise<OrderableMenu[]> {
+  const path = `/api/liff/order/menu?lang=${encodeURIComponent(lang)}`;
+  const res = await fetch(withLiff(path, ctx), { headers: authHeaders(ctx) });
   if (!res.ok) throw new Error(`menu ${res.status}`);
   const json = (await res.json()) as { menus: OrderableMenu[] };
   return json.menus ?? [];

@@ -27,6 +27,7 @@ declare const liff: {
   getProfile(): Promise<{ userId: string; displayName: string; pictureUrl?: string; statusMessage?: string }>;
   getIDToken(): string | null;
   getDecodedIDToken(): { sub: string; name?: string; email?: string; picture?: string } | null;
+  getLanguage(): string;
   getFriendship(): Promise<{ friendFlag: boolean }>;
   isInClient(): boolean;
   closeWindow(): void;
@@ -435,11 +436,19 @@ async function initOrder(): Promise<void> {
     return;
   }
   const { mountOrder } = await import('./order/main.js');
+  // LINE アプリの言語から初期言語を決める（en で始まれば英語）。失敗時は日本語。
+  let lang: 'ja' | 'en' = 'ja';
+  try {
+    if (typeof liff.getLanguage === 'function') {
+      lang = liff.getLanguage().toLowerCase().startsWith('en') ? 'en' : 'ja';
+    }
+  } catch { /* 言語取得失敗は日本語 */ }
   mountOrder(container, {
     liffId: LIFF_ID,
     lineUserId: profile.userId,
     idToken,
     tableToken,
+    lang,
   });
 }
 

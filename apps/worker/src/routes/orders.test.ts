@@ -29,6 +29,10 @@ vi.mock('../services/default-line-account.js', () => ({
   ensureDefaultLineAccount: vi.fn().mockResolvedValue(undefined),
 }))
 
+vi.mock('../services/translation.js', () => ({
+  localizeMenus: vi.fn(),
+}))
+
 vi.mock('@line-crm/db', () => ({
   getLineAccounts: vi.fn().mockResolvedValue([{ id: 'acc1' }]),
 }))
@@ -55,6 +59,7 @@ import {
   resolveTableByToken,
   updateOrderStatus,
 } from '../services/orders.js'
+import { localizeMenus } from '../services/translation.js'
 import { orders } from './orders.js'
 
 const mResolveAccount = vi.mocked(resolveAccountIdFromLiff)
@@ -75,6 +80,7 @@ const mApproveCheckout = vi.mocked(approveTableCheckout)
 const mSummary = vi.mocked(getTableCheckoutSummary)
 const mTodaysSales = vi.mocked(listTodaysSales)
 const mEnsureSession = vi.mocked(ensureOpenSession)
+const mLocalizeMenus = vi.mocked(localizeMenus)
 
 const app = new Hono()
 app.route('/', orders)
@@ -454,6 +460,31 @@ describe('GET /api/order/admin/sales/today（本日の売上 + 分析）', () =>
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ success: true, data: { orders: [], total: 5400, count: 3, stats } })
     expect(mTodaysSales).toHaveBeenCalledWith(expect.anything(), 'acc1')
+  })
+})
+
+describe('GET /api/liff/order/menu（言語）', () => {
+  const jaMenu = {
+    id: 'm1', name: '生ビール', base_price: 600, menu_group: 'drink' as const,
+    category_label: 'ドリンク', description: null, options: [],
+  }
+  it('lang 未指定（ja）は翻訳を通さず日本語を返す', async () => {
+    mResolveAccount.mockResolvedValue('acc1')
+    mGetMenus.mockResolvedValue(new Map([['m1', jaMenu]]))
+    const res = await app.request('/api/liff/order/menu?liffId=L1', { method: 'GET' }, { DB: {} })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ menus: [jaMenu] })
+    expect(mLocalizeMenus).not.toHaveBeenCalled()
+  })
+  it('lang=en は localizeMenus を通して返す', async () => {
+    mResolveAccount.mockResolvedValue('acc1')
+    mGetMenus.mockResolvedValue(new Map([['m1', jaMenu]]))
+    const enMenu = { ...jaMenu, name: 'Draft Beer', category_label: 'Drinks' }
+    mLocalizeMenus.mockResolvedValue([enMenu])
+    const res = await app.request('/api/liff/order/menu?liffId=L1&lang=en', { method: 'GET' }, { DB: {} })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ menus: [enMenu] })
+    expect(mLocalizeMenus).toHaveBeenCalledWith(expect.anything(), undefined, 'en', [jaMenu])
   })
 })
 

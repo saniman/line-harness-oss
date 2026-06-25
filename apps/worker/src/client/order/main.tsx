@@ -26,12 +26,12 @@ import {
   type CheckoutResult,
 } from './lib/api.js';
 import {
-  USER_STATUS_LABEL,
   sumTotals,
   checkoutButtonState,
   type MyOrder,
   type TableSummary,
 } from './lib/history.js';
+import { t, setLang, type Lang } from './lib/i18n.js';
 import './styles.css';
 
 const yen = (n: number) => '¥' + n.toLocaleString('ja-JP');
@@ -49,13 +49,14 @@ function catOf(m: OrderableMenu): string {
   return (m as OrderableMenu & { category_label?: string | null }).category_label || 'メニュー';
 }
 
-const GROUP_LABEL: Record<MenuGroup, string> = { food: '🍽 お食事', drink: '🍷 ドリンク' };
+const groupLabel = (g: MenuGroup): string => t(g === 'drink' ? 'group_drink' : 'group_food');
 
 function App() {
   const ctx = useOrderContext();
   const [menus, setMenus] = useState<OrderableMenu[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
+  const [lang, setLangState] = useState<Lang>(ctx.lang);
   const [activeGroup, setActiveGroup] = useState<MenuGroup>('food');
   const [activeCat, setActiveCat] = useState<string>('');
   const [cart, setCart] = useState<CartLine[]>([]);
@@ -100,8 +101,10 @@ function App() {
     }
   };
 
-  useEffect(() => {
-    fetchMenu(ctx)
+  // 指定言語でメニューを取得し、大分類・カテゴリを初期化する。
+  const loadMenu = (l: Lang) => {
+    setLoading(true);
+    fetchMenu(ctx, l)
       .then((m) => {
         setMenus(m);
         // 既定の大分類（お食事優先。無ければ存在する種別の先頭）とその先頭カテゴリを選ぶ。
@@ -110,13 +113,27 @@ function App() {
         const cats = categoriesOf(m.filter((x) => x.menu_group === g));
         setActiveCat(cats[0] ?? '');
       })
-      .catch(() => setLoadError('メニュー情報の取得に失敗しました。'))
+      .catch(() => setLoadError(l === 'en' ? 'Failed to load the menu.' : 'メニュー情報の取得に失敗しました。'))
       .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    loadMenu(ctx.lang);
     reloadHistory();
     // 来店セッションの起点を記録（滞在時間計測。best-effort）。
     touchSession(ctx);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctx]);
+
+  // 言語トグル: 状態を更新し、その言語でメニューを取り直す（カートは menu_id 基準なので保持）。
+  const changeLang = (l: Lang) => {
+    if (l === lang) return;
+    setLangState(l);
+    loadMenu(l);
+  };
+
+  // この描画サイクルの t() を現在の言語に揃える（描画は同期）。
+  setLang(lang);
 
   const spentSoFar = sumTotals(myOrders);
 
@@ -157,7 +174,7 @@ function App() {
     }
   };
 
-  if (loading) return <div className="mo-center">読み込み中…</div>;
+  if (loading) return <div className="mo-center">{t('loading')}</div>;
   if (loadError) return <div className="mo-center mo-err">{loadError}</div>;
   if (requested) return <RequestedScreen result={requested} onClose={() => setRequested(null)} />;
   if (done) return <DoneScreen result={done} onMore={() => setDone(null)} />;
@@ -167,12 +184,18 @@ function App() {
       <div className="mo-header">
         <div className="mo-brand">
           <span className="mo-brand-name">WALOVER オーダーシステム</span>
-          <span className="mo-shop">🏮 ご注文</span>
+          <span className="mo-shop">{t('order_header')}</span>
         </div>
-        <button className="mo-hist-btn" onClick={() => { reloadHistory(); setHistoryOpen(true); }}>
-          注文履歴
-          {myOrders.length > 0 && <span className="mo-hist-total">¥{spentSoFar.toLocaleString('ja-JP')}</span>}
-        </button>
+        <div className="mo-header-right">
+          <div className="mo-lang">
+            <button className={lang === 'ja' ? 'active' : ''} onClick={() => changeLang('ja')}>日本語</button>
+            <button className={lang === 'en' ? 'active' : ''} onClick={() => changeLang('en')}>EN</button>
+          </div>
+          <button className="mo-hist-btn" onClick={() => { reloadHistory(); setHistoryOpen(true); }}>
+            {t('history')}
+            {myOrders.length > 0 && <span className="mo-hist-total">¥{spentSoFar.toLocaleString('ja-JP')}</span>}
+          </button>
+        </div>
       </div>
 
       {groups.length > 1 && (
@@ -183,7 +206,7 @@ function App() {
               className={`mo-group${g === activeGroup ? ' active' : ''}`}
               onClick={() => selectGroup(g)}
             >
-              {GROUP_LABEL[g]}
+              {groupLabel(g)}
             </button>
           ))}
         </div>
@@ -228,7 +251,7 @@ function App() {
         <div className="mo-cartbar">
           <button className="mo-cartbtn" onClick={() => setCartOpen(true)}>
             <span className="mo-badge">{count}</span>
-            注文内容を確認
+            {t('review')}
             <span>{yen(total)}</span>
           </button>
         </div>
@@ -288,20 +311,20 @@ function HistorySheet({ orders, total, summary, checkingOut, checkoutError, onCh
   return (
     <div className="mo-mask" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="mo-sheet">
-        <h3>注文履歴</h3>
-        <div className="mo-sub">このテーブルでのご注文と状況</div>
+        <h3>{t('history')}</h3>
+        <div className="mo-sub">{t('history_sub')}</div>
         {orders.length === 0 ? (
-          <div className="mo-hist-empty">まだ注文はありません</div>
+          <div className="mo-hist-empty">{t('no_orders')}</div>
         ) : (
           <>
             <div className="mo-total">
-              <span>これまでの合計（{orders.length}件）</span>
-              <span className="mo-total-val">{yen(total)}<small>（税込）</small></span>
+              <span>{t('total_so_far')}（{orders.length}）</span>
+              <span className="mo-total-val">{yen(total)}<small>{t('tax_incl')}</small></span>
             </div>
             {orders.map((o) => (
               <div key={o.id} className="mo-hist-card">
                 <div className="mo-hist-top">
-                  <span className={`mo-badge-status mo-st-${o.status}`}>{USER_STATUS_LABEL[o.status]}</span>
+                  <span className={`mo-badge-status mo-st-${o.status}`}>{t(`st_${o.status}`)}</span>
                   <span className="mo-hist-amount">{yen(o.total_amount)}</span>
                 </div>
                 <ul className="mo-hist-items">
@@ -323,12 +346,12 @@ function HistorySheet({ orders, total, summary, checkingOut, checkoutError, onCh
               onClick={onCheckout}
             >
               {checkingOut
-                ? '送信中…'
-                : `お会計をお願いする（${yen(summary?.open_total ?? 0)}）`}
+                ? t('sending')
+                : `${t('checkout_request')}（${yen(summary?.open_total ?? 0)}）`}
             </button>
           </>
         )}
-        <button className="mo-ghost" onClick={onClose}>閉じる</button>
+        <button className="mo-ghost" onClick={onClose}>{t('close')}</button>
       </div>
     </div>
   );
@@ -338,13 +361,13 @@ function RequestedScreen({ result, onClose }: { result: CheckoutResult; onClose:
   return (
     <div className="mo-done">
       <div className="mo-check">🧾</div>
-      <h3>お会計をお願いしました！</h3>
+      <h3>{t('requested_title')}</h3>
       <p>
-        テーブル <b>{result.table_number}</b><br />
-        お会計 <b>{yen(result.requested_total)}</b>（税込・{result.requested_count}件）<br />
-        スタッフが確認にうかがいます。<br />少々お待ちください。
+        {t('table')} <b>{result.table_number}</b><br />
+        <b>{yen(result.requested_total)}</b>{t('tax_incl')} ・ {result.requested_count}<br />
+        {t('requested_l1')}<br />{t('requested_l2')}
       </p>
-      <button className="mo-ghost" onClick={onClose}>注文画面に戻る</button>
+      <button className="mo-ghost" onClick={onClose}>{t('back_to_menu')}</button>
     </div>
   );
 }
@@ -376,7 +399,7 @@ function OptionSheet({ menu, onClose, onAdd }: {
     <div className="mo-mask" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="mo-sheet">
         <h3>{menu.name}</h3>
-        <div className="mo-sub">オプションを選択してください</div>
+        <div className="mo-sub">{t('choose_options')}</div>
         {groups.map(([label, opts]) => (
           <div key={label} className="mo-optgroup">
             <div className="mo-oglabel">{label}</div>
@@ -393,7 +416,7 @@ function OptionSheet({ menu, onClose, onAdd }: {
           </div>
         ))}
         <button className="mo-submit" onClick={() => onAdd(ids)}>
-          {yen(menu.base_price + extra)} をカートに追加
+          {t('add_to_cart')}（{yen(menu.base_price + extra)}）
         </button>
       </div>
     </div>
@@ -415,8 +438,8 @@ function CartSheet({ cart, total, count, note, setNote, submitting, error, onClo
   return (
     <div className="mo-mask" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="mo-sheet">
-        <h3>ご注文内容</h3>
-        <div className="mo-sub">数量を確認して注文してください</div>
+        <h3>{t('your_order')}</h3>
+        <div className="mo-sub">{t('check_qty')}</div>
         {cart.map((c) => (
           <div key={c.uid} className="mo-cartline">
             <div className="mo-ci-info">
@@ -433,18 +456,18 @@ function CartSheet({ cart, total, count, note, setNote, submitting, error, onClo
         ))}
         <textarea
           className="mo-note"
-          placeholder="アレルギー・要望など（任意）"
+          placeholder={t('note_placeholder')}
           value={note}
           onChange={(e) => setNote(e.target.value)}
         />
         <div className="mo-total">
-          <span>合計（{count}点）</span>
-          <span className="mo-total-val">{yen(total)}<small>（税込）</small></span>
+          <span>{t('total')}（{count}）</span>
+          <span className="mo-total-val">{yen(total)}<small>{t('tax_incl')}</small></span>
         </div>
-        <div className="mo-paynote">💴 お会計はお帰りの際に <b>「注文履歴」→「お会計をお願いする」</b> からどうぞ。</div>
+        <div className="mo-paynote">{t('cart_pay_note')}</div>
         {error && <div className="mo-err-box">{error}</div>}
         <button className="mo-submit" disabled={submitting || count === 0} onClick={onSubmit}>
-          {submitting ? '送信中…' : 'この内容で注文する'}
+          {submitting ? t('sending') : t('place_order')}
         </button>
       </div>
     </div>
@@ -455,13 +478,13 @@ function DoneScreen({ result, onMore }: { result: CreateOrderResult; onMore: () 
   return (
     <div className="mo-done">
       <div className="mo-check">✓</div>
-      <h3>ご注文を承りました！</h3>
+      <h3>{t('done_title')}</h3>
       <p>
-        テーブル <b>{result.table_number}</b><br />
-        合計 <b>{yen(result.total)}</b>（税込）<br />
-        厨房で順番にお作りします。<br />できあがりまで少々お待ちください。
+        {t('table')} <b>{result.table_number}</b><br />
+        {t('total')} <b>{yen(result.total)}</b>{t('tax_incl')}<br />
+        {t('done_l1')}<br />{t('done_l2')}
       </p>
-      <button className="mo-ghost" onClick={onMore}>追加で注文する</button>
+      <button className="mo-ghost" onClick={onMore}>{t('order_more')}</button>
     </div>
   );
 }
