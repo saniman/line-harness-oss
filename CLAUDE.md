@@ -20,6 +20,29 @@ Cloudflare Workers + D1 + Next.js のモノレポ構成。
 - 共有型定義 → packages/shared/src/
 - LIFFクライアント → apps/worker/src/client/（`apps/liff/` は存在しない）
 
+## 開発思想：Harness Engineering
+
+AI は実装・調査・提案を担う。**最終判断は人間**が行う。
+- 実装前に必ず設計を提案し、確認を取る。不明点は推測で進めず質問する
+- スコープ外の機能を勝手に実装しない。品質・設計・安全性を速度より優先する
+
+### 開発パイプライン（Issue→計画→実装→レビュー→PR→承認マージ）
+
+機能追加は **`/feature-*` スラッシュコマンドのパイプライン**に乗せる（詳細な SSoT は `docs/dev-workflow.md`）。
+計画の単一情報源は **GitHub Issue 本文**。独立 Issue が溜まったら **worktree 並列レーン**で消化する。
+
+```
+/feature-plan "<説明>"    → 調査・計画して Issue 作成（本文=計画）。作成後は人間の確認待ちで停止
+/feature-implement <n>    → feature/<n>-… ブランチ→TDD→vitest/tsc→/save でcommit
+/feature-pr <n>           → push→PR作成（Closes #n）
+/feature-review <pr#>     → /code-review --comment で差分レビュー→PRにコメント
+/feature-address <pr#>    → レビュー指摘を修正→push（review↔address を反復）
+🧑 人間が approve → gh pr merge（= 本番デプロイ）
+```
+
+**マージ規約**: `main` への merge = CI が本番へ自動デプロイ。そのため「**CI green ＋ 人間の approve を確認してから、人間が `gh pr merge`**」を厳守する。**エージェントはマージしない**。
+**設計原則（肥大化させない）**: コマンド/エージェント/スキルは薄いオーケストレータにし、詳細は `docs/dev-workflow.md`・`.claude/rules/`・既存スキルへ委譲する。同じことを二重に書かない。
+
 ## マイグレーション番号ルール（fork 固有・重要）
 
 ### 採番レンジ
