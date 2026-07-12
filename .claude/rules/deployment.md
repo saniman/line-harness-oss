@@ -1,6 +1,5 @@
 ---
-description: デプロイとgit pushのルール
-globs: ""
+description: デプロイとgit pushのルール（デプロイ知識は横断的なため常時ロード。paths で条件化しない）
 ---
 # デプロイルール
 

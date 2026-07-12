@@ -1,6 +1,8 @@
 ---
 description: Worker APIルートのコーディングルール
-globs: "apps/worker/src/**/*.ts"
+paths:
+  - "apps/worker/src/**/*.ts"
+  - "packages/line-sdk/**/*.ts"
 ---
 # Worker APIコーディングルール
 
@@ -630,3 +632,24 @@ if (incomingText === 'ニューステスト') {
   return
 }
 ```
+
+---
+
+## CLAUDE.md から移設した運用ルール（2026-07-12・worker 領域を触るとロード）
+
+### Stripe シークレットキー
+- Stripe 関連の secret は `wrangler secret put` で設定する：`STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET`
+  （セットアップ手順書: `docs/setup/stripe-setup.md`）
+- `STRIPE_SECRET_KEY` は必ず `sk_` で始まるシークレットキーを使う。
+  `pk_` で始まる公開可能キーを誤って設定すると checkout-session が 500 になる。
+  症状: `This API call cannot be made with a publishable API key`
+
+### Google Calendar 認証（運用面）
+- OAuth トークンは `getValidAccessToken()` 経由で必ず取得する（`access_token` を直接使わない。詳細は上の「既知の落とし穴」）。
+- トークン期限切れ時は `ADMIN_LINE_USER_ID` に自動通知される。
+- Google Cloud Console の OAuth アプリを「テスト→本番」に変更しないと **7日で失効**する。
+
+### TDD ルール（テスト運用）
+- 新しい関数を実装したら必ず同名の `.test.ts` にテストを書く。テストは実装前に書く（RED → GREEN → REFACTOR）。
+- `npx vitest run` がパスしない状態でコミットしない。ローカルは `npx vitest run`（`pnpm --filter worker test` は Bun クラッシュの恐れ。CI は前者のままで可）。
+- テスト対象の優先順位：①ビジネスロジック（スロット計算・バリデーション）②サービス関数（google-calendar.ts・reminder処理）③APIルートは統合テスト（Phase 2以降）。
