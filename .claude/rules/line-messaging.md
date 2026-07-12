@@ -1,6 +1,7 @@
 ---
 description: LINEメッセージ・Flexメッセージの設計ルール
-globs: "apps/worker/src/**/*.ts"
+paths:
+  - "apps/worker/src/**/*.ts"
 ---
 # LINE メッセージ設計ルール
 

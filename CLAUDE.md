@@ -43,123 +43,25 @@ AI は実装・調査・提案を担う。**最終判断は人間**が行う。
 **マージ規約**: `main` への merge = CI が本番へ自動デプロイ。そのため「**CI green ＋ 人間の approve を確認してから、人間が `gh pr merge`**」を厳守する。**エージェントはマージしない**。
 **設計原則（肥大化させない）**: コマンド/エージェント/スキルは薄いオーケストレータにし、詳細は `docs/dev-workflow.md`・`.claude/rules/`・既存スキルへ委譲する。同じことを二重に書かない。
 
-## マイグレーション番号ルール（fork 固有・重要）
+## 詳細ルールの所在（`.claude/rules/` は `paths` で自動ロード）
 
-### 採番レンジ
-- **001〜799**: upstream 由来のマイグレーション（変更・削除禁止）
-- **800〜999**: この fork 固有のマイグレーション（business_hours, events, Stripe 等）
+対象ファイルを触ると該当ルールが自動でコンテキストに入る（常時ロードではない）。**該当領域を実装/修正する前に一読すること**。
 
-### 新しいマイグレーションを追加するとき
-- fork 固有の機能追加 → **800番台**の未使用番号を使う（現在: 800-805 使用済み）
-- upstream のマイグレーションを取り込む → fork の現在の最大番号 + 1 を使う
+| rule | 自動ロード対象 | 主な内容 |
+|---|---|---|
+| `api-coding.md` | `apps/worker/src/**`・`packages/line-sdk/**` | ルート/エラー/D1/共有型/テスト/Stripe/外部SDK型/日時/落とし穴/Google Calendar/TDD運用 |
+| `liff.md` | `apps/worker/src/client/**` | LIFF初期化・ルーティング・絶対URL fetch・チャンネル公開 |
+| `css.md` | `apps/worker/src/client/**` | index.html の共通クラス・カラーパレット |
+| `line-messaging.md` | `apps/worker/src/**` | Flexレイアウト・トーン・6桁HEX・clipboard |
+| `migrations.md` | `packages/db/**`・`*.sql` | 採番レンジ(800番台)・適用コマンド・schema.sql同期・SQLite制約 |
+| `ci-cd.md` | `.github/workflows/**` | Node24移行・wrangler4破壊的変更・Pages日本語コミット拒否 |
+| `deployment.md` | **常時**（デプロイ知識は横断的） | git push デプロイ・二重デプロイ禁止・fork の gh `-R`・サプライチェーン |
 
-### なぜこのルールが必要か
-2026-06-03 に upstream の 028-033 と fork の 028-033 が別内容で衝突した。
-詳細な経緯・解消方法・設計乖離については `packages/db/MIGRATIONS.md` を参照。
-
-### マイグレーションの適用コマンド
-
-```bash
-# 未適用の確認（apps/worker から実行）
-npx wrangler@latest d1 migrations list line-harness --remote
-
-# 適用
-npx wrangler@latest d1 migrations apply line-harness --remote
-```
-
-wrangler 4.0.0 には `d1 execute --file` で相対パスを使うバグがあるため、
-`npx wrangler@latest`（4.97.0+）を使うこと。
-
-### schema.sql との同期
-マイグレーション適用後は必ず `packages/db/schema.sql` も更新する。
-schema.sql は新規インストール用の正規ソース（マイグレーションファイルと乖離すると新規セットアップ不可）。
-
-## 必須ルール
-- DBスキーマを変更したら必ずローカル・リモート両方にマイグレーション実行
-- wrangler secret は .env に書かない（wrangler secret put を使う）
-- LIFFビルド時は必ず3つの環境変数を指定する：
-  VITE_LIFF_ID / VITE_API_BASE / VITE_CALENDAR_CONNECTION_ID
-- デプロイ前に TypeScript のエラーがないことを確認する
-- Stripe関連のsecretは wrangler secret put で設定する：
-  STRIPE_SECRET_KEY / STRIPE_WEBHOOK_SECRET
-  （セットアップ手順書: docs/setup/stripe-setup.md）
-- STRIPE_SECRET_KEY は必ず `sk_` で始まるシークレットキーを使う
-  `pk_` で始まる公開可能キーを誤って設定すると checkout-session が 500 になる
-  症状: "This API call cannot be made with a publishable API key"
-
-## CIルール
-- mainへのpush前に pnpm --filter worker test を実行してパスを確認する
-- CIが赤い状態でのpushは禁止
-
-## CI/CDに関する既知の問題と対処
-
-### Node.js 20 アクションの非互換問題（2026-05-15 対応済み）
-GitHub のランナーが Node.js 24 に移行中のため、Node.js 20 ランタイムで動作する
-GitHub Actions が CI で失敗する。対象アクション:
-- `cloudflare/wrangler-action@v3` → `pnpm exec wrangler` の run ステップで代替
-- `pnpm/action-setup@v4` → `corepack enable pnpm` の run ステップで代替
-
-→ **原則**: アクション (uses:) は Node.js バージョン依存するため、
-  代わりに `run:` ステップで直接コマンドを実行する
-
-→ **deploy-liff.yml も注意**: wrangler-action@v3 が残っていたため同様に修正が必要
-
-### wrangler 4系での破壊的変更
-- `wrangler pages deploy` に `--account-id` フラグは存在しない
-  → `CLOUDFLARE_ACCOUNT_ID` 環境変数で渡す
-- `pnpm --filter worker exec wrangler` はワーキングディレクトリが `apps/worker` になる
-  → Pages deploy の出力パスは `../web/out`（リポジトリルートからの `apps/web/out` ではない）
-- GitHub Secrets の `CLOUDFLARE_ACCOUNT_ID` が未設定だと空文字列になり
-  `wrangler.toml` の `account_id` を上書きしてしまう
-  → 対処: deploy-worker.yml では env に渡さない、deploy-web.yml では値をハードコード
-
-### Cloudflare Pages API が日本語コミットメッセージを拒否する問題（2026-05-19 対応済み）
-`wrangler pages deploy` はデフォルトで git のコミットメッセージを
-Cloudflare Pages API に送信するが、日本語などの非ASCII文字を含むと
-API 側が `Invalid commit message, it must be a valid UTF-8 string [code: 8000111]`
-で拒否する（日本語は有効な UTF-8 だが Cloudflare 側のバグ）。
-
-→ **対処**: `--commit-message` に ASCII のみのコミットハッシュを渡して上書きする
-```yaml
-run: |
-  COMMIT_HASH=$(git log -1 --format=%H)
-  pnpm exec wrangler pages deploy ./dist/client \
-    --project-name=line-harness-liff \
-    --commit-message="$COMMIT_HASH"
-```
-
-→ `deploy-liff.yml` に適用済み。他の Pages デプロイでも同様に対処すること。
-`LC_ALL: C.UTF-8` 環境変数では解決しない（API 側の問題のため）。
-
-### SQLite ALTER TABLE 制約
-CHECK 制約はALTER TABLEで変更不可。
-既存のCHECK制約を変えたい場合はテーブル再作成が必要：
-  1. 新テーブル作成（v2）
-  2. INSERT INTO v2 SELECT * FROM 旧テーブル
-  3. DROP TABLE 旧テーブル
-  4. ALTER TABLE v2 RENAME TO 旧テーブル名
-
-## TDDルール
-- 新しい関数を実装したら必ず同名の .test.ts ファイルにテストを書く
-- テストは実装前に書く（RED → GREEN → REFACTOR）
-- pnpm --filter worker test がpassしない状態でコミットしない
-- テスト実行は必ず npx vitest run を使う
-  （pnpm --filter worker test はBunが起動してクラッシュする場合がある）
-- CI（GitHub Actions）では pnpm --filter worker test のままでOK
-  （CI環境ではBunクラッシュは発生しない）
-- テスト対象の優先順位：
-  1. ビジネスロジック（スロット計算、バリデーション）
-  2. サービス関数（google-calendar.ts, reminder処理）
-  3. APIルートは統合テストで対応（Phase 2以降）
-
-## Google Calendar認証管理
-- OAuthトークンはgetValidAccessToken()経由で必ず取得する
-  （access_tokenを直接使わない）
-- refresh_tokenはOAuth初回認証時のみ取得できる
-  （prompt:'consent' + access_type:'offline' が必須）
-- トークン期限切れ時はADMIN_LINE_USER_IDに自動通知される
-- 再認証URL：https://api.walover-co.work/api/integrations/google-calendar/auth
-- Google Cloud ConsoleのOAuthアプリをテスト→本番に変更しないと7日で失効する
+## 必須ルール（普遍・常時）
+- wrangler secret は .env に書かない（`wrangler secret put` を使う）
+- デプロイ前に TypeScript エラーがないことを確認する（`npx tsc --noEmit`。vitest は型を見ない）
+- DBスキーマを変更したらローカル・リモート両方にマイグレーション実行（詳細は migrations rule）
+- LIFFビルド時は3環境変数を必ず指定：VITE_LIFF_ID / VITE_API_BASE / VITE_CALENDAR_CONNECTION_ID
 
 ## やらないこと
 - firebase / GCP 関連のコードを追加しない（Cloudflare統一）
@@ -167,17 +69,10 @@ CHECK 制約はALTER TABLEで変更不可。
 - Gemini APIは使わない（Claude API or 直接ロジックで対応）
 - 既存のauto_repliesロジックを勝手に変更しない
 
-## デプロイコマンド
+## デプロイ
 通常は `git push origin main` で Worker / 管理画面 / LIFF すべて CI が自動デプロイする。
-以下の手動コマンドは CI が使えない例外時のみ（push 後に併用すると二重デプロイになる）。
-- Worker: pnpm deploy:worker
-- LIFF: 以下をまとめて実行（通常は push で自動。手動は /deploy スキル参照）
-  VITE_LIFF_ID=1661159603-5qlDj5wV \
-  VITE_API_BASE=https://api.walover-co.work \
-  VITE_CALENDAR_CONNECTION_ID=0ba404af-3184-4640-bb56-d24c37c1f230 \
-  pnpm --filter worker build && \
-  npx wrangler pages deploy apps/worker/dist/client --project-name=line-harness-liff --branch=main
-- 管理画面: pnpm --filter web run build
+手動デプロイ（二重デプロイになるので CI が使えない例外時のみ）は `/deploy` スキル参照。
+デプロイの規約・落とし穴の詳細は `.claude/rules/deployment.md`（常時ロード）。
 
 ## 本番環境
 - Worker URL: https://api.walover-co.work
@@ -189,7 +84,6 @@ CHECK 制約はALTER TABLEで変更不可。
 ## セットアップ手順書
 - 管理画面デプロイ: docs/setup/admin-deploy.md
 - Stripe決済統合: docs/setup/stripe-setup.md
-- （今後追加予定）Worker初期セットアップ: docs/setup/worker-setup.md
-- （今後追加予定）LINE連携設定: docs/setup/line-setup.md
+- 開発パイプライン: docs/dev-workflow.md
 
 @my-preferences.md

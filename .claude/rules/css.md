@@ -1,3 +1,8 @@
+---
+description: LIFF index.html の CSSコーディングルール
+paths:
+  - "apps/worker/src/client/**"
+---
 # CSSコーディングルール（index.html）
 
 ## DRY原則

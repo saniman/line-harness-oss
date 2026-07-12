@@ -1,6 +1,7 @@
 ---
 description: LIFFアプリのルール
-globs: "apps/worker/src/client/**/*.ts"
+paths:
+  - "apps/worker/src/client/**"
 ---
 # LIFFコーディングルール
 
