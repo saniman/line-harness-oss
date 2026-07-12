@@ -18,7 +18,7 @@ argument-hint: "<issue番号>"
 - `git switch -c feature/$ARGUMENTS-<英小文字スラッグ>`（スラッグはタイトルから簡潔に）。
 
 ### 3. TDD で実装（RED → GREEN → REFACTOR）
-- `CLAUDE.md` の TDD ルールに従う。ビジネスロジック（スロット計算・バリデーション・状態遷移）は**先にテストを書く**。
+- TDD ルール（`.claude/rules/api-coding.md` のテストルール）に従う。ビジネスロジック（スロット計算・バリデーション・状態遷移）は**先にテストを書く**。
 - 対象別の落とし穴は `.claude/rules/` を必ず参照（サービス関数=`api-coding.md`・LIFF=`liff.md`・LINE通知=`line-messaging.md`）。
 - DB スキーマ変更を伴うなら `/migrate` に乗せ、`packages/db/schema.sql` を同期。**リモート適用の可否は人間に確認**する。
 - 外部SDK を services に渡すなら、SDK クラス型でなく**ミニマルな構造的インターフェース**を定義する（`.claude/rules/api-coding.md`）。

@@ -50,7 +50,7 @@ npx tsc --noEmit      # worker。vitest は型を見ないので必須
 
 - **共有型（`@line-crm/shared`）を変えたら** `cd packages/shared && npm run build` → `cd apps/web && npx tsc --noEmit`（web は dist 参照。`.claude/rules/api-coding.md`）。
 - **LIFF クライアント（`apps/worker/src/client/**`）を触ったら** CI が型検査しないので手動 tsc（コマンドは `.claude/rules/liff.md`）。
-- **DB スキーマ変更を伴うなら** `/migrate` スキルに乗せ、`schema.sql` 同期とマイグレーション適用の可否は人間に確認する（`CLAUDE.md` のマイグレーション番号ルール）。
+- **DB スキーマ変更を伴うなら** `/migrate` スキルに乗せ、`schema.sql` 同期とマイグレーション適用の可否は人間に確認する（`.claude/rules/migrations.md` の採番ルール）。
 
 ## 人間のチェックポイント
 
@@ -76,7 +76,7 @@ npx tsc --noEmit      # worker。vitest は型を見ないので必須
   └─ レーンC: 〃（同時 2〜3 レーンまで）
 ```
 
-- **並列可否はファイルの重なりで決める**。複数レーンが同じホットファイルに触る組み合わせは同バッチに入れない。この repo のホットファイル例: `apps/worker/src/routes/webhook.ts`・`apps/worker/src/index.ts`・`packages/db/schema.sql`・`CLAUDE.md`・`packages/shared/src/index.ts`。
+- **並列可否はファイルの重なりで決める**。複数レーンが同じホットファイルに触る組み合わせは同バッチに入れない。この repo のホットファイル例: `apps/worker/src/routes/webhook.ts`・`apps/worker/src/index.ts`・`packages/db/schema.sql`・`AGENTS.md`・`CLAUDE.md`・`packages/shared/src/index.ts`。
 - **各レーンの規律は直列時と同じ**（`/feature-implement` 相当: TDD・チェック一括・`/save` commit 規約）。品質ゲートは緩めない。
 - **テストは純ローカル**（`npx vitest run` は Miniflare/メモリで完結）なのでレーン間で衝突しにくい。ただし **`wrangler d1 ... --remote` や本番 D1 を触る作業は共有リソースなので並列にしない**（マイグレーション適用・remote シードは直列・人間確認）。
 - worktree ごとに `node_modules` を張り直す必要がある場合は `pnpm install` を各 worktree で実行する。
