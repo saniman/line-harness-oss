@@ -16,11 +16,13 @@ account_id = "aa7b3de8b8dc8dd263572893aa4f652e"
 [assets]
 directory = "dist/client"
 binding = "ASSETS"
-# Worker を先に走らせる。これが無いと static asset path が Worker をバイパスして
-# 直接配信され、bot UA 判定（OGP HTML 差し込み）が効かない。
-# 通常 UA は Worker の notFound 内の c.env.ASSETS.fetch(req) で従来どおり配信される。
-# ※ OGP ルート配線自体は未実装（別 Issue）。ここは先に土台だけ入れている。
-run_worker_first = true
+# ⚠️ run_worker_first = true を安易に足さないこと（2026-07-27 のレビューで検出）。
+# これを付けると静的アセットも Worker を経由するが、middleware/auth.ts の
+# スキップリストに `/`・`/assets/*`・`/menu` が無いため、`app.use('*', authMiddleware)`
+# が notFound（= ASSETS.fetch）に届く前に 401 を返し、LIFF が全ユーザー真っ白になる。
+# upstream で成立しているのは auth.ts に「/api/ 以外は素通し」ガードがあるため。
+# OGP bot 対応で必要になったら、その auth ガード（cookie 認証刷新 #7 と関連）と
+# 必ずセットで入れ、レート制限側の静的アセット除外も同時に行うこと。
 
 [[d1_databases]]
 binding = "DB"
@@ -53,7 +55,7 @@ account_id = "YOUR_ACCOUNT_ID"
 [env.production.assets]
 directory = "dist/client"
 binding = "ASSETS"
-run_worker_first = true
+# run_worker_first は付けない（理由は上の [assets] のコメント参照）
 
 [[env.production.d1_databases]]
 binding = "DB"
