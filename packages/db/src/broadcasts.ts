@@ -15,6 +15,8 @@ export interface Broadcast {
   sent_at: string | null;
   total_count: number;
   success_count: number;
+  /** 1 = 本文中の URL を /t/ トラッキングリンクへ自動変換 / 0 = そのまま送る */
+  track_links: number;
   created_at: string;
 }
 
@@ -64,6 +66,8 @@ export interface CreateBroadcastInput {
   targetType: BroadcastTargetType;
   targetTagId?: string | null;
   scheduledAt?: string | null;
+  /** 未指定なら true（従来どおり URL を自動でトラッキングリンクに変換する） */
+  trackLinks?: boolean;
 }
 
 export async function createBroadcast(
@@ -78,8 +82,8 @@ export async function createBroadcast(
   await db
     .prepare(
       `INSERT INTO broadcasts
-         (id, title, message_type, message_content, target_type, target_tag_id, status, scheduled_at, sent_at, total_count, success_count, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, 0, ?)`,
+         (id, title, message_type, message_content, target_type, target_tag_id, status, scheduled_at, sent_at, total_count, success_count, track_links, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, 0, ?, ?)`,
     )
     .bind(
       id,
@@ -90,6 +94,7 @@ export async function createBroadcast(
       input.targetTagId ?? null,
       initialStatus,
       input.scheduledAt ?? null,
+      input.trackLinks === false ? 0 : 1,
       now,
     )
     .run();
@@ -107,6 +112,7 @@ export type UpdateBroadcastInput = Partial<
     | 'target_tag_id'
     | 'status'
     | 'scheduled_at'
+    | 'track_links'
   >
 >;
 
@@ -145,6 +151,10 @@ export async function updateBroadcast(
   if (updates.scheduled_at !== undefined) {
     fields.push('scheduled_at = ?');
     values.push(updates.scheduled_at);
+  }
+  if (updates.track_links !== undefined) {
+    fields.push('track_links = ?');
+    values.push(updates.track_links);
   }
 
   if (fields.length > 0) {

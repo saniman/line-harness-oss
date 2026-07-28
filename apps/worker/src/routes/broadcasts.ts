@@ -33,6 +33,8 @@ function serializeBroadcast(row: DbBroadcast) {
     lineRequestId: r.line_request_id || null,
     aggregationUnit: r.aggregation_unit || null,
     lineAccountId: r.line_account_id || null,
+    // 旧レコード（列追加前）は undefined になりうるので既定 true に倒す
+    trackLinks: row.track_links !== 0,
     createdAt: row.created_at,
   };
 }
@@ -78,6 +80,8 @@ broadcasts.post('/api/broadcasts', async (c) => {
       scheduledAt?: string | null;
       lineAccountId?: string | null;
       altText?: string | null;
+      /** false で URL の自動トラッキングリンク変換を無効化する（既定は true） */
+      trackLinks?: boolean;
     }>();
 
     if (!body.title || !body.messageType || !body.messageContent || !body.targetType) {
@@ -101,6 +105,7 @@ broadcasts.post('/api/broadcasts', async (c) => {
       targetType: body.targetType,
       targetTagId: body.targetTagId ?? null,
       scheduledAt: body.scheduledAt ?? null,
+      trackLinks: body.trackLinks,
     });
 
     // Save line_account_id and alt_text if provided
@@ -142,6 +147,7 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
       targetType?: BroadcastTargetType;
       targetTagId?: string | null;
       scheduledAt?: string | null;
+      trackLinks?: boolean;
     }>();
 
     // Keep status in sync with scheduledAt changes
@@ -157,6 +163,7 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
       target_type: body.targetType,
       target_tag_id: body.targetTagId,
       scheduled_at: body.scheduledAt,
+      ...(body.trackLinks !== undefined ? { track_links: body.trackLinks ? 1 : 0 } : {}),
       ...(statusUpdate !== undefined ? { status: statusUpdate } : {}),
     });
 
@@ -423,9 +430,13 @@ broadcasts.post('/api/broadcasts/:id/test-send', async (c) => {
       messageContent = `【テスト配信】\n${messageContent}`;
     }
 
-    // Auto-track URLs
+    // Auto-track URLs（本番送信と同じ挙動になるよう track_links=0 なら変換しない）
     const { autoTrackContent } = await import('../services/auto-track.js');
-    const tracked = await autoTrackContent(c.env.DB, broadcast.message_type, messageContent, c.env.WORKER_URL);
+    const tracked = broadcast.track_links === 0
+      ? { messageType: broadcast.message_type as string, content: messageContent }
+      : await autoTrackContent(c.env.DB, broadcast.message_type, messageContent, c.env.WORKER_URL, {
+          lineAccountId: accountId,
+        });
 
     const { extractFlexAltText } = await import('../utils/flex-alt-text.js');
     const altText = raw.alt_text as string || (tracked.messageType === 'flex' ? extractFlexAltText(tracked.content) : undefined);

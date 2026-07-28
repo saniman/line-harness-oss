@@ -120,6 +120,8 @@ CREATE TABLE IF NOT EXISTS broadcasts (
   batch_offset    INTEGER NOT NULL DEFAULT 0,
   segment_conditions TEXT,
   line_account_id TEXT REFERENCES line_accounts(id),
+  -- 1 = URL を /t/ トラッキングリンクに自動変換する / 0 = 本文をそのまま送る
+  track_links     INTEGER NOT NULL DEFAULT 1,
   created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
@@ -450,7 +452,8 @@ CREATE TABLE IF NOT EXISTS chats (
   updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_chats_friend ON chats (friend_id);
+-- 1 friend = 1 chat 行。重複があると「解決済にしても未対応バッジから消えない」不整合が起きる
+CREATE UNIQUE INDEX IF NOT EXISTS idx_chats_friend_unique ON chats (friend_id);
 CREATE INDEX IF NOT EXISTS idx_chats_operator ON chats (operator_id);
 CREATE INDEX IF NOT EXISTS idx_chats_status ON chats (status);
 

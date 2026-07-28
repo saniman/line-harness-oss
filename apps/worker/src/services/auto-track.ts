@@ -25,22 +25,25 @@ const URL_REGEX = /https?:\/\/[^\s"'<>\])}]+/g;
 
 // URLs that should NOT be wrapped (internal/system URLs)
 const SKIP_PATTERNS = [
-  /\/t\/[0-9a-f-]{36}/,       // already a tracking link
+  /\/t\/[0-9a-f-]{36}/,       // already a tracking link (legacy UUID form)
   /liff\.line\.me/,            // LIFF URLs
   /line\.me\/R\//,             // LINE deep links
   /your-worker-name/,           // our own worker
 ];
 
-function shouldSkip(url: string): boolean {
-  return SKIP_PATTERNS.some((p) => p.test(url));
+function shouldSkip(url: string, skipPrefixes: string[]): boolean {
+  if (SKIP_PATTERNS.some((p) => p.test(url))) return true;
+  // 短縮コードのトラッキングリンク (/t/Ab3xY9k) は UUID パターンに当たらないので、
+  // 自分の Worker 配下の /t/ は前方一致で除外する（放置すると二重ラップされる）。
+  return skipPrefixes.some((prefix) => prefix && url.startsWith(`${prefix}/t/`));
 }
 
 /** Extract trackable URLs from content string */
-function extractUrls(content: string): Set<string> {
+function extractUrls(content: string, skipPrefixes: string[]): Set<string> {
   const urls = new Set<string>();
   for (const match of content.matchAll(URL_REGEX)) {
     const url = match[0].replace(/[.,;:!?)]+$/, '');
-    if (!shouldSkip(url)) urls.add(url);
+    if (!shouldSkip(url, skipPrefixes)) urls.add(url);
   }
   return urls;
 }
@@ -50,15 +53,19 @@ async function createTrackingMap(
   db: D1Database,
   urls: Set<string>,
   workerUrl: string,
+  lineAccountId?: string | null,
 ): Promise<Map<string, { trackingUrl: string; originalUrl: string; label: string }>> {
   const urlMap = new Map<string, { trackingUrl: string; originalUrl: string; label: string }>();
   for (const url of urls) {
     const link = await createTrackedLink(db, {
       name: `auto: ${url.slice(0, 60)}`,
       originalUrl: url,
+      lineAccountId: lineAccountId ?? null,
     });
-    // Use direct /t/ URL — Worker handles LINE app detection and LIFF redirect server-side
-    const trackingUrl = `${workerUrl}/t/${link.id}`;
+    // Use direct /t/ URL — Worker handles LINE app detection and LIFF redirect server-side.
+    // 短縮コードを優先する（メッセージ内のリンクが 36 文字の UUID より大幅に短くなる）。
+    // 短縮コードが無い旧リンクは従来どおり UUID で解決される。
+    const trackingUrl = `${workerUrl}/t/${link.short_code ?? link.id}`;
     const hostname = new URL(url).hostname.replace('www.', '');
     const label = hostname.length > 20 ? hostname.slice(0, 20) + '…' : hostname;
     urlMap.set(url, { trackingUrl, originalUrl: url, label });
@@ -132,6 +139,14 @@ export interface AutoTrackResult {
   content: string;
 }
 
+export interface AutoTrackOptions {
+  /**
+   * 作成するトラッキングリンクの所有 LINE アカウント。/t/:linkId が
+   * 「所有アカウントの LIFF」へ飛ばす判断に使う（未設定なら env.LIFF_URL）。
+   */
+  lineAccountId?: string | null;
+}
+
 /**
  * Auto-wrap URLs in message content with tracking links.
  * For text messages with URLs, converts to Flex with button.
@@ -142,13 +157,16 @@ export async function autoTrackContent(
   messageType: string,
   content: string,
   workerUrl: string,
+  options?: AutoTrackOptions,
 ): Promise<AutoTrackResult> {
   if (messageType === 'image') return { messageType, content };
 
-  const urls = extractUrls(content);
+  // 末尾スラッシュの有無で前方一致判定がぶれないよう正規化する。
+  const workerBase = workerUrl.replace(/\/$/, '');
+  const urls = extractUrls(content, [workerBase]);
   if (urls.size === 0) return { messageType, content };
 
-  const urlMap = await createTrackingMap(db, urls, workerUrl);
+  const urlMap = await createTrackingMap(db, urls, workerBase, options?.lineAccountId);
 
   // Text messages → replace URLs inline, keep as text (no Flex conversion)
   if (messageType === 'text') {
