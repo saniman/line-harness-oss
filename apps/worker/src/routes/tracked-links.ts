@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import {
   getTrackedLinks,
   getTrackedLinkById,
+  getTrackedLinkByIdOrShortCode,
   createTrackedLink,
   updateTrackedLink,
   deleteTrackedLink,
@@ -16,12 +17,15 @@ import type { Env } from '../index.js';
 const trackedLinks = new Hono<Env>();
 
 function serializeTrackedLink(row: TrackedLink, baseUrl: string) {
-  const trackingUrl = `${baseUrl}/t/${row.id}`;
+  // 短縮コードを優先する（/t/<uuid> より大幅に短いURLを管理画面に出す）
+  const trackingUrl = `${baseUrl}/t/${row.short_code ?? row.id}`;
   return {
     id: row.id,
     name: row.name,
     originalUrl: row.original_url,
     trackingUrl,
+    shortCode: row.short_code,
+    lineAccountId: row.line_account_id,
     tagId: row.tag_id,
     scenarioId: row.scenario_id,
     introTemplateId: row.intro_template_id,
@@ -226,13 +230,14 @@ function buildAppRedirectHtml(destinationUrl: string): string {
 }
 
 // GET /t/:linkId — click tracking redirect (no auth, fast redirect)
+// :linkId は従来の UUID と 7 文字の短縮コードの両方を受け付ける。
 trackedLinks.get('/t/:linkId', async (c) => {
   const linkId = c.req.param('linkId');
   const lineUserId = c.req.query('lu') ?? null;
   let friendId = c.req.query('f') ?? null;
 
   // Look up the link first
-  const link = await getTrackedLinkById(c.env.DB, linkId);
+  const link = await getTrackedLinkByIdOrShortCode(c.env.DB, linkId);
 
   if (!link || !link.is_active) {
     return c.json({ success: false, error: 'Link not found' }, 404);
@@ -263,8 +268,8 @@ trackedLinks.get('/t/:linkId', async (c) => {
   ctx.waitUntil(
     (async () => {
       try {
-        // Record the click
-        await recordLinkClick(c.env.DB, linkId, friendId);
+        // Record the click（linkId はパラメータ＝短縮コードの可能性があるので link.id を使う）
+        await recordLinkClick(c.env.DB, link.id, friendId);
 
         // Run automatic actions if a friend is identified
         if (friendId) {

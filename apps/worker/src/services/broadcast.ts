@@ -32,11 +32,16 @@ export async function processBroadcastSend(
   }
 
   // Auto-wrap URLs with tracking links (text with URLs → Flex with button)
+  // track_links=0 の配信は短縮 OFF（URL をそのまま送る）。旧レコードは track_links が
+  // undefined になりうるので「0 のときだけ止める」判定にして従来の挙動を保つ。
+  const broadcastAccountId = (broadcast as unknown as Record<string, unknown>).line_account_id as string | null;
   let finalType: string = broadcast.message_type;
   let finalContent = broadcast.message_content;
-  if (workerUrl) {
+  if (workerUrl && broadcast.track_links !== 0) {
     const { autoTrackContent } = await import('./auto-track.js');
-    const tracked = await autoTrackContent(db, broadcast.message_type, broadcast.message_content, workerUrl);
+    const tracked = await autoTrackContent(db, broadcast.message_type, broadcast.message_content, workerUrl, {
+      lineAccountId: broadcastAccountId,
+    });
     finalType = tracked.messageType;
     finalContent = tracked.content;
   }
@@ -212,12 +217,14 @@ async function processQueuedBroadcastBatches(
     return;
   }
 
-  // auto-track（初回バッチのみ、offsetが0のとき）
+  // auto-track（初回バッチのみ、offsetが0のとき。track_links=0 なら実行しない）
   let finalType: string = broadcast.message_type;
   let finalContent = broadcast.message_content;
-  if (workerUrl && batchOffset === 0) {
+  if (workerUrl && batchOffset === 0 && broadcast.track_links !== 0) {
     const { autoTrackContent } = await import('./auto-track.js');
-    const tracked = await autoTrackContent(db, broadcast.message_type, broadcast.message_content, workerUrl);
+    const tracked = await autoTrackContent(db, broadcast.message_type, broadcast.message_content, workerUrl, {
+      lineAccountId: raw.line_account_id as string | null,
+    });
     finalType = tracked.messageType;
     finalContent = tracked.content;
     // 変換後のコンテンツを保存（次バッチ以降で使えるように）
