@@ -6,6 +6,7 @@ import {
   updateBroadcastStatus,
   updateBroadcastBatchProgress,
   getFriendsByTag,
+  getFollowingFriendCount,
   jstNow,
   updateBroadcastLineRequestId,
   createBroadcastInsight,
@@ -34,7 +35,7 @@ export async function processBroadcastSend(
   // Auto-wrap URLs with tracking links (text with URLs → Flex with button)
   // track_links=0 の配信は短縮 OFF（URL をそのまま送る）。旧レコードは track_links が
   // undefined になりうるので「0 のときだけ止める」判定にして従来の挙動を保つ。
-  const broadcastAccountId = (broadcast as unknown as Record<string, unknown>).line_account_id as string | null;
+  const broadcastAccountId = broadcast.line_account_id;
   let finalType: string = broadcast.message_type;
   let finalContent = broadcast.message_content;
   if (workerUrl && broadcast.track_links !== 0) {
@@ -55,9 +56,12 @@ export async function processBroadcastSend(
       // Use LINE broadcast API (sends to all followers)
       const { requestId } = await lineClient.broadcast([message]);
       await updateBroadcastLineRequestId(db, broadcast.id, requestId, null);
-      // We don't have exact count for broadcast API, set as 0 (unknown)
-      totalCount = 0;
-      successCount = 0;
+      // broadcast API は全フォロワーへ非同期配信するため、レスポンスに配信数を含まない。
+      // 0 のまま保存すると管理画面が 0/0 表示になり「誰にも届いていない」と誤認されるため、
+      // フォロー中の友だち数を配信対象数の概算として記録する。
+      // 確定値は後日 broadcast_insights（LINE インサイト API）から反映される。
+      totalCount = await getFollowingFriendCount(db);
+      successCount = totalCount;
     } else if (broadcast.target_type === 'tag') {
       if (!broadcast.target_tag_id) {
         throw new Error('target_tag_id is required for tag-targeted broadcasts');
@@ -145,7 +149,7 @@ export async function processScheduledBroadcasts(
 
       // Resolve correct lineClient for this broadcast's account
       let deliveryClient = lineClient;
-      const accountId = (broadcast as unknown as Record<string, unknown>).line_account_id as string | null;
+      const accountId = broadcast.line_account_id;
       if (accountId) {
         const { getLineAccountById } = await import('@line-crm/db');
         const account = await getLineAccountById(db, accountId);

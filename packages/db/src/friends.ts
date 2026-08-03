@@ -197,3 +197,18 @@ export async function getFriendCount(db: D1Database): Promise<number> {
     .first<{ count: number }>();
   return row?.count ?? 0;
 }
+
+/**
+ * フォロー中（is_following = 1）の友だち数を返す。
+ * 全員配信（LINE broadcast API）は配信数を返さないため、配信対象数の概算として使う。
+ *
+ * NOTE: アカウント別に数えたくなるが、`friends.line_account_id` はカラムこそ存在するものの
+ * 現状どのコードからも書き込まれておらず全行 NULL のため、絞り込むと必ず 0 件になる。
+ * マルチアカウント対応する際は friends 側のバックフィルとセットで引数を追加すること。
+ */
+export async function getFollowingFriendCount(db: D1Database): Promise<number> {
+  const row = await db
+    .prepare(`SELECT COUNT(*) as count FROM friends WHERE is_following = 1`)
+    .first<{ count: number }>();
+  return row?.count ?? 0;
+}
