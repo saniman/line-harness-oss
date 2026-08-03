@@ -17,6 +17,8 @@ export interface Broadcast {
   success_count: number;
   /** 1 = 本文中の URL を /t/ トラッキングリンクへ自動変換 / 0 = そのまま送る */
   track_links: number;
+  /** 送信元 LINE アカウント。単一アカウント運用では NULL（createBroadcast は現状セットしない） */
+  line_account_id: string | null;
   created_at: string;
 }
 

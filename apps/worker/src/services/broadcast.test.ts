@@ -17,6 +17,7 @@ const dbMocks = {
   updateBroadcastLineRequestId: vi.fn(),
   createBroadcastInsight: vi.fn(),
   getLineAccountById: vi.fn(),
+  getFollowingFriendCount: vi.fn(),
 };
 
 vi.mock('@line-crm/db', () => dbMocks);
@@ -45,7 +46,14 @@ function makeBroadcast(overrides: Record<string, unknown> = {}) {
   };
 }
 
-const db = { prepare: vi.fn(), batch: vi.fn() } as unknown as D1Database;
+const db = {
+  prepare: vi.fn(() => ({
+    bind: vi.fn().mockReturnThis(),
+    run: vi.fn().mockResolvedValue({ meta: { changes: 1 } }),
+    first: vi.fn().mockResolvedValue(null),
+  })),
+  batch: vi.fn().mockResolvedValue([]),
+} as unknown as D1Database;
 
 function makeLineClient() {
   return {
@@ -60,6 +68,7 @@ beforeEach(() => {
     messageType: 'text',
     content: `キャンペーン中です ${WORKER_URL}/t/Ab3xY9k`,
   });
+  dbMocks.getFollowingFriendCount.mockResolvedValue(0);
 });
 
 describe('processBroadcastSend の track_links 制御', () => {
@@ -103,5 +112,55 @@ describe('processBroadcastSend の track_links 制御', () => {
     await processBroadcastSend(db, lineClient as never, 'bc-1', undefined);
 
     expect(mockAutoTrackContent).not.toHaveBeenCalled();
+  });
+});
+
+describe('processBroadcastSend の配信実績カウント', () => {
+  it('全員配信の場合はフォロー中の友だち数が配信実績として記録される', async () => {
+    dbMocks.getBroadcastById.mockResolvedValue(makeBroadcast({ target_type: 'all' }));
+    dbMocks.getFollowingFriendCount.mockResolvedValue(42);
+    const lineClient = makeLineClient();
+
+    await processBroadcastSend(db, lineClient as never, 'bc-1', WORKER_URL);
+
+    expect(dbMocks.getFollowingFriendCount).toHaveBeenCalledWith(db);
+    expect(dbMocks.updateBroadcastStatus).toHaveBeenCalledWith(db, 'bc-1', 'sent', {
+      totalCount: 42,
+      successCount: 42,
+    });
+  });
+
+  it('フォロー中の友だちが0人の場合は 0 が記録される', async () => {
+    dbMocks.getBroadcastById.mockResolvedValue(makeBroadcast({ target_type: 'all' }));
+    dbMocks.getFollowingFriendCount.mockResolvedValue(0);
+    const lineClient = makeLineClient();
+
+    await processBroadcastSend(db, lineClient as never, 'bc-1', WORKER_URL);
+
+    expect(dbMocks.updateBroadcastStatus).toHaveBeenCalledWith(db, 'bc-1', 'sent', {
+      totalCount: 0,
+      successCount: 0,
+    });
+  });
+
+  it('タグ配信の場合はフォロー中の友だち総数ではなく対象タグの人数が記録される', async () => {
+    dbMocks.getBroadcastById.mockResolvedValue(
+      makeBroadcast({ target_type: 'tag', target_tag_id: 'tag-1', track_links: 0 }),
+    );
+    dbMocks.getFollowingFriendCount.mockResolvedValue(42);
+    dbMocks.getFriendsByTag.mockResolvedValue([
+      { id: 'f-1', line_user_id: 'U1', is_following: 1 },
+      { id: 'f-2', line_user_id: 'U2', is_following: 1 },
+      { id: 'f-3', line_user_id: 'U3', is_following: 0 },
+    ]);
+    const lineClient = makeLineClient();
+
+    await processBroadcastSend(db, lineClient as never, 'bc-1', WORKER_URL);
+
+    expect(dbMocks.getFollowingFriendCount).not.toHaveBeenCalled();
+    expect(dbMocks.updateBroadcastStatus).toHaveBeenCalledWith(db, 'bc-1', 'sent', {
+      totalCount: 2,
+      successCount: 2,
+    });
   });
 });
