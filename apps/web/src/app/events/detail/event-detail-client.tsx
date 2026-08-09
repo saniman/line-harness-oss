@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { api } from '@/lib/api'
 import type { EventItem, EventBookingItem } from '@/lib/api'
+import { getPaymentBadge } from '@/lib/payment-badge'
 import Header from '@/components/layout/header'
 
 const FIELD_CLASS = 'text-sm border border-gray-300 rounded-lg px-3 py-2 w-full focus:outline-none focus:ring-2 focus:ring-green-500'
@@ -221,12 +222,7 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
                   <span>申込日時</span>
                 </div>
                 {bookings.map((b) => {
-                  const paymentBadge = (() => {
-                    if (b.payment_status === 'paid') return { label: '💳 決済済', cls: 'bg-green-100 text-green-700' }
-                    if (b.payment_status === 'unpaid' && b.status === 'pending') return { label: '⏳ 未決済', cls: 'bg-yellow-100 text-yellow-700' }
-                    if (b.status === 'cancelled') return { label: '❌ キャンセル', cls: 'bg-gray-100 text-gray-500' }
-                    return { label: '確定', cls: 'bg-green-100 text-green-700' }
-                  })()
+                  const paymentBadge = getPaymentBadge(b)
                   return (
                     <div
                       key={b.id}
