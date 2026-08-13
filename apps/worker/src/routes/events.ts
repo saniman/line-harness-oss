@@ -15,6 +15,8 @@ import {
   cancelEventBooking,
 } from '../services/events.js';
 import { enrollEventFollowupScenarios, enrollEventParticipants } from '../services/event-followup.js';
+import { resolveEventApplicantFriendId } from '../services/event-friend.js';
+import { verifyCallerLineUserId } from '../services/liff-identity.js';
 import { getScenarioById } from '@line-crm/db';
 import type { Env } from '../index.js';
 
@@ -155,8 +157,13 @@ events.delete('/api/events/:id', async (c) => {
 events.post('/api/events/:id/join', async (c) => {
   try {
     const id = Number(c.req.param('id'));
-    const body = await c.req.json<{ name?: string; lineUserId?: string; paymentMethod?: string }>();
+    const body = await c.req.json<{ name?: string; paymentMethod?: string }>();
     const isCash = body.paymentMethod === 'cash';
+
+    // 本人確認: Authorization: Bearer <LIFF idToken> を検証する。
+    // クライアント申告の lineUserId は詐称できるため参照しない。
+    const lineUserId = await verifyCallerLineUserId(c);
+    if (!lineUserId) return c.json({ success: false, error: 'unauthorized' }, 401);
 
     const event = await getEventById(c.env.DB, id);
     if (!event) return c.json({ success: false, error: 'Event not found' }, 404);
@@ -164,19 +171,13 @@ events.post('/api/events/:id/join', async (c) => {
       return c.json({ success: false, error: 'Event is full' }, 409);
     }
 
-    // lineUserId → friendId 解決（ベストエフォート）
-    let friendId: string | null = null;
-    if (body.lineUserId) {
-      try {
-        const row = await c.env.DB
-          .prepare('SELECT id FROM friends WHERE line_user_id = ? LIMIT 1')
-          .bind(body.lineUserId)
-          .first<{ id: string }>();
-        friendId = row?.id ?? null;
-      } catch {
-        // フォールバック: friend_id なしで続行
-      }
-    }
+    // 友だち登録必須ゲート（モバイルオーダー・サロン予約と同じ作法）。
+    // friends 行が無くても LINE 上は友だちなら upsert して救済する。
+    const lineClient = c.env.LINE_CHANNEL_ACCESS_TOKEN
+      ? new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN)
+      : null;
+    const friendId = await resolveEventApplicantFriendId(c.env.DB, lineUserId, lineClient);
+    if (!friendId) return c.json({ success: false, error: 'friend_required' }, 403);
 
     const booking = await createEventBooking(c.env.DB, {
       event_id: id,
@@ -194,9 +195,8 @@ events.post('/api/events/:id/join', async (c) => {
     }
 
     // LINE push通知（ベストエフォート）
-    if (body.lineUserId && c.env.LINE_CHANNEL_ACCESS_TOKEN) {
+    if (lineClient) {
       try {
-        const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
         const d = new Date(new Date(event.start_at).getTime() + 9 * 60 * 60 * 1000);
         const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
         const dd = String(d.getUTCDate()).padStart(2, '0');
@@ -208,7 +208,7 @@ events.post('/api/events/:id/join', async (c) => {
         const cashNote = isCash ? [
           { type: 'text', text: '💴 当日スタッフにお支払いください', size: 'sm', color: '#e67e22', wrap: true },
         ] : [];
-        await lineClient.pushMessage(body.lineUserId, [{
+        await lineClient.pushMessage(lineUserId, [{
           type: 'flex',
           altText: `✅ 「${event.title}」のお申込みが完了しました`,
           contents: {
@@ -256,7 +256,10 @@ events.post('/api/events/:id/join', async (c) => {
 events.post('/api/events/:id/checkout-session', async (c) => {
   try {
     const id = Number(c.req.param('id'));
-    const lineUserId = c.req.header('x-line-user-id');
+
+    // 0. 本人確認: Authorization: Bearer <LIFF idToken>（x-line-user-id ヘッダは詐称可能なため参照しない）
+    const lineUserId = await verifyCallerLineUserId(c);
+    if (!lineUserId) return c.json({ success: false, error: 'unauthorized' }, 401);
 
     // 1. イベント取得・存在チェック・公開チェック
     const event = await getEventById(c.env.DB, id);
@@ -269,19 +272,12 @@ events.post('/api/events/:id/checkout-session', async (c) => {
       return c.json({ success: false, error: 'Event is full' }, 409);
     }
 
-    // 3. lineUserId → friendId 解決（ベストエフォート）
-    let friendId: string | null = null;
-    if (lineUserId) {
-      try {
-        const row = await c.env.DB
-          .prepare('SELECT id FROM friends WHERE line_user_id = ? LIMIT 1')
-          .bind(lineUserId)
-          .first<{ id: string }>();
-        friendId = row?.id ?? null;
-      } catch {
-        // フォールバック: friend_id なしで続行
-      }
-    }
+    // 3. 友だち登録必須ゲート。pending 行を作る前に弾いてゴミ行を残さない。
+    const lineClient = c.env.LINE_CHANNEL_ACCESS_TOKEN
+      ? new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN)
+      : null;
+    const friendId = await resolveEventApplicantFriendId(c.env.DB, lineUserId, lineClient);
+    if (!friendId) return c.json({ success: false, error: 'friend_required' }, 403);
 
     // 4. 仮登録（pending / unpaid）
     const booking = await createPendingBooking(c.env.DB, { event_id: id, friend_id: friendId });
@@ -309,7 +305,7 @@ events.post('/api/events/:id/checkout-session', async (c) => {
         cancel_url:  `${liffBase}?page=event&payment=cancel&bookingId=${booking.id}`,
         metadata: {
           bookingId: String(booking.id),
-          lineUserId: lineUserId ?? '',
+          lineUserId,
           eventId: String(id),
         },
         expires_at: Math.floor(Date.now() / 1000) + 1800,

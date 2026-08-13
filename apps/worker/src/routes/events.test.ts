@@ -40,17 +40,29 @@ vi.mock('../services/event-followup.js', () => ({
   enrollEventParticipants: vi.fn(),
 }))
 
+vi.mock('../services/liff-identity.js', () => ({
+  verifyCallerLineUserId: vi.fn(),
+}))
+
+vi.mock('../services/event-friend.js', () => ({
+  resolveEventApplicantFriendId: vi.fn(),
+}))
+
 vi.mock('@line-crm/db', () => ({
   getScenarioById: vi.fn(),
 }))
 
 import * as eventsService from '../services/events.js'
 import { enrollEventParticipants } from '../services/event-followup.js'
+import { verifyCallerLineUserId } from '../services/liff-identity.js'
+import { resolveEventApplicantFriendId } from '../services/event-friend.js'
 import { getScenarioById } from '@line-crm/db'
 import { events } from './events.js'
 
 const mockEnrollParticipants = vi.mocked(enrollEventParticipants)
 const mockGetScenarioById = vi.mocked(getScenarioById)
+const mockVerifyCaller = vi.mocked(verifyCallerLineUserId)
+const mockResolveFriendId = vi.mocked(resolveEventApplicantFriendId)
 
 const mockDb = {} as D1Database
 const app = new Hono()
@@ -76,7 +88,18 @@ const PENDING_BOOKING = {
   created_at: '', updated_at: '',
 }
 
-beforeEach(() => { vi.clearAllMocks() })
+beforeEach(() => {
+  vi.clearAllMocks()
+  // 既定は「idToken 検証OK・友だち登録済み」。異常系は各テストで上書きする。
+  mockVerifyCaller.mockResolvedValue('U123')
+  mockResolveFriendId.mockResolvedValue('friend-1')
+})
+
+/** LIFF からの申込リクエスト（Authorization: Bearer <idToken> 付き） */
+const LIFF_HEADERS = {
+  'Content-Type': 'application/json',
+  Authorization: 'Bearer dummy-id-token',
+}
 
 describe('GET /api/events', () => {
   it('イベント一覧を返す', async () => {
@@ -265,23 +288,62 @@ describe('POST /api/events/:id/join', () => {
     vi.mocked(eventsService.createEventBooking).mockResolvedValue(BOOKING1)
     const res = await app.request('/api/events/1/join', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ lineUserId: 'U123' }),
+      headers: LIFF_HEADERS,
+      body: JSON.stringify({ name: '山田太郎' }),
     }, { DB: mockDb })
     expect(res.status).toBe(201)
     const json = await res.json() as { success: boolean }
     expect(json.success).toBe(true)
   })
 
-  it('lineUserId と LINE_CHANNEL_ACCESS_TOKEN があれば push通知を送る', async () => {
+  it('解決した friend_id が createEventBooking に渡る', async () => {
+    vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 2 })
+    vi.mocked(eventsService.createEventBooking).mockResolvedValue(BOOKING1)
+    await app.request('/api/events/1/join', {
+      method: 'POST',
+      headers: LIFF_HEADERS,
+      body: JSON.stringify({ name: '山田太郎' }),
+    }, { DB: mockDb })
+    expect(eventsService.createEventBooking).toHaveBeenCalledWith(mockDb, expect.objectContaining({
+      friend_id: 'friend-1',
+    }))
+  })
+
+  it('idToken が無効なら401を返し申込を作らない', async () => {
+    mockVerifyCaller.mockResolvedValue(null)
+    vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 2 })
+    const res = await app.request('/api/events/1/join', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: '山田太郎' }),
+    }, { DB: mockDb })
+    expect(res.status).toBe(401)
+    expect(eventsService.createEventBooking).not.toHaveBeenCalled()
+  })
+
+  it('友だち未登録なら403 friend_required を返し申込を作らない', async () => {
+    mockResolveFriendId.mockResolvedValue(null)
+    vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 2 })
+    const res = await app.request('/api/events/1/join', {
+      method: 'POST',
+      headers: LIFF_HEADERS,
+      body: JSON.stringify({ name: '山田太郎' }),
+    }, { DB: mockDb })
+    expect(res.status).toBe(403)
+    const json = await res.json() as { error: string }
+    expect(json.error).toBe('friend_required')
+    expect(eventsService.createEventBooking).not.toHaveBeenCalled()
+  })
+
+  it('LINE_CHANNEL_ACCESS_TOKEN があれば idToken 由来の userId に push通知を送る', async () => {
     const event = { ...EVENT1, participant_count: 2 }
     vi.mocked(eventsService.getEventById).mockResolvedValue(event)
     vi.mocked(eventsService.createEventBooking).mockResolvedValue(BOOKING1)
     mockPushMessage.mockResolvedValue({})
     const res = await app.request('/api/events/1/join', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ lineUserId: 'U123' }),
+      headers: LIFF_HEADERS,
+      body: JSON.stringify({ name: '山田太郎' }),
     }, { DB: mockDb, LINE_CHANNEL_ACCESS_TOKEN: 'test-token' })
     expect(res.status).toBe(201)
     expect(mockPushMessage).toHaveBeenCalledWith('U123', expect.arrayContaining([
@@ -294,8 +356,8 @@ describe('POST /api/events/:id/join', () => {
     vi.mocked(eventsService.getEventById).mockResolvedValue(event)
     const res = await app.request('/api/events/1/join', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ lineUserId: 'U123' }),
+      headers: LIFF_HEADERS,
+      body: JSON.stringify({ name: '山田太郎' }),
     }, { DB: mockDb })
     expect(res.status).toBe(409)
   })
@@ -304,8 +366,8 @@ describe('POST /api/events/:id/join', () => {
     vi.mocked(eventsService.getEventById).mockResolvedValue(null)
     const res = await app.request('/api/events/999/join', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ lineUserId: 'U123' }),
+      headers: LIFF_HEADERS,
+      body: JSON.stringify({ name: '山田太郎' }),
     }, { DB: mockDb })
     expect(res.status).toBe(404)
   })
@@ -328,7 +390,7 @@ describe('POST /api/events/:id/checkout-session', () => {
     })
     const res = await app.request('/api/events/1/checkout-session', {
       method: 'POST',
-      headers: { 'x-line-user-id': 'U123' },
+      headers: LIFF_HEADERS,
     }, MOCK_ENV)
     expect(res.status).toBe(200)
     const json = await res.json() as { success: boolean; data: { url: string } }
@@ -336,11 +398,52 @@ describe('POST /api/events/:id/checkout-session', () => {
     expect(json.data.url).toBe('https://checkout.stripe.com/pay/test')
   })
 
+  it('正常系：解決した friend_id で仮登録し metadata に idToken 由来の lineUserId を入れる', async () => {
+    vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 2 })
+    vi.mocked(eventsService.createPendingBooking).mockResolvedValue(PENDING_BOOKING)
+    vi.mocked(eventsService.updateBookingStripeSessionId).mockResolvedValue(undefined)
+    mockCheckoutSessionCreate.mockResolvedValue({ id: 'cs_test_xxx', url: 'https://checkout.stripe.com/pay/test' })
+    await app.request('/api/events/1/checkout-session', {
+      method: 'POST',
+      headers: LIFF_HEADERS,
+    }, MOCK_ENV)
+    expect(eventsService.createPendingBooking).toHaveBeenCalledWith(mockDb, {
+      event_id: 1, friend_id: 'friend-1',
+    })
+    expect(mockCheckoutSessionCreate).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({ lineUserId: 'U123' }),
+    }))
+  })
+
+  it('異常系：idToken が無効 → 401（仮登録もしない）', async () => {
+    mockVerifyCaller.mockResolvedValue(null)
+    vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 2 })
+    const res = await app.request('/api/events/1/checkout-session', {
+      method: 'POST',
+    }, MOCK_ENV)
+    expect(res.status).toBe(401)
+    expect(eventsService.createPendingBooking).not.toHaveBeenCalled()
+  })
+
+  it('異常系：友だち未登録 → 403 friend_required（pending 行を作らない）', async () => {
+    mockResolveFriendId.mockResolvedValue(null)
+    vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 2 })
+    const res = await app.request('/api/events/1/checkout-session', {
+      method: 'POST',
+      headers: LIFF_HEADERS,
+    }, MOCK_ENV)
+    expect(res.status).toBe(403)
+    const json = await res.json() as { error: string }
+    expect(json.error).toBe('friend_required')
+    expect(eventsService.createPendingBooking).not.toHaveBeenCalled()
+    expect(mockCheckoutSessionCreate).not.toHaveBeenCalled()
+  })
+
   it('異常系：存在しないイベントID → 404', async () => {
     vi.mocked(eventsService.getEventById).mockResolvedValue(null)
     const res = await app.request('/api/events/999/checkout-session', {
       method: 'POST',
-      headers: { 'x-line-user-id': 'U123' },
+      headers: LIFF_HEADERS,
     }, MOCK_ENV)
     expect(res.status).toBe(404)
   })
@@ -349,7 +452,7 @@ describe('POST /api/events/:id/checkout-session', () => {
     vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, is_published: 0 })
     const res = await app.request('/api/events/1/checkout-session', {
       method: 'POST',
-      headers: { 'x-line-user-id': 'U123' },
+      headers: LIFF_HEADERS,
     }, MOCK_ENV)
     expect(res.status).toBe(404)
   })
@@ -358,7 +461,7 @@ describe('POST /api/events/:id/checkout-session', () => {
     vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 10, capacity: 10 })
     const res = await app.request('/api/events/1/checkout-session', {
       method: 'POST',
-      headers: { 'x-line-user-id': 'U123' },
+      headers: LIFF_HEADERS,
     }, MOCK_ENV)
     expect(res.status).toBe(409)
   })
@@ -369,7 +472,7 @@ describe('POST /api/events/:id/checkout-session', () => {
     mockCheckoutSessionCreate.mockRejectedValue(new Error('Stripe API error'))
     const res = await app.request('/api/events/1/checkout-session', {
       method: 'POST',
-      headers: { 'x-line-user-id': 'U123' },
+      headers: LIFF_HEADERS,
     }, MOCK_ENV)
     expect(res.status).toBe(500)
   })
