@@ -20,6 +20,7 @@ import { resolveEventApplicant } from '../services/event-friend.js';
 import { backfillEventBookingFriends } from '../services/event-friend-backfill.js';
 import { resolveDefaultLineAccountId } from '../services/default-line-account.js';
 import { verifyCallerLineUserId } from '../services/liff-identity.js';
+import { sendEventBookingNotification } from '../services/email-notifier.js';
 import { getScenarioById } from '@line-crm/db';
 import type { Env } from '../index.js';
 
@@ -204,6 +205,24 @@ events.post('/api/events/:id/join', async (c) => {
     } catch (err) {
       console.error('[events /join] enrollEventFollowupScenarios failed:', err);
     }
+
+    // 運営者へメール通知（ベストエフォート: 未設定なら no-op・失敗しても申込は維持）
+    // participant_count は申込前の値なので、この申込を含めて +1 する
+    await sendEventBookingNotification({
+      email: c.env.EMAIL,
+      to: c.env.ADMIN_NOTIFY_EMAIL,
+      from: c.env.MAIL_FROM_ADDRESS,
+      ctx: {
+        eventTitle: event.title,
+        eventStartAt: event.start_at,
+        applicantName: body.name ?? '',
+        bookingId: booking.id,
+        paymentKind: isCash ? 'cash' : 'free',
+        amount: null,
+        participantCount: event.participant_count + 1,
+        capacity: event.capacity,
+      },
+    });
 
     // LINE push通知（ベストエフォート）
     if (lineClient) {

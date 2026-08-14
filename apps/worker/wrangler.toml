@@ -37,8 +37,15 @@ migrations_dir = "../../packages/db/migrations"
 [triggers]
 crons = ["*/5 * * * *", "0 */6 * * *", "0 23 * * SUN", "0 23 * * WED"]  # 6h=booking expirer SUN=月曜08:00 JST(AIニュース) WED=木曜08:00 JST(プロンプト)
 
+# Cloudflare Email Sending（イベント申込の運営者通知メール）
+# 事前に `npx wrangler email sending enable walover-co.work` でドメイン有効化が必要。
+# 手順は docs/setup/email-notification.md 参照。
+[[send_email]]
+name = "EMAIL"
+
 [vars]
 LIFF_BASE_URL = "https://liff.line.me/1661159603-5qlDj5wV"
+MAIL_FROM_ADDRESS = "noreply@walover-co.work"
 
 # Stripe シークレット（wrangler secret put で設定する）
 # STRIPE_SECRET_KEY        - Stripe ダッシュボード > APIキー
@@ -65,6 +72,12 @@ database_id = "YOUR_D1_DATABASE_ID"
 [[env.production.r2_buckets]]
 binding = "IMAGES"
 bucket_name = "line-harness-images"
+
+[[env.production.send_email]]
+name = "EMAIL"
+
+[env.production.vars]
+MAIL_FROM_ADDRESS = "noreply@YOUR_DOMAIN"
 
 [env.production.triggers]
 crons = ["*/5 * * * *", "0 */6 * * *", "0 23 * * SUN", "0 23 * * WED"]  # 6h=booking expirer SUN=月曜08:00 JST(AIニュース) WED=木曜08:00 JST(プロンプト)
