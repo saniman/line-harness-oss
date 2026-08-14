@@ -147,6 +147,14 @@ describe('startCheckoutSession', () => {
     expect(result.error).toContain('友だち追加')
   })
 
+  it('503（友だち判定不能）は friendRequired にせず再試行を促す', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 503 }))
+    const result = await startCheckoutSession(1, ID_TOKEN, vi.fn())
+    expect(result.success).toBe(false)
+    expect(result.friendRequired).toBeFalsy()
+    expect(result.error).toContain('しばらくして')
+  })
+
   it('その他のエラーの場合汎用エラーを返す', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 500 }))
     const result = await startCheckoutSession(1, ID_TOKEN, vi.fn())
@@ -252,6 +260,21 @@ describe('友だち登録必須ゲート（403 friend_required）', () => {
 
     await vi.waitFor(() => { expect(onFriendRequired).toHaveBeenCalled() })
     expect(document.querySelector('.form-error')).toBeNull()
+  })
+
+  it('onFriendRequired が false を返したら（誘導しなかったら）エラー文言を出す', async () => {
+    document.body.innerHTML = '<div id="app"></div>'
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ success: true, data: [EVENT_FREE] }) })
+      .mockResolvedValueOnce({ ok: false, status: 403 })
+    vi.stubGlobal('fetch', mockFetch)
+    const onFriendRequired = vi.fn().mockReturnValue(false)
+
+    await initEventBooking({ idToken: ID_TOKEN, eventId: EVENT_FREE.id, onFriendRequired })
+    ;(document.getElementById('free-join-btn') as HTMLButtonElement).click()
+
+    await vi.waitFor(() => { expect(document.querySelector('.form-error')).not.toBeNull() })
+    expect(onFriendRequired).toHaveBeenCalled()
   })
 
   it('403以外の失敗では onFriendRequired を呼ばずエラー文言を出す', async () => {

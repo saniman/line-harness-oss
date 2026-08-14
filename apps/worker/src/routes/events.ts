@@ -15,7 +15,7 @@ import {
   cancelEventBooking,
 } from '../services/events.js';
 import { enrollEventFollowupScenarios, enrollEventParticipants } from '../services/event-followup.js';
-import { resolveEventApplicantFriendId } from '../services/event-friend.js';
+import { resolveEventApplicant } from '../services/event-friend.js';
 import { verifyCallerLineUserId } from '../services/liff-identity.js';
 import { getScenarioById } from '@line-crm/db';
 import type { Env } from '../index.js';
@@ -172,12 +172,19 @@ events.post('/api/events/:id/join', async (c) => {
     }
 
     // 友だち登録必須ゲート（モバイルオーダー・サロン予約と同じ作法）。
-    // friends 行が無くても LINE 上は友だちなら upsert して救済する。
+    // friends 行が実態とズレていても LINE 上が友だちなら upsert して救済する。
     const lineClient = c.env.LINE_CHANNEL_ACCESS_TOKEN
       ? new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN)
       : null;
-    const friendId = await resolveEventApplicantFriendId(c.env.DB, lineUserId, lineClient);
-    if (!friendId) return c.json({ success: false, error: 'friend_required' }, 403);
+    const applicant = await resolveEventApplicant(c.env.DB, lineUserId, lineClient);
+    // 判定不能（LINE API 障害等）は 403 にしない。友だち追加を促しても解決せずループするため。
+    if (applicant.status === 'unavailable') {
+      return c.json({ success: false, error: 'friend_check_unavailable' }, 503);
+    }
+    if (applicant.status === 'not_friend') {
+      return c.json({ success: false, error: 'friend_required' }, 403);
+    }
+    const friendId = applicant.friendId;
 
     const booking = await createEventBooking(c.env.DB, {
       event_id: id,
@@ -276,8 +283,14 @@ events.post('/api/events/:id/checkout-session', async (c) => {
     const lineClient = c.env.LINE_CHANNEL_ACCESS_TOKEN
       ? new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN)
       : null;
-    const friendId = await resolveEventApplicantFriendId(c.env.DB, lineUserId, lineClient);
-    if (!friendId) return c.json({ success: false, error: 'friend_required' }, 403);
+    const applicant = await resolveEventApplicant(c.env.DB, lineUserId, lineClient);
+    if (applicant.status === 'unavailable') {
+      return c.json({ success: false, error: 'friend_check_unavailable' }, 503);
+    }
+    if (applicant.status === 'not_friend') {
+      return c.json({ success: false, error: 'friend_required' }, 403);
+    }
+    const friendId = applicant.friendId;
 
     // 4. 仮登録（pending / unpaid）
     const booking = await createPendingBooking(c.env.DB, { event_id: id, friend_id: friendId });

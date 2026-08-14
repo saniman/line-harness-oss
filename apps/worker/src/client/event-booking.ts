@@ -105,6 +105,11 @@ function toActionError(status: number): EventActionResult {
   if (status === 401) {
     return { success: false, error: 'LINE 認証の有効期限が切れました。画面を開き直してください。' }
   }
+  if (status === 503) {
+    // 友だち判定ができなかった（LINE API 障害等）。友だち追加を促しても解決しないため
+    // friendRequired にはせず、時間をおいて再試行してもらう。
+    return { success: false, error: '通信が混み合っています。しばらくしてから再度お試しください。' }
+  }
   return { success: false, error: '申し込みに失敗しました' }
 }
 
@@ -163,8 +168,11 @@ export async function initEventBooking(options: {
   payment?: string | null
   eventId?: number
   openWindow?: (params: { url: string; external: boolean }) => void
-  /** 403 friend_required のときに呼ばれる（呼び出し側で友だち追加画面を出す） */
-  onFriendRequired?: () => void
+  /**
+   * 403 friend_required のときに呼ばれる（呼び出し側で友だち追加画面を出す）。
+   * 誘導しなかった場合は false を返すと、通常どおりエラー文言を表示する。
+   */
+  onFriendRequired?: () => boolean | void
 } = {}): Promise<void> {
   const {
     lineUserId, displayName, idToken, payment, eventId,
@@ -294,8 +302,8 @@ export async function initEventBooking(options: {
    */
   const handleActionFailure = (result: EventActionResult): boolean => {
     if (result.friendRequired && onFriendRequired) {
-      onFriendRequired()
-      return true
+      // false を返されたら誘導しなかったということ → エラー文言の表示にフォールバックする
+      return onFriendRequired() !== false
     }
     return false
   }

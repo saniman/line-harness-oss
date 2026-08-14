@@ -45,7 +45,7 @@ vi.mock('../services/liff-identity.js', () => ({
 }))
 
 vi.mock('../services/event-friend.js', () => ({
-  resolveEventApplicantFriendId: vi.fn(),
+  resolveEventApplicant: vi.fn(),
 }))
 
 vi.mock('@line-crm/db', () => ({
@@ -55,14 +55,14 @@ vi.mock('@line-crm/db', () => ({
 import * as eventsService from '../services/events.js'
 import { enrollEventParticipants } from '../services/event-followup.js'
 import { verifyCallerLineUserId } from '../services/liff-identity.js'
-import { resolveEventApplicantFriendId } from '../services/event-friend.js'
+import { resolveEventApplicant } from '../services/event-friend.js'
 import { getScenarioById } from '@line-crm/db'
 import { events } from './events.js'
 
 const mockEnrollParticipants = vi.mocked(enrollEventParticipants)
 const mockGetScenarioById = vi.mocked(getScenarioById)
 const mockVerifyCaller = vi.mocked(verifyCallerLineUserId)
-const mockResolveFriendId = vi.mocked(resolveEventApplicantFriendId)
+const mockResolveApplicant = vi.mocked(resolveEventApplicant)
 
 const mockDb = {} as D1Database
 const app = new Hono()
@@ -92,7 +92,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   // 既定は「idToken 検証OK・友だち登録済み」。異常系は各テストで上書きする。
   mockVerifyCaller.mockResolvedValue('U123')
-  mockResolveFriendId.mockResolvedValue('friend-1')
+  mockResolveApplicant.mockResolvedValue({ status: 'ok', friendId: 'friend-1' })
 })
 
 /** LIFF からの申込リクエスト（Authorization: Bearer <idToken> 付き） */
@@ -322,7 +322,7 @@ describe('POST /api/events/:id/join', () => {
   })
 
   it('友だち未登録なら403 friend_required を返し申込を作らない', async () => {
-    mockResolveFriendId.mockResolvedValue(null)
+    mockResolveApplicant.mockResolvedValue({ status: 'not_friend' })
     vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 2 })
     const res = await app.request('/api/events/1/join', {
       method: 'POST',
@@ -332,6 +332,20 @@ describe('POST /api/events/:id/join', () => {
     expect(res.status).toBe(403)
     const json = await res.json() as { error: string }
     expect(json.error).toBe('friend_required')
+    expect(eventsService.createEventBooking).not.toHaveBeenCalled()
+  })
+
+  it('友だち判定不能（LINE API 障害等）なら503を返し申込を作らない', async () => {
+    mockResolveApplicant.mockResolvedValue({ status: 'unavailable' })
+    vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 2 })
+    const res = await app.request('/api/events/1/join', {
+      method: 'POST',
+      headers: LIFF_HEADERS,
+      body: JSON.stringify({ name: '山田太郎' }),
+    }, { DB: mockDb })
+    expect(res.status).toBe(503)
+    const json = await res.json() as { error: string }
+    expect(json.error).toBe('friend_check_unavailable')
     expect(eventsService.createEventBooking).not.toHaveBeenCalled()
   })
 
@@ -426,7 +440,7 @@ describe('POST /api/events/:id/checkout-session', () => {
   })
 
   it('異常系：友だち未登録 → 403 friend_required（pending 行を作らない）', async () => {
-    mockResolveFriendId.mockResolvedValue(null)
+    mockResolveApplicant.mockResolvedValue({ status: 'not_friend' })
     vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 2 })
     const res = await app.request('/api/events/1/checkout-session', {
       method: 'POST',
@@ -435,6 +449,18 @@ describe('POST /api/events/:id/checkout-session', () => {
     expect(res.status).toBe(403)
     const json = await res.json() as { error: string }
     expect(json.error).toBe('friend_required')
+    expect(eventsService.createPendingBooking).not.toHaveBeenCalled()
+    expect(mockCheckoutSessionCreate).not.toHaveBeenCalled()
+  })
+
+  it('異常系：友だち判定不能 → 503（pending 行を作らない）', async () => {
+    mockResolveApplicant.mockResolvedValue({ status: 'unavailable' })
+    vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 2 })
+    const res = await app.request('/api/events/1/checkout-session', {
+      method: 'POST',
+      headers: LIFF_HEADERS,
+    }, MOCK_ENV)
+    expect(res.status).toBe(503)
     expect(eventsService.createPendingBooking).not.toHaveBeenCalled()
     expect(mockCheckoutSessionCreate).not.toHaveBeenCalled()
   })
