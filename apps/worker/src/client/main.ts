@@ -559,15 +559,22 @@ async function main() {
     // 友だち追加ボタンが無反応になる（#25）。必ず apiUrl() で絶対URLにする。
     try {
       const configRes = await fetch(apiUrl(`/api/liff/config?liffId=${encodeURIComponent(LIFF_ID)}`));
-      const configJson = await configRes.json() as { success: boolean; data?: { botBasicId?: string } };
-      if (configJson.success && configJson.data?.botBasicId) {
-        BOT_BASIC_ID = configJson.data.botBasicId;
+      if (!configRes.ok) {
+        // 200 以外は json() が成功してしまうこともあるため明示的に落とす（無言の失敗を作らない）
+        throw new Error(`config fetch failed: ${configRes.status}`);
       }
+      const configJson = await configRes.json() as { success: boolean; error?: string; data?: { botBasicId?: string } };
+      if (!configJson.success) {
+        throw new Error(`config error: ${configJson.error ?? 'unknown'}`);
+      }
+      // API はアカウントごとに botBasicId を解決する。成功時はその値を正とし、
+      // 空で返ってきた場合もビルド時の固定値で上書きしない（別アカウントの
+      // 友だち追加リンクを見せてしまうため）。
+      BOT_BASIC_ID = configJson.data?.botBasicId ?? '';
     } catch (err) {
-      // ビルド時に埋め込んだ値へフォールバック（未設定なら空のまま＝ボタンは出さず理由を表示）
       console.error('[LIFF] failed to resolve botBasicId:', err);
-    }
-    if (!BOT_BASIC_ID) {
+      // API に到達できなかったときだけビルド時の値にフォールバックする。
+      // 未設定なら空のまま＝ボタンは出さず理由を表示する。
       BOT_BASIC_ID = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_BOT_BASIC_ID) || '';
     }
 

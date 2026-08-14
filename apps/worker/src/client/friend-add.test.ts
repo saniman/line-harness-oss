@@ -35,4 +35,28 @@ describe('buildFriendAddHtml', () => {
     expect(html).not.toContain('<img')
     expect(html).toContain('山田太郎')
   })
+
+  it('botBasicId の前後の空白を除去する（href が壊れて無反応になるのを防ぐ）', () => {
+    const html = buildFriendAddHtml(PROFILE, '  @173djjvp\n')
+
+    expect(html).toContain('href="https://line.me/R/ti/p/@173djjvp"')
+  })
+
+  it('botBasicId が空白のみなら友だち追加リンクを出さない', () => {
+    const html = buildFriendAddHtml(PROFILE, '   ')
+
+    expect(html).not.toContain('add-friend-btn')
+    expect(html).toContain('友だち追加リンクを取得できませんでした')
+  })
+
+  it('属性値をエスケープする（escapeHtml は " を変換しないため別扱い）', () => {
+    const html = buildFriendAddHtml(
+      { displayName: 'x', pictureUrl: 'https://example.com/p.jpg" onerror="alert(1)' },
+      '@abc" onclick="alert(1)',
+    )
+
+    expect(html).not.toContain('onerror="alert(1)"')
+    expect(html).not.toContain('onclick="alert(1)"')
+    expect(html).toContain('&quot;')
+  })
 })

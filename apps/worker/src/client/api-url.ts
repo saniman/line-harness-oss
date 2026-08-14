@@ -15,8 +15,18 @@ export const API_BASE: string =
 /**
  * API パスを絶対 URL に解決する。
  * `base` が空のとき（Worker が assets で LIFF も配信する構成）は相対パスのまま返す。
+ *
+ * `new URL()` は不正なベース（スキーム欠落など）で**同期的に throw** する。
+ * 呼び出し側には `fetch(...).catch()` で握りつぶしている best-effort な処理が多く、
+ * 同期 throw はそこを素通りして画面全体のエラーになるため、ここで吸収して
+ * 相対パスにフォールバックする（従来の挙動＝最悪でも今まで通り）。
  */
 export function apiUrl(path: string, base: string = API_BASE): string {
   if (!base) return path
-  return new URL(path, base).toString()
+  try {
+    return new URL(path, base).toString()
+  } catch {
+    console.error('[apiUrl] invalid VITE_API_BASE:', base)
+    return path
+  }
 }

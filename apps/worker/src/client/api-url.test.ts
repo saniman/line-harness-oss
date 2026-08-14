@@ -28,4 +28,11 @@ describe('apiUrl', () => {
     // Worker が assets で LIFF を配信するケースでは相対パスで正しく届く
     expect(apiUrl('/api/liff/config', '')).toBe('/api/liff/config')
   })
+
+  it('API_BASE が不正でも例外を投げず相対パスにフォールバックする', () => {
+    // new URL() は同期 throw する。best-effort な fetch(...).catch() では拾えず
+    // 画面全体のエラーになるため、ここで吸収する
+    expect(() => apiUrl('/api/liff/link', 'not-a-url')).not.toThrow()
+    expect(apiUrl('/api/liff/link', 'not-a-url')).toBe('/api/liff/link')
+  })
 })
