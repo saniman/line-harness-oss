@@ -4,6 +4,7 @@ const mockUpsertFriend = vi.hoisted(() => vi.fn())
 
 vi.mock('@line-crm/db', () => ({
   upsertFriend: mockUpsertFriend,
+  jstNow: () => '2026-08-14T09:00:00.000',
 }))
 
 import { backfillEventBookingFriends, BACKFILL_LIMIT } from './event-friend-backfill.js'
@@ -18,9 +19,11 @@ interface BookingRow { id: number; stripe_session_id: string | null; name: strin
  */
 function makeDb(bookings: BookingRow[], friendsByLineUserId: Record<string, string> = {}) {
   const updates: { sql: string; binds: unknown[] }[] = []
+  const queries: string[] = []
   const db = {
     prepare: (sql: string) => ({
       bind: (...binds: unknown[]) => {
+        queries.push(sql)
         if (/^\s*UPDATE/.test(sql)) updates.push({ sql, binds })
         return {
           all: async () => ({ results: bookings }),
@@ -36,7 +39,7 @@ function makeDb(bookings: BookingRow[], friendsByLineUserId: Record<string, stri
       },
     }),
   } as unknown as D1Database
-  return { db, updates }
+  return { db, updates, queries }
 }
 
 function makeStripe(metadataBySessionId: Record<string, Record<string, string> | null>) {
@@ -185,5 +188,78 @@ describe('backfillEventBookingFriends', () => {
     const result = await backfillEventBookingFriends(db, 1, null, { getProfile: vi.fn() }, null)
 
     expect(result).toEqual({ total: 1, linked: 0, created: 0, skipped: 1, truncated: false })
+  })
+
+  it('確定していない申込（pending/キャンセル）は対象にしない', async () => {
+    const { db, queries } = makeDb([])
+    const { client } = makeStripe({})
+
+    await backfillEventBookingFriends(db, 1, client, { getProfile: vi.fn() }, null)
+
+    const select = queries.find((q) => q.includes('FROM event_bookings'))!
+    expect(select).toContain("status = 'confirmed'")
+  })
+
+  it('復元不能な申込が先頭に溜まっていても上限に食われない（ヘッドブロックしない）', async () => {
+    // 先頭に「セッション無し」を上限数だけ並べ、その後ろに復元可能な1件を置く
+    const bookings: BookingRow[] = [
+      ...Array.from({ length: BACKFILL_LIMIT }, (_, i) => ({
+        id: i + 1, stripe_session_id: null, name: 'cash',
+      })),
+      { id: 999, stripe_session_id: 'cs_last', name: '黒部' },
+    ]
+    const { db, updates } = makeDb(bookings, { U9: 'friend-9' })
+    const { client } = makeStripe({ cs_last: { lineUserId: 'U9' } })
+
+    const result = await backfillEventBookingFriends(db, 1, client, { getProfile: vi.fn() }, null)
+
+    expect(result.linked).toBe(1)
+    expect(result.truncated).toBe(false)
+    expect(updates[0].binds).toEqual(['friend-9', 999])
+  })
+
+  it('既存 friends 行の line_account_id が未設定なら補完する', async () => {
+    const { db, updates } = makeDb([{ id: 11, stripe_session_id: 'cs_1', name: 'x' }], { U1: 'friend-existing' })
+    const { client } = makeStripe({ cs_1: { lineUserId: 'U1' } })
+
+    await backfillEventBookingFriends(db, 1, client, { getProfile: vi.fn() }, 'acc-1')
+
+    const friendUpdate = updates.find((u) => u.sql.includes('UPDATE friends'))
+    expect(friendUpdate?.sql).toContain('line_account_id IS NULL')
+    expect(friendUpdate?.binds[0]).toBe('acc-1')
+    expect(friendUpdate?.binds[2]).toBe('friend-existing')
+  })
+
+  it('1件が例外を投げても残りの申込は処理される', async () => {
+    const { db, updates } = makeDb([
+      { id: 21, stripe_session_id: 'cs_a', name: 'a' },
+      { id: 22, stripe_session_id: 'cs_b', name: 'b' },
+    ])
+    const { client } = makeStripe({ cs_a: { lineUserId: 'UA' }, cs_b: { lineUserId: 'UB' } })
+    const lineClient = { getProfile: vi.fn().mockRejectedValue(NOT_FRIEND_ERROR) }
+    // 1件目の upsert だけ失敗させる
+    mockUpsertFriend
+      .mockRejectedValueOnce(new Error('D1 write failed'))
+      .mockResolvedValueOnce({ id: 'friend-b' })
+
+    const result = await backfillEventBookingFriends(db, 1, client, lineClient, null)
+
+    expect(result.linked).toBe(1)
+    expect(result.skipped).toBe(1)
+    expect(updates.map((u) => u.binds)).toEqual([['friend-b', 22]])
+  })
+
+  it('skipped は total - linked と一致する', async () => {
+    const { db } = makeDb([
+      { id: 31, stripe_session_id: null, name: 'cash' },
+      { id: 32, stripe_session_id: 'cs_x', name: 'paid' },
+    ], { UX: 'friend-x' })
+    const { client } = makeStripe({ cs_x: { lineUserId: 'UX' } })
+
+    const result = await backfillEventBookingFriends(db, 1, client, { getProfile: vi.fn() }, null)
+
+    expect(result.total).toBe(2)
+    expect(result.linked).toBe(1)
+    expect(result.skipped).toBe(1)
   })
 })

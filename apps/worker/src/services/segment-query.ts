@@ -97,3 +97,17 @@ export function buildSegmentQuery(condition: SegmentCondition): { sql: string; b
 
   return { sql, bindings }
 }
+
+/**
+ * セグメント SQL に「フォロー中のみ」を強制する（送信経路専用）。
+ *
+ * buildSegmentQuery 自体には入れない。セグメント条件は is_following ルールを
+ * 明示指定できる仕様であり、対象者数プレビューは素の条件で数えるため。
+ * 一方 **送信は未フォローに multicast すると LINE API がエラーを返す**ので、
+ * 実際に配信する経路（segment-send / broadcast のキュー処理）では必ず通す。
+ *
+ * バインド値を増やさない（リテラル 1 を使う）ので、呼び出し側の bindings 順序に影響しない。
+ */
+export function withFollowingOnly(sql: string): string {
+  return sql.replace('WHERE', 'WHERE f.is_following = 1 AND')
+}

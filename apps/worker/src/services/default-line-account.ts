@@ -50,7 +50,8 @@ export async function resolveDefaultLineAccountId(
 
   const channelId = resolveChannelIdForEnv(env);
   if (channelId) {
-    const matched = accounts.find((a) => a.channel_id === channelId);
+    // 無効化済みアカウントは選ばない（fallback 側と条件を揃える）
+    const matched = accounts.find((a) => a.channel_id === channelId && a.is_active !== 0);
     if (matched) return matched.id;
   }
 

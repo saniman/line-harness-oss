@@ -125,9 +125,9 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
       const res = await api.events.backfillFriends(eventId)
       if (res.success) {
         const { total, linked, created, skipped, truncated } = res.data
-        const parts = [`未連携 ${total} 件のうち ${linked} 件を紐付けました（新規の友だち ${created} 件）。`]
+        const parts = [`確定申込のうち友だち未連携 ${total} 件中 ${linked} 件を紐付けました（新規の友だち ${created} 件）。`]
         if (skipped > 0) {
-          parts.push(`${skipped} 件は決済情報から LINE ユーザーを特定できませんでした（無料・当日現金の申込など）。下の「友だちを紐付け」から手動で指定してください。`)
+          parts.push(`${skipped} 件は紐付けできませんでした（無料・当日現金の申込、または LINE ユーザーを特定できなかったもの）。参加者一覧の「友だちを紐付け」から手動で指定してください。`)
         }
         // 黙って切り捨てない: 上限で打ち切ったことを必ず伝える
         if (truncated) parts.push('一度に処理できるのは 50 件までです。残りはもう一度実行してください。')

@@ -10,7 +10,7 @@
  * `stripe_session_id` からセッションを引けば申込者の LINE userId を後から復元できる。
  */
 
-import { upsertFriend } from '@line-crm/db'
+import { upsertFriend, jstNow } from '@line-crm/db'
 import { probeFriendship, type LineProfileClient } from './event-friend.js'
 
 /**
@@ -27,13 +27,13 @@ export interface StripeSessionMetadataClient {
 }
 
 export interface BackfillResult {
-  /** friend_id が NULL の申込の総数 */
+  /** friend_id が NULL の確定申込の総数 */
   total: number
   /** friend_id を埋められた件数 */
   linked: number
   /** friends 行を新規作成した件数（linked の内数） */
   created: number
-  /** 復元できずスキップした件数 */
+  /** 紐付けできなかった件数（total - linked） */
   skipped: number
   /** 上限に達して未処理を残したか */
   truncated: boolean
@@ -59,38 +59,50 @@ export async function backfillEventBookingFriends(
   lineAccountId: string | null,
 ): Promise<BackfillResult> {
   // friend_id IS NULL だけを対象にするので、何度実行しても二重処理にならない（冪等）。
+  // status は confirmed のみ。決済離脱した pending やキャンセル済みは「参加者」ではないため
+  // friends に登録しない（定員カウント getParticipantCount と同じセマンティクス）。
   const { results } = await db
     .prepare(
       `SELECT id, stripe_session_id, name FROM event_bookings
-       WHERE event_id = ? AND friend_id IS NULL
+       WHERE event_id = ? AND friend_id IS NULL AND status = 'confirmed'
        ORDER BY created_at`,
     )
     .bind(eventId)
     .all<UnlinkedBooking>()
 
   const total = results.length
-  const targets = results.slice(0, BACKFILL_LIMIT)
+  // 上限は「復元できる見込みのある申込」だけに適用する。
+  // 全件の先頭から切ると、復元不能な申込（無料/現金＝セッション無し）が先頭に溜まったときに
+  // 何度実行しても 51 件目以降へ到達できない（ヘッドブロック）。
+  const resolvable = results.filter((b) => b.stripe_session_id)
+  const targets = resolvable.slice(0, BACKFILL_LIMIT)
+
   const result: BackfillResult = {
     total,
     linked: 0,
     created: 0,
     skipped: 0,
-    truncated: total > BACKFILL_LIMIT,
+    truncated: resolvable.length > BACKFILL_LIMIT,
   }
 
   for (const booking of targets) {
-    const friendId = await resolveFriendIdForBooking(db, booking, stripe, lineClient, lineAccountId, result)
-    if (!friendId) {
-      result.skipped++
-      continue
+    // 1件の失敗（Stripe/LINE/DB いずれも）で全体を止めない。
+    // ここで throw を通すとループが中断し、それまでの成果もレポートできなくなる。
+    try {
+      const friendId = await resolveFriendIdForBooking(db, booking, stripe, lineClient, lineAccountId, result)
+      if (!friendId) continue
+      await db
+        .prepare("UPDATE event_bookings SET friend_id = ?, updated_at = datetime('now') WHERE id = ? AND friend_id IS NULL")
+        .bind(friendId, booking.id)
+        .run()
+      result.linked++
+    } catch (err) {
+      console.error(`[backfillEventBookingFriends] booking=${booking.id} failed:`, err)
     }
-    await db
-      .prepare("UPDATE event_bookings SET friend_id = ?, updated_at = datetime('now') WHERE id = ? AND friend_id IS NULL")
-      .bind(friendId, booking.id)
-      .run()
-    result.linked++
   }
 
+  // 紐付かなかったもの（セッション無し・特定不能・上限超過・失敗）はすべて skipped に集約する
+  result.skipped = total - result.linked
   return result
 }
 
@@ -125,7 +137,17 @@ async function resolveFriendIdForBooking(
     .prepare('SELECT id FROM friends WHERE line_user_id = ? LIMIT 1')
     .bind(lineUserId)
     .first<{ id: string }>()
-  if (existing) return existing.id
+  if (existing) {
+    // 既存行でも line_account_id が未設定なら補完する。NULL のままだと管理画面で
+    // アカウントを選択したときに一覧から消え、「紐付いたのに友だち管理に出ない」ことになる。
+    if (lineAccountId) {
+      await db
+        .prepare('UPDATE friends SET line_account_id = ?, updated_at = ? WHERE id = ? AND line_account_id IS NULL')
+        .bind(lineAccountId, jstNow(), existing.id)
+        .run()
+    }
+    return existing.id
+  }
 
   // friends 行が無い。LINE 側の友だち状態を確認して is_following を決める。
   const probe = await probeFriendship(lineClient, lineUserId)
