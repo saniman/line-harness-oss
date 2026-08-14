@@ -111,11 +111,48 @@ export async function getEventBookings(db: D1Database, eventId: number): Promise
   return result.results
 }
 
-export async function getEventBookingsAdmin(db: D1Database, eventId: number): Promise<EventBookingRow[]> {
+/**
+ * 管理画面用: 申込に紐づく友だちの情報を添えた行。
+ * friend_id が NULL（＝友だち未連携）や is_following=0（未フォロー）を
+ * 参加者一覧で判別できるようにするため JOIN して返す。
+ */
+export interface EventBookingWithFriend extends EventBookingRow {
+  friend_display_name: string | null
+  friend_is_following: number | null
+}
+
+export async function getEventBookingsAdmin(
+  db: D1Database,
+  eventId: number,
+): Promise<EventBookingWithFriend[]> {
   const result = await db.prepare(
-    'SELECT * FROM event_bookings WHERE event_id = ? ORDER BY created_at',
-  ).bind(eventId).all<EventBookingRow>()
+    `SELECT b.*, f.display_name AS friend_display_name, f.is_following AS friend_is_following
+     FROM event_bookings b
+     LEFT JOIN friends f ON f.id = b.friend_id
+     WHERE b.event_id = ?
+     ORDER BY b.created_at`,
+  ).bind(eventId).all<EventBookingWithFriend>()
   return result.results
+}
+
+/** 申込に友だちを手動で紐付ける（lineUserId が復元できないケースの救済）。 */
+export async function linkBookingToFriend(
+  db: D1Database,
+  bookingId: number,
+  friendId: string,
+): Promise<{ ok: boolean; error?: 'booking_not_found' | 'friend_not_found' }> {
+  const friend = await db.prepare('SELECT id FROM friends WHERE id = ?')
+    .bind(friendId).first<{ id: string }>()
+  if (!friend) return { ok: false, error: 'friend_not_found' }
+
+  const booking = await db.prepare('SELECT id FROM event_bookings WHERE id = ?')
+    .bind(bookingId).first<{ id: number }>()
+  if (!booking) return { ok: false, error: 'booking_not_found' }
+
+  await db.prepare(
+    "UPDATE event_bookings SET friend_id = ?, updated_at = datetime('now') WHERE id = ?",
+  ).bind(friendId, bookingId).run()
+  return { ok: true }
 }
 
 export async function createEventBooking(

@@ -50,12 +50,51 @@ function isNotFriendError(err: unknown): boolean {
 }
 
 /**
+ * LINE 側の友だち状態の判定結果。
+ * DB の friends 行は webhook の取りこぼしで実態とズレるため、
+ * 「LINE に聞く」処理を申込ゲート（resolveEventApplicant）と
+ * 遡及復元（event-friend-backfill）で共有する。
+ */
+export type FriendshipProbe =
+  | { status: 'friend'; profile: { displayName: string; pictureUrl?: string; statusMessage?: string } }
+  | { status: 'not_friend' }
+  | { status: 'unknown' }
+
+/**
+ * LINE Messaging API の profile 取得で友だち状態を判定する。
+ * 未友だち・ブロック中は 404 が返る。それ以外のエラーは判定不能（unknown）として扱い、
+ * 呼び出し側が「未友だち」と誤断定しないようにする。
+ */
+export async function probeFriendship(
+  lineClient: LineProfileClient | null,
+  lineUserId: string,
+): Promise<FriendshipProbe> {
+  if (!lineClient) {
+    // チャネルアクセストークン未設定＝サーバー側の設定不備。ユーザーのせいにしない。
+    console.error('[probeFriendship] LINE client is not configured')
+    return { status: 'unknown' }
+  }
+  if (!lineUserId) return { status: 'not_friend' }
+
+  try {
+    const profile = await lineClient.getProfile(lineUserId)
+    return { status: 'friend', profile }
+  } catch (err) {
+    if (isNotFriendError(err)) return { status: 'not_friend' }
+    // ネットワーク障害・レート制限等。判定できない。
+    console.error('[probeFriendship] getProfile failed:', err)
+    return { status: 'unknown' }
+  }
+}
+
+/**
  * 申込者の友だちを解決する。friends 行が実態とズレている場合は LINE 側を正として救済する。
  */
 export async function resolveEventApplicant(
   db: D1Database,
   lineUserId: string,
   lineClient: LineProfileClient | null,
+  lineAccountId: string | null = null,
 ): Promise<EventApplicantResolution> {
   if (!lineUserId) return { status: 'not_friend' }
 
@@ -72,28 +111,20 @@ export async function resolveEventApplicant(
   // クライアント申告の friendFlag は詐称できるため、LINE 側の状態を正として判定する。
   // (b) を無条件に 403 にすると、再フォロー済みなのに友だち追加を押しても
   // follow イベントが発火せず（既に友だちのため）自力で復帰できない詰みになる。
-  if (!lineClient) {
-    // チャネルアクセストークン未設定＝サーバー側の設定不備。ユーザーのせいではないので 403 にしない。
-    console.error('[resolveEventApplicant] LINE client is not configured')
-    return { status: 'unavailable' }
-  }
-
-  let profile: Awaited<ReturnType<LineProfileClient['getProfile']>>
-  try {
-    profile = await lineClient.getProfile(lineUserId)
-  } catch (err) {
-    if (isNotFriendError(err)) return { status: 'not_friend' }
-    // ネットワーク障害・レート制限等。判定できないので 503 に倒す（403 にするとループを生む）。
-    console.error('[resolveEventApplicant] getProfile failed:', err)
+  const probe = await probeFriendship(lineClient, lineUserId)
+  if (probe.status === 'not_friend') return { status: 'not_friend' }
+  if (probe.status === 'unknown') {
+    // 判定できないので 503 に倒す（403 にするとループを生む）。
     return { status: 'unavailable' }
   }
 
   // LINE 上は友だち。DB を実態に合わせる（upsertFriend は is_following=1 に戻す）。
   const friend = await upsertFriend(db, {
     lineUserId,
-    displayName: profile.displayName ?? null,
-    pictureUrl: profile.pictureUrl ?? null,
-    statusMessage: profile.statusMessage ?? null,
+    displayName: probe.profile.displayName ?? null,
+    pictureUrl: probe.profile.pictureUrl ?? null,
+    statusMessage: probe.profile.statusMessage ?? null,
+    lineAccountId,
   })
   return { status: 'ok', friendId: friend.id }
 }

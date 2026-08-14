@@ -101,6 +101,18 @@ export interface UpsertFriendInput {
   displayName?: string | null;
   pictureUrl?: string | null;
   statusMessage?: string | null;
+  /**
+   * フォロー状態。省略時は true（follow イベント由来の従来動作）。
+   * false は「LINE 上は未友だちだが CRM には載せたい」ケース専用（イベント申込の遡及復元など）。
+   * 既存行に対しては 1 → 0 への引き下げは行わない（復元処理が誤ってフォロー中の人を
+   * 未フォロー扱いにする事故を防ぐ）。フォロー解除は updateFriendFollowStatus() が担う。
+   */
+  isFollowing?: boolean;
+  /**
+   * 所属 LINE アカウント。省略時は既存値を維持する。
+   * 既に値がある行は上書きしない（先に紐づいたアカウントを正とする）。
+   */
+  lineAccountId?: string | null;
 }
 
 export async function upsertFriend(
@@ -109,6 +121,8 @@ export async function upsertFriend(
 ): Promise<Friend> {
   const now = jstNow();
   const existing = await getFriendByLineUserId(db, input.lineUserId);
+  const isFollowing = input.isFollowing === false ? 0 : 1;
+  const lineAccountId = input.lineAccountId ?? null;
 
   if (existing) {
     await db
@@ -117,7 +131,8 @@ export async function upsertFriend(
          SET display_name = ?,
              picture_url = ?,
              status_message = ?,
-             is_following = 1,
+             is_following = CASE WHEN ? = 1 THEN 1 ELSE is_following END,
+             line_account_id = COALESCE(line_account_id, ?),
              updated_at = ?
          WHERE line_user_id = ?`,
       )
@@ -125,6 +140,8 @@ export async function upsertFriend(
         'displayName' in input ? (input.displayName ?? null) : existing.display_name,
         'pictureUrl' in input ? (input.pictureUrl ?? null) : existing.picture_url,
         'statusMessage' in input ? (input.statusMessage ?? null) : existing.status_message,
+        isFollowing,
+        lineAccountId,
         now,
         input.lineUserId,
       )
@@ -136,8 +153,8 @@ export async function upsertFriend(
   const id = crypto.randomUUID();
   await db
     .prepare(
-      `INSERT INTO friends (id, line_user_id, display_name, picture_url, status_message, is_following, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
+      `INSERT INTO friends (id, line_user_id, display_name, picture_url, status_message, is_following, line_account_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -145,6 +162,8 @@ export async function upsertFriend(
       input.displayName ?? null,
       input.pictureUrl ?? null,
       input.statusMessage ?? null,
+      isFollowing,
+      lineAccountId,
       now,
       now,
     )

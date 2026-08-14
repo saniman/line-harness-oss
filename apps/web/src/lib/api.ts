@@ -632,6 +632,17 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ scenarioId }),
       }),
+    /** friend_id 未連携の申込を Stripe metadata から復元する */
+    backfillFriends: (id: number) =>
+      fetchApi<ApiResponse<BackfillFriendsResult>>(`/api/events/${id}/backfill-friends`, {
+        method: 'POST',
+      }),
+    /** 申込に友だちを手動で紐付ける */
+    linkBookingFriend: (bookingId: number, friendId: string) =>
+      fetchApi<ApiResponse<null>>(`/api/events/bookings/${bookingId}/link-friend`, {
+        method: 'POST',
+        body: JSON.stringify({ friendId }),
+      }),
   },
   orders: {
     // 厨房ディスプレイ一覧（既定: status=active = new+preparing）
@@ -891,4 +902,21 @@ export type EventBookingItem = {
   amount: number | null
   created_at: string
   updated_at: string
+  /** 紐づく友だちの表示名（未連携なら null） */
+  friend_display_name: string | null
+  /** 紐づく友だちのフォロー状態（未連携なら null。0 = 未フォロー） */
+  friend_is_following: number | null
+}
+
+export type BackfillFriendsResult = {
+  /** friend_id が未連携の申込の総数 */
+  total: number
+  /** friend_id を埋められた件数 */
+  linked: number
+  /** 友だちを新規作成した件数（linked の内数） */
+  created: number
+  /** 復元できずスキップした件数 */
+  skipped: number
+  /** 上限に達して未処理が残ったか */
+  truncated: boolean
 }

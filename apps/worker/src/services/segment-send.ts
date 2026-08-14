@@ -8,7 +8,7 @@ import {
 import type { Broadcast } from '@line-crm/db';
 import type { LineClient } from '@line-crm/line-sdk';
 import { calculateStaggerDelay, sleep, addMessageVariation } from './stealth.js';
-import { buildSegmentQuery } from './segment-query.js';
+import { buildSegmentQuery, withFollowingOnly } from './segment-query.js';
 import type { SegmentCondition } from './segment-query.js';
 import { buildMessage } from './broadcast.js';
 
@@ -48,6 +48,8 @@ export async function processSegmentSend(
       finalSql = sql.replace('WHERE', 'WHERE f.line_account_id = ? AND');
       finalBindings.unshift(broadcastAccountId);
     }
+    // 未フォローには送れない（LINE API がエラーを返す）。セグメント条件に依らず送信側で必ず除外する。
+    finalSql = withFollowingOnly(finalSql);
     const queryResult = await db
       .prepare(finalSql)
       .bind(...finalBindings)

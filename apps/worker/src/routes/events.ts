@@ -13,9 +13,12 @@ import {
   createPendingBooking,
   updateBookingStripeSessionId,
   cancelEventBooking,
+  linkBookingToFriend,
 } from '../services/events.js';
 import { enrollEventFollowupScenarios, enrollEventParticipants } from '../services/event-followup.js';
 import { resolveEventApplicant } from '../services/event-friend.js';
+import { backfillEventBookingFriends } from '../services/event-friend-backfill.js';
+import { resolveDefaultLineAccountId } from '../services/default-line-account.js';
 import { verifyCallerLineUserId } from '../services/liff-identity.js';
 import { getScenarioById } from '@line-crm/db';
 import type { Env } from '../index.js';
@@ -176,7 +179,8 @@ events.post('/api/events/:id/join', async (c) => {
     const lineClient = c.env.LINE_CHANNEL_ACCESS_TOKEN
       ? new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN)
       : null;
-    const applicant = await resolveEventApplicant(c.env.DB, lineUserId, lineClient);
+    const defaultAccountId = await resolveDefaultLineAccountId(c.env.DB, c.env);
+    const applicant = await resolveEventApplicant(c.env.DB, lineUserId, lineClient, defaultAccountId);
     // 判定不能（LINE API 障害等）は 403 にしない。友だち追加を促しても解決せずループするため。
     if (applicant.status === 'unavailable') {
       return c.json({ success: false, error: 'friend_check_unavailable' }, 503);
@@ -283,7 +287,8 @@ events.post('/api/events/:id/checkout-session', async (c) => {
     const lineClient = c.env.LINE_CHANNEL_ACCESS_TOKEN
       ? new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN)
       : null;
-    const applicant = await resolveEventApplicant(c.env.DB, lineUserId, lineClient);
+    const defaultAccountId = await resolveDefaultLineAccountId(c.env.DB, c.env);
+    const applicant = await resolveEventApplicant(c.env.DB, lineUserId, lineClient, defaultAccountId);
     if (applicant.status === 'unavailable') {
       return c.json({ success: false, error: 'friend_check_unavailable' }, 503);
     }
@@ -450,6 +455,61 @@ events.post('/api/events/:id/enroll-participants', async (c) => {
     return c.json({ success: true, data: { enrolled: result.enrolled, total: result.total } });
   } catch (err) {
     console.error('POST /api/events/:id/enroll-participants error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// ========== 管理API: friend_id 未連携の遡及復元 ==========
+
+events.post('/api/events/:id/backfill-friends', async (c) => {
+  try {
+    const id = Number(c.req.param('id'));
+    if (Number.isNaN(id)) {
+      return c.json({ success: false, error: 'Invalid event id' }, 400);
+    }
+    const event = await getEventById(c.env.DB, id);
+    if (!event) return c.json({ success: false, error: 'Event not found' }, 404);
+
+    const stripe = c.env.STRIPE_SECRET_KEY
+      ? new Stripe(c.env.STRIPE_SECRET_KEY, {
+          apiVersion: '2026-04-22.dahlia',
+          httpClient: Stripe.createFetchHttpClient(),
+        })
+      : null;
+    const lineClient = c.env.LINE_CHANNEL_ACCESS_TOKEN
+      ? new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN)
+      : null;
+    const lineAccountId = await resolveDefaultLineAccountId(c.env.DB, c.env);
+
+    const result = await backfillEventBookingFriends(c.env.DB, id, stripe, lineClient, lineAccountId);
+    return c.json({ success: true, data: result });
+  } catch (err) {
+    console.error('POST /api/events/:id/backfill-friends error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+events.post('/api/events/bookings/:id/link-friend', async (c) => {
+  try {
+    const bookingId = Number(c.req.param('id'));
+    if (Number.isNaN(bookingId)) {
+      return c.json({ success: false, error: 'Invalid booking id' }, 400);
+    }
+    const body = await c.req.json<{ friendId?: string }>();
+    if (!body.friendId) {
+      return c.json({ success: false, error: 'friendId is required' }, 400);
+    }
+
+    const result = await linkBookingToFriend(c.env.DB, bookingId, body.friendId);
+    if (!result.ok) {
+      const message = result.error === 'friend_not_found'
+        ? '指定された友だちが見つかりません'
+        : '指定された申込が見つかりません';
+      return c.json({ success: false, error: message }, 404);
+    }
+    return c.json({ success: true, data: null });
+  } catch (err) {
+    console.error('POST /api/events/bookings/:id/link-friend error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

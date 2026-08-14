@@ -3,11 +3,22 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { api } from '@/lib/api'
-import type { EventItem, EventBookingItem } from '@/lib/api'
+import type { EventItem, EventBookingItem, FriendWithTags } from '@/lib/api'
 import { getPaymentBadge } from '@/lib/payment-badge'
 import Header from '@/components/layout/header'
 
 const FIELD_CLASS = 'text-sm border border-gray-300 rounded-lg px-3 py-2 w-full focus:outline-none focus:ring-2 focus:ring-green-500'
+
+/**
+ * 申込と友だちの連携状態バッジ。
+ * friend_id が無い申込は CRM に取り込めていない（＝アフターフォロー・タグ・配信の対象外）ため、
+ * 参加者一覧で気付けるようにする。
+ */
+function getFriendLinkBadge(b: EventBookingItem): { label: string; cls: string } | null {
+  if (!b.friend_id) return { label: '友だち未連携', cls: 'bg-gray-100 text-gray-600' }
+  if (b.friend_is_following === 0) return { label: '未フォロー', cls: 'bg-amber-100 text-amber-700' }
+  return null
+}
 
 function isoToDatetimeLocal(iso: string): string {
   const d = new Date(iso)
@@ -47,6 +58,14 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
   const [selectedScenarioId, setSelectedScenarioId] = useState('')
   const [enrolling, setEnrolling] = useState(false)
   const [enrollResult, setEnrollResult] = useState('')
+  // 友だち未連携の復元
+  const [backfilling, setBackfilling] = useState(false)
+  const [backfillResult, setBackfillResult] = useState('')
+  // 手動紐付け（Stripe セッションを持たない無料/現金の申込用）
+  const [linkingBookingId, setLinkingBookingId] = useState<number | null>(null)
+  const [friendQuery, setFriendQuery] = useState('')
+  const [friendCandidates, setFriendCandidates] = useState<FriendWithTags[]>([])
+  const [linking, setLinking] = useState(false)
 
   useEffect(() => {
     api.scenarios.list().then((res) => {
@@ -97,6 +116,62 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
   }, [eventId])
 
   useEffect(() => { load() }, [load])
+
+  const handleBackfillFriends = async () => {
+    if (!confirm('友だち未連携の申込について、決済情報から LINE ユーザーを特定して友だちに紐付けます。よろしいですか？')) return
+    setBackfilling(true)
+    setBackfillResult('')
+    try {
+      const res = await api.events.backfillFriends(eventId)
+      if (res.success) {
+        const { total, linked, created, skipped, truncated } = res.data
+        const parts = [`確定申込のうち友だち未連携 ${total} 件中 ${linked} 件を紐付けました（新規の友だち ${created} 件）。`]
+        if (skipped > 0) {
+          parts.push(`${skipped} 件は紐付けできませんでした（無料・当日現金の申込、または LINE ユーザーを特定できなかったもの）。参加者一覧の「友だちを紐付け」から手動で指定してください。`)
+        }
+        // 黙って切り捨てない: 上限で打ち切ったことを必ず伝える
+        if (truncated) parts.push('一度に処理できるのは 50 件までです。残りはもう一度実行してください。')
+        setBackfillResult(parts.join(' '))
+        await load()
+      } else {
+        setBackfillResult('エラー: ' + res.error)
+      }
+    } catch {
+      setBackfillResult('復元に失敗しました')
+    } finally {
+      setBackfilling(false)
+    }
+  }
+
+  const handleSearchFriends = async (q: string) => {
+    setFriendQuery(q)
+    if (!q.trim()) { setFriendCandidates([]); return }
+    try {
+      const res = await api.friends.list({ search: q.trim(), limit: 10 })
+      if (res.success) setFriendCandidates(res.data.items)
+    } catch {
+      setFriendCandidates([])
+    }
+  }
+
+  const handleLinkFriend = async (bookingId: number, friendId: string) => {
+    setLinking(true)
+    try {
+      const res = await api.events.linkBookingFriend(bookingId, friendId)
+      if (res.success) {
+        setLinkingBookingId(null)
+        setFriendQuery('')
+        setFriendCandidates([])
+        await load()
+      } else {
+        setError('紐付けに失敗しました: ' + res.error)
+      }
+    } catch {
+      setError('紐付けに失敗しました')
+    } finally {
+      setLinking(false)
+    }
+  }
 
   const handleTogglePublish = async () => {
     if (!event) return
@@ -223,14 +298,34 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
                 </div>
                 {bookings.map((b) => {
                   const paymentBadge = getPaymentBadge(b)
+                  const friendBadge = getFriendLinkBadge(b)
                   return (
+                    <div key={b.id} className="border-b border-gray-100 last:border-0">
                     <div
-                      key={b.id}
-                      className="grid grid-cols-1 sm:grid-cols-[1fr_100px_100px_80px_140px] gap-1 sm:gap-4 px-4 py-3 border-b border-gray-100 last:border-0 hover:bg-gray-50 transition-colors"
+                      className="grid grid-cols-1 sm:grid-cols-[1fr_100px_100px_80px_140px] gap-1 sm:gap-4 px-4 py-3 hover:bg-gray-50 transition-colors"
                     >
                       <div>
                         <p className="text-sm font-medium text-gray-900">{b.name}</p>
                         <p className="text-xs text-gray-400 truncate">{b.email}</p>
+                        {friendBadge && (
+                          <div className="flex items-center gap-2 mt-1">
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${friendBadge.cls}`}>
+                              {friendBadge.label}
+                            </span>
+                            {!b.friend_id && (
+                              <button
+                                onClick={() => {
+                                  setLinkingBookingId(linkingBookingId === b.id ? null : b.id)
+                                  setFriendQuery('')
+                                  setFriendCandidates([])
+                                }}
+                                className="text-xs text-green-600 hover:underline"
+                              >
+                                友だちを紐付け
+                              </button>
+                            )}
+                          </div>
+                        )}
                       </div>
                       <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700 w-fit self-center">
                         {b.status === 'confirmed' ? '確定' : b.status === 'pending' ? '保留' : 'キャンセル'}
@@ -243,10 +338,62 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
                       </p>
                       <p className="text-xs text-gray-400 self-center">{formatJST(b.created_at)}</p>
                     </div>
+
+                    {/* 手動紐付け: 決済情報から LINE ユーザーを特定できない申込（無料/現金）用 */}
+                    {linkingBookingId === b.id && (
+                      <div className="px-4 pb-3 bg-gray-50">
+                        <input
+                          type="text"
+                          value={friendQuery}
+                          onChange={(e) => handleSearchFriends(e.target.value)}
+                          placeholder="友だちの表示名で検索"
+                          className={FIELD_CLASS}
+                          autoFocus
+                        />
+                        {friendCandidates.length > 0 && (
+                          <ul className="mt-2 border border-gray-200 rounded-lg bg-white divide-y divide-gray-100 max-h-48 overflow-y-auto">
+                            {friendCandidates.map((f) => (
+                              <li key={f.id}>
+                                <button
+                                  onClick={() => handleLinkFriend(b.id, f.id)}
+                                  disabled={linking}
+                                  className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 disabled:opacity-50"
+                                >
+                                  {f.displayName ?? '(名前なし)'}
+                                  {!f.isFollowing && <span className="ml-2 text-xs text-gray-400">未フォロー</span>}
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                        {friendQuery.trim() !== '' && friendCandidates.length === 0 && (
+                          <p className="mt-2 text-xs text-gray-400">該当する友だちが見つかりません</p>
+                        )}
+                      </div>
+                    )}
+                    </div>
                   )
                 })}
               </>
             )}
+          </div>
+
+          {/* 友だち未連携の復元 */}
+          <div className="bg-white rounded-lg border border-gray-200 p-4 mt-4">
+            <h2 className="text-sm font-semibold text-gray-700 mb-1">友だち未連携を復元</h2>
+            <p className="text-xs text-gray-500 mb-3">
+              「友だち未連携」の申込について、Stripe の決済情報から LINE ユーザーを特定し、友だちに登録して紐付けます。
+              友だち追加をしていない申込者は「未フォロー」として友だち管理に登録されます（配信の対象にはなりません）。
+              何度実行しても二重登録にはなりません。
+            </p>
+            <button
+              onClick={handleBackfillFriends}
+              disabled={backfilling}
+              className="px-4 py-2 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700 disabled:opacity-50"
+            >
+              {backfilling ? '復元中...' : '友だち未連携を復元'}
+            </button>
+            {backfillResult && <p className="text-xs text-gray-600 mt-2">{backfillResult}</p>}
           </div>
 
           {/* アフターフォロー一括登録 */}

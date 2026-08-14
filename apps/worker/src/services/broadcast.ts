@@ -245,7 +245,7 @@ async function processQueuedBroadcastBatches(
   const accountId = raw.line_account_id as string | null;
   let friends: Array<{ id: string; line_user_id: string }>;
   if (segmentConditionsStr) {
-    const { buildSegmentQuery } = await import('./segment-query.js');
+    const { buildSegmentQuery, withFollowingOnly } = await import('./segment-query.js');
     const condition = JSON.parse(segmentConditionsStr);
     const { sql, bindings } = buildSegmentQuery(condition);
     // アカウントフィルタを追加（line_account_idで絞り込み）
@@ -255,6 +255,8 @@ async function processQueuedBroadcastBatches(
       accountSql = sql.replace('WHERE', 'WHERE f.line_account_id = ? AND');
       accountBindings.unshift(accountId);
     }
+    // 未フォローには送れない（LINE API がエラーを返す）。セグメント条件に依らず送信側で必ず除外する。
+    accountSql = withFollowingOnly(accountSql);
     const result = await db.prepare(accountSql).bind(...accountBindings).all<{ id: string; line_user_id: string }>();
     friends = result.results ?? [];
   } else if (broadcast.target_tag_id) {

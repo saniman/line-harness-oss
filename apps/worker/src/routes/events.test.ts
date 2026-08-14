@@ -33,6 +33,7 @@ vi.mock('../services/events.js', () => ({
   getEventBookingById: vi.fn(),
   confirmEventBooking: vi.fn(),
   cancelEventBooking: vi.fn(),
+  linkBookingToFriend: vi.fn(),
 }))
 
 vi.mock('../services/event-followup.js', () => ({
@@ -48,6 +49,14 @@ vi.mock('../services/event-friend.js', () => ({
   resolveEventApplicant: vi.fn(),
 }))
 
+vi.mock('../services/event-friend-backfill.js', () => ({
+  backfillEventBookingFriends: vi.fn(),
+}))
+
+vi.mock('../services/default-line-account.js', () => ({
+  resolveDefaultLineAccountId: vi.fn().mockResolvedValue('acc-1'),
+}))
+
 vi.mock('@line-crm/db', () => ({
   getScenarioById: vi.fn(),
 }))
@@ -56,6 +65,8 @@ import * as eventsService from '../services/events.js'
 import { enrollEventParticipants } from '../services/event-followup.js'
 import { verifyCallerLineUserId } from '../services/liff-identity.js'
 import { resolveEventApplicant } from '../services/event-friend.js'
+import { backfillEventBookingFriends } from '../services/event-friend-backfill.js'
+import { resolveDefaultLineAccountId } from '../services/default-line-account.js'
 import { getScenarioById } from '@line-crm/db'
 import { events } from './events.js'
 
@@ -63,6 +74,8 @@ const mockEnrollParticipants = vi.mocked(enrollEventParticipants)
 const mockGetScenarioById = vi.mocked(getScenarioById)
 const mockVerifyCaller = vi.mocked(verifyCallerLineUserId)
 const mockResolveApplicant = vi.mocked(resolveEventApplicant)
+const mockBackfill = vi.mocked(backfillEventBookingFriends)
+const mockResolveDefaultAccountId = vi.mocked(resolveDefaultLineAccountId)
 
 const mockDb = {} as D1Database
 const app = new Hono()
@@ -93,6 +106,7 @@ beforeEach(() => {
   // 既定は「idToken 検証OK・友だち登録済み」。異常系は各テストで上書きする。
   mockVerifyCaller.mockResolvedValue('U123')
   mockResolveApplicant.mockResolvedValue({ status: 'ok', friendId: 'friend-1' })
+  mockResolveDefaultAccountId.mockResolvedValue('acc-1')
 })
 
 /** LIFF からの申込リクエスト（Authorization: Bearer <idToken> 付き） */
@@ -261,14 +275,17 @@ describe('DELETE /api/events/:id', () => {
 })
 
 describe('GET /api/events/:id/bookings', () => {
+  const paidBooking = {
+    ...BOOKING1,
+    status: 'confirmed',
+    payment_status: 'paid',
+    paid_at: '2026-06-01T10:00:00',
+    amount: 3000,
+    friend_display_name: null,
+    friend_is_following: null,
+  }
+
   it('参加申込一覧にpayment_status・paid_at・amountが含まれる', async () => {
-    const paidBooking = {
-      ...BOOKING1,
-      status: 'confirmed',
-      payment_status: 'paid',
-      paid_at: '2026-06-01T10:00:00',
-      amount: 3000,
-    }
     vi.mocked(eventsService.getEventBookingsAdmin).mockResolvedValue([paidBooking])
     const res = await app.request('/api/events/1/bookings', {}, { DB: mockDb })
     expect(res.status).toBe(200)
@@ -278,6 +295,16 @@ describe('GET /api/events/:id/bookings', () => {
     expect(json.data[0].payment_status).toBe('paid')
     expect(json.data[0].paid_at).toBe('2026-06-01T10:00:00')
     expect(json.data[0].amount).toBe(3000)
+  })
+
+  it('友だち連携の状態（display_name・is_following）が含まれる', async () => {
+    vi.mocked(eventsService.getEventBookingsAdmin).mockResolvedValue([
+      { ...paidBooking, friend_id: 'friend-1', friend_display_name: '黒部誠規', friend_is_following: 0 },
+    ])
+    const res = await app.request('/api/events/1/bookings', {}, { DB: mockDb })
+    const json = await res.json() as { data: typeof paidBooking[] }
+    expect(json.data[0].friend_display_name).toBe('黒部誠規')
+    expect(json.data[0].friend_is_following).toBe(0)
   })
 })
 
@@ -563,6 +590,82 @@ describe('POST /api/events/bookings/:id/cancel', () => {
     expect(res.status).toBe(400)
     const json = await res.json() as { success: boolean; error: string }
     expect(json.error).toContain('キャンセル済み')
+  })
+})
+
+describe('POST /api/events/:id/backfill-friends', () => {
+  const BACKFILL_ENV = { ...MOCK_ENV, LINE_CHANNEL_ACCESS_TOKEN: 'test-token' }
+
+  it('正常系：復元結果（total/linked/created/skipped/truncated）を返す', async () => {
+    vi.mocked(eventsService.getEventById).mockResolvedValue(EVENT1)
+    mockBackfill.mockResolvedValue({ total: 3, linked: 2, created: 1, skipped: 1, truncated: false })
+    const res = await app.request('/api/events/1/backfill-friends', { method: 'POST' }, BACKFILL_ENV)
+    expect(res.status).toBe(200)
+    const json = await res.json() as { success: boolean; data: { linked: number; skipped: number } }
+    expect(json.data.linked).toBe(2)
+    expect(json.data.skipped).toBe(1)
+    // 既定アカウントを解決して渡す（復元した friends 行の line_account_id 用）
+    expect(mockBackfill).toHaveBeenCalledWith(mockDb, 1, expect.anything(), expect.anything(), 'acc-1')
+  })
+
+  it('イベントが存在しなければ404', async () => {
+    vi.mocked(eventsService.getEventById).mockResolvedValue(null)
+    const res = await app.request('/api/events/999/backfill-friends', { method: 'POST' }, BACKFILL_ENV)
+    expect(res.status).toBe(404)
+    expect(mockBackfill).not.toHaveBeenCalled()
+  })
+
+  it('不正なイベントIDは400', async () => {
+    const res = await app.request('/api/events/abc/backfill-friends', { method: 'POST' }, BACKFILL_ENV)
+    expect(res.status).toBe(400)
+    expect(mockBackfill).not.toHaveBeenCalled()
+  })
+})
+
+describe('POST /api/events/bookings/:id/link-friend', () => {
+  it('正常系：手動で friend を紐付ける', async () => {
+    vi.mocked(eventsService.linkBookingToFriend).mockResolvedValue({ ok: true })
+    const res = await app.request('/api/events/bookings/11/link-friend', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ friendId: 'friend-9' }),
+    }, MOCK_ENV)
+    expect(res.status).toBe(200)
+    expect(eventsService.linkBookingToFriend).toHaveBeenCalledWith(mockDb, 11, 'friend-9')
+  })
+
+  it('friendId が無ければ400', async () => {
+    const res = await app.request('/api/events/bookings/11/link-friend', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    }, MOCK_ENV)
+    expect(res.status).toBe(400)
+    expect(eventsService.linkBookingToFriend).not.toHaveBeenCalled()
+  })
+
+  it('友だちが存在しなければ404', async () => {
+    vi.mocked(eventsService.linkBookingToFriend).mockResolvedValue({ ok: false, error: 'friend_not_found' })
+    const res = await app.request('/api/events/bookings/11/link-friend', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ friendId: 'nope' }),
+    }, MOCK_ENV)
+    expect(res.status).toBe(404)
+    const json = await res.json() as { error: string }
+    expect(json.error).toContain('友だち')
+  })
+
+  it('申込が存在しなければ404', async () => {
+    vi.mocked(eventsService.linkBookingToFriend).mockResolvedValue({ ok: false, error: 'booking_not_found' })
+    const res = await app.request('/api/events/bookings/999/link-friend', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ friendId: 'friend-9' }),
+    }, MOCK_ENV)
+    expect(res.status).toBe(404)
+    const json = await res.json() as { error: string }
+    expect(json.error).toContain('申込')
   })
 })
 

@@ -6,7 +6,7 @@ vi.mock('@line-crm/db', () => ({
   upsertFriend: mockUpsertFriend,
 }))
 
-import { resolveEventApplicant } from './event-friend.js'
+import { resolveEventApplicant, probeFriendship } from './event-friend.js'
 
 /** friends の SELECT 1回分だけを返す D1 モック */
 function makeDb(row: { id: string; is_following: number } | null) {
@@ -50,7 +50,18 @@ describe('resolveEventApplicant', () => {
       displayName: '黒部誠規',
       pictureUrl: 'https://example.com/p.jpg',
       statusMessage: null,
+      lineAccountId: null,
     })
+  })
+
+  it('lineAccountId を渡すと救済 upsert に引き継がれる', async () => {
+    const { db } = makeDb(null)
+    const lineClient = { getProfile: vi.fn().mockResolvedValue(PROFILE) }
+    mockUpsertFriend.mockResolvedValue({ id: 'friend-new' })
+
+    await resolveEventApplicant(db, 'U123', lineClient, 'acc-1')
+
+    expect(mockUpsertFriend).toHaveBeenCalledWith(db, expect.objectContaining({ lineAccountId: 'acc-1' }))
   })
 
   it('is_following=0 でも LINE 上は友だちなら救済して ok を返す（再フォローの取りこぼし対策）', async () => {
@@ -122,5 +133,35 @@ describe('resolveEventApplicant', () => {
 
     expect(result).toEqual({ status: 'not_friend' })
     expect(prepare).not.toHaveBeenCalled()
+  })
+})
+
+describe('probeFriendship', () => {
+  it('profile が取れたら friend を返す', async () => {
+    const lineClient = { getProfile: vi.fn().mockResolvedValue(PROFILE) }
+    const result = await probeFriendship(lineClient, 'U123')
+    expect(result).toEqual({ status: 'friend', profile: PROFILE })
+  })
+
+  it('404 なら not_friend を返す', async () => {
+    const lineClient = { getProfile: vi.fn().mockRejectedValue(NOT_FRIEND_ERROR) }
+    expect(await probeFriendship(lineClient, 'U123')).toEqual({ status: 'not_friend' })
+  })
+
+  it('404 以外のエラーは unknown を返す（未友だちと誤断定しない）', async () => {
+    const lineClient = {
+      getProfile: vi.fn().mockRejectedValue(new Error('LINE API error: 429 Too Many Requests — {}')),
+    }
+    expect(await probeFriendship(lineClient, 'U123')).toEqual({ status: 'unknown' })
+  })
+
+  it('lineClient が無い場合は unknown を返す', async () => {
+    expect(await probeFriendship(null, 'U123')).toEqual({ status: 'unknown' })
+  })
+
+  it('lineUserId が空なら LINE を叩かず not_friend を返す', async () => {
+    const lineClient = { getProfile: vi.fn() }
+    expect(await probeFriendship(lineClient, '')).toEqual({ status: 'not_friend' })
+    expect(lineClient.getProfile).not.toHaveBeenCalled()
   })
 })
