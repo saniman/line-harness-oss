@@ -18,6 +18,8 @@
 import { initBooking } from './booking.js';
 import { initForm } from './form.js';
 import { initEventBooking } from './event-booking.js';
+import { apiUrl } from './api-url.js';
+import { buildFriendAddHtml } from './friend-add.js';
 import { safeRedirectTarget } from '../lib/safe-redirect.js';
 
 declare const liff: {
@@ -49,7 +51,9 @@ const UUID_STORAGE_KEY = 'lh_uuid';
 let BOT_BASIC_ID = '';
 
 function apiCall(path: string, options?: RequestInit): Promise<Response> {
-  return fetch(path, {
+  // LIFF は Pages、API は別ドメインの Worker。相対パスだと Pages に着弾して
+  // HTML が返り res.json() が失敗する（.claude/rules/liff.md / #25）
+  return fetch(apiUrl(path), {
     ...options,
     headers: {
       'Content-Type': 'application/json',
@@ -121,23 +125,7 @@ function showFriendAdd(
   opts?: { onFriendAdded?: () => void | Promise<void> },
 ) {
   const container = document.getElementById('app')!;
-  const friendAddUrl = BOT_BASIC_ID
-    ? `https://line.me/R/ti/p/${BOT_BASIC_ID}`
-    : '#';
-
-  container.innerHTML = `
-    <div class="card">
-      <div class="profile">
-        ${profile.pictureUrl ? `<img src="${profile.pictureUrl}" alt="" />` : ''}
-        <p class="name">${escapeHtml(profile.displayName)} さん</p>
-      </div>
-      <p class="message">まずは友だち追加をお願いします</p>
-      <a href="${friendAddUrl}" class="add-friend-btn" id="addFriendBtn">
-        友だち追加して始める
-      </a>
-      <p class="sub-message">追加後、この画面に戻ってきてください</p>
-    </div>
-  `;
+  container.innerHTML = buildFriendAddHtml(profile, BOT_BASIC_ID);
 
   // 友だち追加後に戻ってきたら自動で再チェック
   // 一度発火したら listener を外して、ユーザーが LIFF をフォアグラウンド復帰するたびに
@@ -567,14 +555,20 @@ async function main() {
     }
 
     // Resolve bot basic ID from API (multi-account support)
+    // 相対パスで叩くと Pages に着弾して HTML が返る → BOT_BASIC_ID が空のままになり
+    // 友だち追加ボタンが無反応になる（#25）。必ず apiUrl() で絶対URLにする。
     try {
-      const configRes = await fetch(`/api/liff/config?liffId=${encodeURIComponent(LIFF_ID)}`);
+      const configRes = await fetch(apiUrl(`/api/liff/config?liffId=${encodeURIComponent(LIFF_ID)}`));
       const configJson = await configRes.json() as { success: boolean; data?: { botBasicId?: string } };
       if (configJson.success && configJson.data?.botBasicId) {
         BOT_BASIC_ID = configJson.data.botBasicId;
       }
-    } catch {
-      // fallback: BOT_BASIC_ID remains empty, friend-add URL won't auto-redirect
+    } catch (err) {
+      // ビルド時に埋め込んだ値へフォールバック（未設定なら空のまま＝ボタンは出さず理由を表示）
+      console.error('[LIFF] failed to resolve botBasicId:', err);
+    }
+    if (!BOT_BASIC_ID) {
+      BOT_BASIC_ID = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_BOT_BASIC_ID) || '';
     }
 
     const page = getPage();
