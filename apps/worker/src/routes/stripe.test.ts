@@ -34,10 +34,36 @@ vi.mock('../services/events.js', () => ({
   confirmEventBooking: vi.fn(),
 }))
 
+vi.mock('../services/event-followup.js', () => ({
+  enrollEventFollowupScenarios: vi.fn().mockResolvedValue(0),
+}))
+
+vi.mock('../services/event-friend.js', () => ({
+  resolveEventApplicant: vi.fn(),
+}))
+
+vi.mock('../services/default-line-account.js', () => ({
+  resolveDefaultLineAccountId: vi.fn().mockResolvedValue('acc-1'),
+}))
+
 import * as eventsService from '../services/events.js'
+import { enrollEventFollowupScenarios } from '../services/event-followup.js'
+import { resolveEventApplicant } from '../services/event-friend.js'
 import { stripe } from './stripe.js'
 
-const mockDb = {} as D1Database
+const mockEnrollFollowup = vi.mocked(enrollEventFollowupScenarios)
+const mockResolveApplicant = vi.mocked(resolveEventApplicant)
+
+/** friend_id 復元時の UPDATE を記録する D1 モック */
+const dbUpdates: { sql: string; binds: unknown[] }[] = []
+const mockDb = {
+  prepare: (sql: string) => ({
+    bind: (...binds: unknown[]) => {
+      dbUpdates.push({ sql, binds })
+      return { run: async () => ({ meta: {} }), first: async () => null }
+    },
+  }),
+} as unknown as D1Database
 const app = new Hono()
 app.route('/', stripe)
 
@@ -71,7 +97,11 @@ const MOCK_SESSION = {
   customer_details: { name: '山田太郎', email: 'yamada@example.com' },
 }
 
-beforeEach(() => { vi.clearAllMocks() })
+beforeEach(() => {
+  vi.clearAllMocks()
+  dbUpdates.length = 0
+  mockResolveApplicant.mockResolvedValue({ status: 'not_friend' })
+})
 
 describe('POST /api/stripe/webhook', () => {
   it('正常系：署名検証OK → booking確定・LINE通知送信', async () => {
@@ -95,6 +125,50 @@ describe('POST /api/stripe/webhook', () => {
     expect(json.received).toBe(true)
     expect(eventsService.confirmEventBooking).toHaveBeenCalledWith(mockDb, 1, 3000, '山田太郎', 'yamada@example.com')
     expect(mockPushMessage).toHaveBeenCalledOnce()
+  })
+
+  it('friend_id が NULL なら metadata の lineUserId から復元して booking に埋める', async () => {
+    mockConstructEventAsync.mockResolvedValue({
+      type: 'checkout.session.completed',
+      data: { object: MOCK_SESSION },
+    })
+    vi.mocked(eventsService.getEventBookingById).mockResolvedValue(PENDING_BOOKING)
+    vi.mocked(eventsService.confirmEventBooking).mockResolvedValue(undefined)
+    vi.mocked(eventsService.getEventById).mockResolvedValue(EVENT1)
+    mockResolveApplicant.mockResolvedValue({ status: 'ok', friendId: 'friend-restored' })
+    mockPushMessage.mockResolvedValue({})
+
+    const res = await app.request('/api/stripe/webhook', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'stripe-signature': 't=123,v1=abc' },
+      body: JSON.stringify({}),
+    }, MOCK_ENV)
+
+    expect(res.status).toBe(200)
+    const update = dbUpdates.find((u) => u.sql.includes('UPDATE event_bookings'))
+    expect(update?.binds).toEqual(['friend-restored', 1])
+    // 復元した friend_id でアフターフォローに載せる
+    expect(mockEnrollFollowup).toHaveBeenCalledWith(mockDb, 'friend-restored', EVENT1.start_at)
+  })
+
+  it('friend_id が既にあるなら復元処理を走らせない', async () => {
+    mockConstructEventAsync.mockResolvedValue({
+      type: 'checkout.session.completed',
+      data: { object: MOCK_SESSION },
+    })
+    vi.mocked(eventsService.getEventBookingById).mockResolvedValue({ ...PENDING_BOOKING, friend_id: 'friend-1' })
+    vi.mocked(eventsService.confirmEventBooking).mockResolvedValue(undefined)
+    vi.mocked(eventsService.getEventById).mockResolvedValue(EVENT1)
+    mockPushMessage.mockResolvedValue({})
+
+    await app.request('/api/stripe/webhook', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'stripe-signature': 't=123,v1=abc' },
+      body: JSON.stringify({}),
+    }, MOCK_ENV)
+
+    expect(mockResolveApplicant).not.toHaveBeenCalled()
+    expect(mockEnrollFollowup).toHaveBeenCalledWith(mockDb, 'friend-1', EVENT1.start_at)
   })
 
   it('異常系：署名検証NG → 400', async () => {

@@ -33,6 +33,31 @@ export function resolveChannelIdForEnv(env: DefaultLineAccountEnv): string | nul
   return null;
 }
 
+/**
+ * 既定の LINE アカウント ID を解決する。
+ *
+ * webhook は destination から line_account_id を解決できるが（routes/webhook.ts:220-224）、
+ * 管理画面のバックフィルや LIFF 申込の救済 upsert にはその文脈が無い。
+ * env のチャネル ID と一致する行を優先し、無ければ「アクティブが1件だけ」のときのみそれを使う。
+ * 判断できない場合は null を返す（誤ったアカウントに紐づけるより未設定のままが安全）。
+ */
+export async function resolveDefaultLineAccountId(
+  db: D1Database,
+  env: DefaultLineAccountEnv,
+): Promise<string | null> {
+  const accounts = await getLineAccounts(db);
+  if (accounts.length === 0) return null;
+
+  const channelId = resolveChannelIdForEnv(env);
+  if (channelId) {
+    const matched = accounts.find((a) => a.channel_id === channelId);
+    if (matched) return matched.id;
+  }
+
+  const active = accounts.filter((a) => a.is_active !== 0);
+  return active.length === 1 ? active[0].id : null;
+}
+
 /** When line_accounts is empty, mirror wrangler env credentials into a default row. */
 export async function ensureDefaultLineAccount(
   db: D1Database,

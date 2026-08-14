@@ -13,6 +13,8 @@ import {
   confirmEventBooking,
 } from '../services/events.js';
 import { enrollEventFollowupScenarios } from '../services/event-followup.js';
+import { resolveEventApplicant } from '../services/event-friend.js';
+import { resolveDefaultLineAccountId } from '../services/default-line-account.js';
 import type { Env } from '../index.js';
 
 const stripe = new Hono<Env>();
@@ -245,9 +247,31 @@ stripe.post('/api/stripe/webhook', async (c) => {
   // イベント情報（開催日時 start_at はアフターフォローの開催日アンカーに使う）
   const eventRow = await getEventById(c.env.DB, eventId);
 
+  // 5a. friend_id の保険。#18 のゲート導入後は通常 NULL のまま届かないが、
+  //     万一 NULL なら metadata の lineUserId から復元してアフターフォローに載せる。
+  //     ベストエフォート（失敗しても決済確定は維持する）。
+  let friendId = booking.friend_id;
+  if (!friendId && lineUserId) {
+    try {
+      const lineClient = c.env.LINE_CHANNEL_ACCESS_TOKEN
+        ? new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN)
+        : null;
+      const accountId = await resolveDefaultLineAccountId(c.env.DB, c.env);
+      const applicant = await resolveEventApplicant(c.env.DB, lineUserId, lineClient, accountId);
+      if (applicant.status === 'ok') {
+        friendId = applicant.friendId;
+        await c.env.DB.prepare(
+          "UPDATE event_bookings SET friend_id = ?, updated_at = datetime('now') WHERE id = ? AND friend_id IS NULL",
+        ).bind(friendId, bookingId).run();
+      }
+    } catch (err) {
+      console.error('[stripe webhook] friend_id backfill failed:', err);
+    }
+  }
+
   // 5b. アフターフォローシナリオへ自動登録（ベストエフォート: 失敗しても決済確定は維持）
   try {
-    await enrollEventFollowupScenarios(c.env.DB, booking.friend_id, eventRow?.start_at ?? null);
+    await enrollEventFollowupScenarios(c.env.DB, friendId, eventRow?.start_at ?? null);
   } catch (err) {
     console.error('[stripe webhook] enrollEventFollowupScenarios failed:', err);
   }
