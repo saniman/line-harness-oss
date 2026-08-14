@@ -10,6 +10,8 @@
  * URL format: https://liff.line.me/{LIFF_ID}?page=form&id={FORM_ID}
  */
 
+import { apiUrl } from './api-url.js';
+
 declare const liff: {
   init(config: { liffId: string }): Promise<void>;
   isLoggedIn(): boolean;
@@ -87,7 +89,9 @@ function escapeHtml(str: string): string {
 }
 
 function apiCall(path: string, options?: RequestInit): Promise<Response> {
-  return fetch(path, {
+  // LIFF は Pages、API は別ドメインの Worker。相対パスだと Pages に着弾して
+  // HTML が返り res.json() が失敗する（.claude/rules/liff.md / #25）
+  return fetch(apiUrl(path), {
     ...options,
     headers: {
       'Content-Type': 'application/json',
