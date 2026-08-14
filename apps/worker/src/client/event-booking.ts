@@ -82,58 +82,78 @@ export function buildEventDetailHtml(event: EventPublic): string {
   `
 }
 
+export interface EventActionResult {
+  success: boolean
+  error?: string
+  /** 友だち登録必須ゲートで弾かれた（403 friend_required）。呼び出し側は友だち追加画面へ誘導する。 */
+  friendRequired?: boolean
+}
+
+/** 申込系エンドポイントの共通ヘッダ。本人確認は LIFF の idToken で行う。 */
+function authHeaders(idToken: string): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (idToken) headers['Authorization'] = `Bearer ${idToken}`
+  return headers
+}
+
+/** 申込系エンドポイントの失敗レスポンスを共通のメッセージに変換する。 */
+function toActionError(status: number): EventActionResult {
+  if (status === 409) return { success: false, error: 'このイベントは満席です' }
+  if (status === 403) {
+    return { success: false, friendRequired: true, error: 'お申し込みには友だち追加が必要です' }
+  }
+  if (status === 401) {
+    return { success: false, error: 'LINE 認証の有効期限が切れました。画面を開き直してください。' }
+  }
+  if (status === 503) {
+    // 友だち判定ができなかった（LINE API 障害等）。友だち追加を促しても解決しないため
+    // friendRequired にはせず、時間をおいて再試行してもらう。
+    return { success: false, error: '通信が混み合っています。しばらくしてから再度お試しください。' }
+  }
+  return { success: false, error: '申し込みに失敗しました' }
+}
+
 export async function joinFreeEvent(
   eventId: number,
-  lineUserId: string,
+  idToken: string,
   name: string,
-): Promise<{ success: boolean; error?: string }> {
+): Promise<EventActionResult> {
   const res = await fetch(`${API_BASE}/api/events/${eventId}/join`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, lineUserId: lineUserId || undefined }),
+    headers: authHeaders(idToken),
+    body: JSON.stringify({ name }),
   })
 
-  if (!res.ok) {
-    if (res.status === 409) return { success: false, error: 'このイベントは満席です' }
-    return { success: false, error: '申し込みに失敗しました' }
-  }
+  if (!res.ok) return toActionError(res.status)
   return { success: true }
 }
 
 export async function joinCashEvent(
   eventId: number,
-  lineUserId: string,
+  idToken: string,
   name: string,
-): Promise<{ success: boolean; error?: string }> {
+): Promise<EventActionResult> {
   const res = await fetch(`${API_BASE}/api/events/${eventId}/join`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, lineUserId: lineUserId || undefined, paymentMethod: 'cash' }),
+    headers: authHeaders(idToken),
+    body: JSON.stringify({ name, paymentMethod: 'cash' }),
   })
 
-  if (!res.ok) {
-    if (res.status === 409) return { success: false, error: 'このイベントは満席です' }
-    return { success: false, error: '申し込みに失敗しました' }
-  }
+  if (!res.ok) return toActionError(res.status)
   return { success: true }
 }
 
 export async function startCheckoutSession(
   eventId: number,
-  lineUserId: string,
+  idToken: string,
   openWindow: (params: { url: string; external: boolean }) => void,
-): Promise<{ success: boolean; error?: string }> {
+): Promise<EventActionResult> {
   const res = await fetch(`${API_BASE}/api/events/${eventId}/checkout-session`, {
     method: 'POST',
-    headers: { 'x-line-user-id': lineUserId },
+    headers: authHeaders(idToken),
   })
 
-  if (!res.ok) {
-    if (res.status === 409) {
-      return { success: false, error: 'このイベントは満席です' }
-    }
-    return { success: false, error: '申し込みに失敗しました' }
-  }
+  if (!res.ok) return toActionError(res.status)
 
   const json = await res.json() as { success: boolean; data: { url: string } }
   openWindow({ url: json.data.url, external: true })
@@ -143,11 +163,21 @@ export async function startCheckoutSession(
 export async function initEventBooking(options: {
   lineUserId?: string
   displayName?: string
+  /** LIFF の idToken。申込系エンドポイントの本人確認に使う。 */
+  idToken?: string
   payment?: string | null
   eventId?: number
   openWindow?: (params: { url: string; external: boolean }) => void
+  /**
+   * 403 friend_required のときに呼ばれる（呼び出し側で友だち追加画面を出す）。
+   * 誘導しなかった場合は false を返すと、通常どおりエラー文言を表示する。
+   */
+  onFriendRequired?: () => boolean | void
 } = {}): Promise<void> {
-  const { lineUserId, displayName, payment, eventId, openWindow = () => {} } = options
+  const {
+    lineUserId, displayName, idToken, payment, eventId,
+    openWindow = () => {}, onFriendRequired,
+  } = options
   const app = document.getElementById('app')
   if (!app) return
 
@@ -177,7 +207,7 @@ export async function initEventBooking(options: {
         </div>
       `
       document.getElementById('back-to-list-btn')?.addEventListener('click', () => {
-        initEventBooking({ lineUserId, openWindow })
+        initEventBooking({ lineUserId, displayName, idToken, openWindow, onFriendRequired })
       })
       return
     }
@@ -222,7 +252,7 @@ export async function initEventBooking(options: {
       `
     }
     document.getElementById('back-to-list-btn')?.addEventListener('click', () => {
-      initEventBooking({ lineUserId, openWindow })
+      initEventBooking({ lineUserId, displayName, idToken, openWindow, onFriendRequired })
     })
     return
   }
@@ -266,6 +296,18 @@ export async function initEventBooking(options: {
     anchor?.parentElement?.insertBefore(errEl, anchor)
   }
 
+  /**
+   * 申込失敗の共通処理。友だち未登録（403）なら友だち追加画面へ誘導する。
+   * @returns 友だち追加画面へ遷移したら true（呼び出し側はボタン復帰処理を行わない）
+   */
+  const handleActionFailure = (result: EventActionResult): boolean => {
+    if (result.friendRequired && onFriendRequired) {
+      // false を返されたら誘導しなかったということ → エラー文言の表示にフォールバックする
+      return onFriendRequired() !== false
+    }
+    return false
+  }
+
   const renderDetail = (event: EventPublic) => {
     app.innerHTML = `
       <div>
@@ -281,8 +323,9 @@ export async function initEventBooking(options: {
       if (!checkoutBtn) return
       checkoutBtn.disabled = true
       checkoutBtn.textContent = '処理中...'
-      const result = await startCheckoutSession(event.id, lineUserId ?? '', openWindow)
+      const result = await startCheckoutSession(event.id, idToken ?? '', openWindow)
       if (!result.success) {
+        if (handleActionFailure(result)) return
         checkoutBtn.disabled = false
         checkoutBtn.textContent = '申込・決済へ進む 💳'
         showError(checkoutBtn, result.error || 'エラーが発生しました')
@@ -295,7 +338,7 @@ export async function initEventBooking(options: {
       if (!cashBtn) return
       cashBtn.disabled = true
       cashBtn.textContent = '処理中...'
-      const result = await joinCashEvent(event.id, lineUserId ?? '', displayName ?? '')
+      const result = await joinCashEvent(event.id, idToken ?? '', displayName ?? '')
       if (result.success) {
         app.innerHTML = `
           <div class="done-card panel">
@@ -305,6 +348,7 @@ export async function initEventBooking(options: {
           </div>
         `
       } else {
+        if (handleActionFailure(result)) return
         cashBtn.disabled = false
         cashBtn.textContent = '当日現金の方はこちら 💴'
         showError(cashBtn, result.error || 'エラーが発生しました')
@@ -317,7 +361,7 @@ export async function initEventBooking(options: {
       if (!freeBtn) return
       freeBtn.disabled = true
       freeBtn.textContent = '処理中...'
-      const result = await joinFreeEvent(event.id, lineUserId ?? '', displayName ?? '')
+      const result = await joinFreeEvent(event.id, idToken ?? '', displayName ?? '')
       if (result.success) {
         app.innerHTML = `
           <div class="done-card panel">
@@ -327,6 +371,7 @@ export async function initEventBooking(options: {
           </div>
         `
       } else {
+        if (handleActionFailure(result)) return
         freeBtn.disabled = false
         freeBtn.textContent = '申し込む（無料）'
         showError(freeBtn, result.error || 'エラーが発生しました')

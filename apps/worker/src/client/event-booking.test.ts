@@ -103,6 +103,8 @@ describe('renderEventDetail', () => {
   })
 })
 
+const ID_TOKEN = 'dummy.id.token'
+
 describe('startCheckoutSession', () => {
   it('checkout-session成功時にopenWindowが呼ばれる', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
@@ -110,7 +112,7 @@ describe('startCheckoutSession', () => {
       json: async () => ({ success: true, data: { url: 'https://checkout.stripe.com/pay/test' } }),
     }))
     const mockOpenWindow = vi.fn()
-    const result = await startCheckoutSession(1, 'U123', mockOpenWindow)
+    const result = await startCheckoutSession(1, ID_TOKEN, mockOpenWindow)
     expect(result.success).toBe(true)
     expect(mockOpenWindow).toHaveBeenCalledWith({
       url: 'https://checkout.stripe.com/pay/test',
@@ -118,20 +120,47 @@ describe('startCheckoutSession', () => {
     })
   })
 
+  it('Authorization: Bearer <idToken> を送る', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true, status: 200,
+      json: async () => ({ success: true, data: { url: 'https://checkout.stripe.com/pay/test' } }),
+    })
+    vi.stubGlobal('fetch', mockFetch)
+    await startCheckoutSession(1, ID_TOKEN, vi.fn())
+    expect(mockFetch.mock.calls[0][1].headers['Authorization']).toBe(`Bearer ${ID_TOKEN}`)
+  })
+
   it('409（満席）の場合エラーを返しopenWindowは呼ばれない', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 409 }))
     const mockOpenWindow = vi.fn()
-    const result = await startCheckoutSession(1, 'U123', mockOpenWindow)
+    const result = await startCheckoutSession(1, ID_TOKEN, mockOpenWindow)
     expect(result.success).toBe(false)
     expect(result.error).toContain('満席')
     expect(mockOpenWindow).not.toHaveBeenCalled()
   })
 
+  it('403（友だち未登録）の場合 friendRequired: true を返す', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 403 }))
+    const result = await startCheckoutSession(1, ID_TOKEN, vi.fn())
+    expect(result.success).toBe(false)
+    expect(result.friendRequired).toBe(true)
+    expect(result.error).toContain('友だち追加')
+  })
+
+  it('503（友だち判定不能）は friendRequired にせず再試行を促す', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 503 }))
+    const result = await startCheckoutSession(1, ID_TOKEN, vi.fn())
+    expect(result.success).toBe(false)
+    expect(result.friendRequired).toBeFalsy()
+    expect(result.error).toContain('しばらくして')
+  })
+
   it('その他のエラーの場合汎用エラーを返す', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 500 }))
-    const result = await startCheckoutSession(1, 'U123', vi.fn())
+    const result = await startCheckoutSession(1, ID_TOKEN, vi.fn())
     expect(result.success).toBe(false)
     expect(result.error).toBeTruthy()
+    expect(result.friendRequired).toBeFalsy()
   })
 })
 
@@ -141,8 +170,21 @@ describe('joinFreeEvent', () => {
       ok: true, status: 201,
       json: async () => ({ success: true, data: { id: 10 } }),
     }))
-    const result = await joinFreeEvent(2, 'U123', '山田太郎')
+    const result = await joinFreeEvent(2, ID_TOKEN, '山田太郎')
     expect(result.success).toBe(true)
+  })
+
+  it('Authorization: Bearer <idToken> を送り、lineUserId は body に含めない', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true, status: 201,
+      json: async () => ({ success: true, data: { id: 10 } }),
+    })
+    vi.stubGlobal('fetch', mockFetch)
+    await joinFreeEvent(2, ID_TOKEN, '山田太郎')
+    expect(mockFetch.mock.calls[0][1].headers['Authorization']).toBe(`Bearer ${ID_TOKEN}`)
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body)
+    expect(body.lineUserId).toBeUndefined()
+    expect(body.name).toBe('山田太郎')
   })
 
   it('409（満席）の場合エラーを返す', async () => {
@@ -150,6 +192,12 @@ describe('joinFreeEvent', () => {
     const result = await joinFreeEvent(2, '', '山田太郎')
     expect(result.success).toBe(false)
     expect(result.error).toContain('満席')
+  })
+
+  it('403（友だち未登録）の場合 friendRequired: true を返す', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 403 }))
+    const result = await joinFreeEvent(2, ID_TOKEN, '山田太郎')
+    expect(result.friendRequired).toBe(true)
   })
 
   it('その他のエラーの場合汎用エラーを返す', async () => {
@@ -166,7 +214,7 @@ describe('joinCashEvent', () => {
       ok: true, status: 201,
       json: async () => ({ success: true, data: { id: 10 } }),
     }))
-    const result = await joinCashEvent(1, 'U123', '山田太郎')
+    const result = await joinCashEvent(1, ID_TOKEN, '山田太郎')
     expect(result.success).toBe(true)
   })
 
@@ -176,9 +224,10 @@ describe('joinCashEvent', () => {
       json: async () => ({ success: true, data: { id: 10 } }),
     })
     vi.stubGlobal('fetch', mockFetch)
-    await joinCashEvent(1, 'U123', '山田太郎')
+    await joinCashEvent(1, ID_TOKEN, '山田太郎')
     const body = JSON.parse(mockFetch.mock.calls[0][1].body)
     expect(body.paymentMethod).toBe('cash')
+    expect(mockFetch.mock.calls[0][1].headers['Authorization']).toBe(`Bearer ${ID_TOKEN}`)
   })
 
   it('409（満席）の場合エラーを返す', async () => {
@@ -186,6 +235,61 @@ describe('joinCashEvent', () => {
     const result = await joinCashEvent(1, '', '山田太郎')
     expect(result.success).toBe(false)
     expect(result.error).toContain('満席')
+  })
+
+  it('403（友だち未登録）の場合 friendRequired: true を返す', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 403 }))
+    const result = await joinCashEvent(1, ID_TOKEN, '山田太郎')
+    expect(result.friendRequired).toBe(true)
+  })
+})
+
+describe('友だち登録必須ゲート（403 friend_required）', () => {
+  it('申込が403なら onFriendRequired が呼ばれ、エラー文言は出さない', async () => {
+    document.body.innerHTML = '<div id="app"></div>'
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ success: true, data: [EVENT_FREE] }) })
+      .mockResolvedValueOnce({ ok: false, status: 403 })
+    vi.stubGlobal('fetch', mockFetch)
+    const onFriendRequired = vi.fn()
+
+    await initEventBooking({ idToken: ID_TOKEN, eventId: EVENT_FREE.id, onFriendRequired })
+    const btn = document.getElementById('free-join-btn') as HTMLButtonElement | null
+    expect(btn).not.toBeNull()
+    btn!.click()
+
+    await vi.waitFor(() => { expect(onFriendRequired).toHaveBeenCalled() })
+    expect(document.querySelector('.form-error')).toBeNull()
+  })
+
+  it('onFriendRequired が false を返したら（誘導しなかったら）エラー文言を出す', async () => {
+    document.body.innerHTML = '<div id="app"></div>'
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ success: true, data: [EVENT_FREE] }) })
+      .mockResolvedValueOnce({ ok: false, status: 403 })
+    vi.stubGlobal('fetch', mockFetch)
+    const onFriendRequired = vi.fn().mockReturnValue(false)
+
+    await initEventBooking({ idToken: ID_TOKEN, eventId: EVENT_FREE.id, onFriendRequired })
+    ;(document.getElementById('free-join-btn') as HTMLButtonElement).click()
+
+    await vi.waitFor(() => { expect(document.querySelector('.form-error')).not.toBeNull() })
+    expect(onFriendRequired).toHaveBeenCalled()
+  })
+
+  it('403以外の失敗では onFriendRequired を呼ばずエラー文言を出す', async () => {
+    document.body.innerHTML = '<div id="app"></div>'
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ success: true, data: [EVENT_FREE] }) })
+      .mockResolvedValueOnce({ ok: false, status: 409 })
+    vi.stubGlobal('fetch', mockFetch)
+    const onFriendRequired = vi.fn()
+
+    await initEventBooking({ idToken: ID_TOKEN, eventId: EVENT_FREE.id, onFriendRequired })
+    ;(document.getElementById('free-join-btn') as HTMLButtonElement).click()
+
+    await vi.waitFor(() => { expect(document.querySelector('.form-error')).not.toBeNull() })
+    expect(onFriendRequired).not.toHaveBeenCalled()
   })
 })
 

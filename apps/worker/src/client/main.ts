@@ -110,7 +110,16 @@ function escapeHtml(str: string): string {
 
 // ─── UI States ──────────────────────────────────────────
 
-function showFriendAdd(profile: { displayName: string; pictureUrl?: string }) {
+/**
+ * 友だち追加を促す画面。
+ * @param opts.onFriendAdded 友だち追加後にLIFFへ復帰したときの遷移先。
+ *   省略時は従来どおり完了画面（showCompletion）を出す。イベント申込のように
+ *   「追加後に元のフローへ戻したい」場合に渡す。
+ */
+function showFriendAdd(
+  profile: { displayName: string; pictureUrl?: string },
+  opts?: { onFriendAdded?: () => void | Promise<void> },
+) {
   const container = document.getElementById('app')!;
   const friendAddUrl = BOT_BASIC_ID
     ? `https://line.me/R/ti/p/${BOT_BASIC_ID}`
@@ -163,6 +172,10 @@ function showFriendAdd(profile: { displayName: string; pictureUrl?: string }) {
         } catch { /* best-effort */ }
       }
       document.removeEventListener('visibilitychange', onVisibilityChange);
+      if (opts?.onFriendAdded) {
+        await opts.onFriendAdded();
+        return;
+      }
       showCompletion(profile, false);
     } catch {
       // ignore
@@ -452,6 +465,96 @@ async function initOrder(): Promise<void> {
   });
 }
 
+// ─── Event Booking（友だち登録必須ゲート付き）────────────
+
+async function initEventFlow(): Promise<void> {
+  // initOrder / initSalonBooking と同じ初期化シーケンスを踏む:
+  //   ① profile + idToken をベストエフォートで取得
+  //   ② 決済結果画面（?payment=）は本人確認も友だち判定もせずそのまま表示
+  //   ③ /api/liff/link で UUID 確定（best-effort）
+  //   ④ 未友達なら showFriendAdd。友だち追加後は「完了画面」ではなく申込画面へ戻す
+  //   ⑤ 友達なら申込画面
+  // 申込エンドポイント側でも idToken 検証＋友だちゲートをかけているため、
+  // ここは「ユーザーに正しい導線を見せる」ためのゲート（防御はサーバー側が本体）。
+  const eventParams = new URLSearchParams(window.location.search);
+  const payment = eventParams.get('payment');
+  const eventId = eventParams.get('id') ? Number(eventParams.get('id')) : undefined;
+
+  // 取得失敗でも画面を殺さない。決済結果の表示に profile / idToken は不要なので、
+  // ここで例外を投げると「支払ったのに完了画面が出ない」事故になる。
+  let profile: { userId: string; displayName: string; pictureUrl?: string } | null = null;
+  let idToken: string | null = null;
+  try {
+    [profile, idToken] = await Promise.all([
+      liff.getProfile(),
+      Promise.resolve(liff.getIDToken()),
+    ]);
+  } catch (err) {
+    console.error('[LIFF] event: getProfile/getIDToken failed:', err);
+  }
+
+  // 友だち追加画面は一度だけ出す。既に友だちなのにサーバーが 403 を返し続ける
+  // （Login チャネルと Messaging チャネルの bot 不一致など）場合に、
+  // 「友だち追加 → 戻る → また 403」の無限ループへ落ちるのを防ぐ。
+  let friendAddShown = false;
+  const openEventBooking: () => Promise<void> = () => initEventBooking({
+    lineUserId: profile?.userId,
+    displayName: profile?.displayName,
+    idToken: idToken ?? undefined,
+    payment,
+    eventId,
+    openWindow: (p) => liff.openWindow(p),
+    // サーバー側ゲートで弾かれたときも同じ友だち追加画面に合流させる
+    onFriendRequired: () => {
+      if (!profile || friendAddShown) return false; // 呼び出し側でエラー文言を出させる
+      friendAddShown = true;
+      showFriendAdd(profile, { onFriendAdded: openEventBooking });
+      return true;
+    },
+  });
+
+  // ② 決済結果（success / cancel）の表示はゲートをかけずにそのまま出す。
+  if (payment) {
+    await openEventBooking();
+    return;
+  }
+
+  // 以降の申込フローはサーバーが idToken で本人確認するため idToken が必須。
+  if (!idToken || !profile) {
+    showError('LINE 認証情報の取得に失敗しました。LINE アプリ内で再度開いてください。');
+    return;
+  }
+  const currentProfile = profile;
+
+  // ③ Silent UUID linking（friends 行が無いと 404 を返すが best-effort なので握りつぶす）
+  apiCall('/api/liff/link', {
+    method: 'POST',
+    body: JSON.stringify({ idToken, displayName: currentProfile.displayName, existingUuid: getSavedUuid() }),
+  })
+    .then(async (res) => {
+      if (res.ok) {
+        const data = (await res.json()) as { success: boolean; data?: { userId?: string } };
+        if (data?.data?.userId) saveUuid(data.data.userId);
+      }
+    })
+    .catch(() => { /* silent */ });
+
+  // friendFlag の取得に失敗しても申込画面自体は出す（サーバー側ゲートが最終防衛線）。
+  let friendFlag = true;
+  try {
+    friendFlag = (await liff.getFriendship()).friendFlag;
+  } catch (err) {
+    console.error('[LIFF] getFriendship failed:', err);
+  }
+
+  if (!friendFlag) {
+    friendAddShown = true;
+    showFriendAdd(currentProfile, { onFriendAdded: openEventBooking });
+    return;
+  }
+  await openEventBooking();
+}
+
 // ─── Entry Point ────────────────────────────────────────
 
 async function main() {
@@ -486,23 +589,7 @@ async function main() {
       const formId = params.get('id');
       await initForm(formId);
     } else if (page === 'event') {
-      const eventParams = new URLSearchParams(window.location.search);
-      const payment = eventParams.get('payment');
-      const eventId = eventParams.get('id') ? Number(eventParams.get('id')) : undefined;
-      let lineUserId: string | undefined;
-      let displayName: string | undefined;
-      try {
-        const profile = await liff.getProfile();
-        lineUserId = profile.userId;
-        displayName = profile.displayName;
-      } catch { /* フォールバック */ }
-      await initEventBooking({
-        lineUserId,
-        displayName,
-        payment,
-        eventId,
-        openWindow: (p) => liff.openWindow(p),
-      });
+      await initEventFlow();
     } else if (!page) {
       await linkAndAddFlow();
     } else {
