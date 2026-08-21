@@ -18,6 +18,7 @@
 import { initBooking } from './booking.js';
 import { initForm } from './form.js';
 import { initEventBooking } from './event-booking.js';
+import { isIdTokenExpired, recoverLiffSession, markLiffSessionHealthy } from './liff-token.js';
 import { apiUrl } from './api-url.js';
 import { buildFriendAddHtml } from './friend-add.js';
 import { safeRedirectTarget } from '../lib/safe-redirect.js';
@@ -43,6 +44,45 @@ function detectLiffId(): string {
   return import.meta.env?.VITE_LIFF_ID || '';
 }
 const LIFF_ID = detectLiffId();
+
+// ID トークンの有効期限は発行から1時間しかない（#28）。ページを開いたまま放置されると、
+// ボタンを押した時点では期限切れのトークンを送ることになりサーバーに 401 で弾かれる。
+// LIFF ブラウザでは liff.login() が使えない（init 時に自動実行される仕様）ため、
+// 復帰手段は「リロードして liff.init() をやり直す」しかない。
+const sessionStorageOrNull = (() => {
+  try {
+    return window.sessionStorage;
+  } catch {
+    return null; // プライベートブラウジング等で参照できないことがある
+  }
+})();
+
+/** 期限切れセッションからの復帰を試みる。復帰を開始したら true。 */
+function recoverSession(): boolean {
+  return recoverLiffSession({
+    isInClient: liff.isInClient(),
+    login: (opts) => liff.login(opts),
+    reload: () => window.location.reload(),
+    href: window.location.href,
+    storage: sessionStorageOrNull,
+  });
+}
+
+/**
+ * 申込・注文フロー共通の入口チェック。
+ * 期限切れのまま画面を出しても操作した時点で必ず 401 になるため、先に復帰させる。
+ * @returns 続行してよければ true。false なら復帰処理へ遷移済み（描画しない）。
+ */
+function ensureFreshSession(idToken: string, showErrorFn: (msg: string) => void): boolean {
+  if (!isIdTokenExpired(idToken, Date.now())) {
+    // 有効なトークンで開けている＝セッションは健全。次に切れたとき再び自動復帰できるようにする。
+    markLiffSessionHealthy(sessionStorageOrNull);
+    return true;
+  }
+  if (recoverSession()) return false; // リロード / 再ログインへ遷移するので描画しない
+  showErrorFn('LINE 認証の期限が切れました。画面を閉じて開き直してください。');
+  return false;
+}
 if (!LIFF_ID) {
   throw new Error('LIFF ID not found. Set ?liffId= in LIFF endpoint URL or VITE_LIFF_ID env.');
 }
@@ -338,6 +378,7 @@ async function initSalonBooking(): Promise<void> {
     showError('LINE 認証情報の取得に失敗しました。LINE アプリ内で再度開いてください。');
     return;
   }
+  if (!ensureFreshSession(idToken, showError)) return;
 
   const existingUuid = getSavedUuid();
   const ref = getRef();
@@ -411,6 +452,7 @@ async function initOrder(): Promise<void> {
     showError('LINE 認証情報の取得に失敗しました。LINE アプリ内で再度開いてください。');
     return;
   }
+  if (!ensureFreshSession(idToken, showError)) return;
 
   // Silent UUID linking（注文エンドポイントが id_token verify で friend を引くために必要）
   apiCall('/api/liff/link', {
@@ -492,6 +534,7 @@ async function initEventFlow(): Promise<void> {
     payment,
     eventId,
     openWindow: (p) => liff.openWindow(p),
+    onSessionExpired: recoverSession,
     // サーバー側ゲートで弾かれたときも同じ友だち追加画面に合流させる
     onFriendRequired: () => {
       if (!profile || friendAddShown) return false; // 呼び出し側でエラー文言を出させる
@@ -512,6 +555,9 @@ async function initEventFlow(): Promise<void> {
     showError('LINE 認証情報の取得に失敗しました。LINE アプリ内で再度開いてください。');
     return;
   }
+
+  if (!ensureFreshSession(idToken, showError)) return;
+
   const currentProfile = profile;
 
   // ③ Silent UUID linking（friends 行が無いと 404 を返すが best-effort なので握りつぶす）

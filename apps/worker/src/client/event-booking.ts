@@ -1,3 +1,5 @@
+import { isIdTokenExpired } from './liff-token.js'
+
 const API_BASE = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_BASE) || '';
 
 export interface EventPublic {
@@ -87,6 +89,11 @@ export interface EventActionResult {
   error?: string
   /** 友だち登録必須ゲートで弾かれた（403 friend_required）。呼び出し側は友だち追加画面へ誘導する。 */
   friendRequired?: boolean
+  /**
+   * LINE 認証の期限切れ（401 id_token_expired、または送信前の exp チェック）。
+   * 呼び出し側は文言を出すのではなく **セッション復帰処理**へ流す（#28）。
+   */
+  sessionExpired?: boolean
 }
 
 /** 申込系エンドポイントの共通ヘッダ。本人確認は LIFF の idToken で行う。 */
@@ -96,14 +103,42 @@ function authHeaders(idToken: string): Record<string, string> {
   return headers
 }
 
+/** LINE 認証が切れているときの共通結果。呼び出し側が復帰処理へ流す。 */
+const SESSION_EXPIRED_RESULT: EventActionResult = {
+  success: false,
+  sessionExpired: true,
+  // 自動復帰できなかったときだけ表示される文言。実際に効く操作だけを案内する。
+  error: 'LINE 認証の期限が切れました。画面を閉じて開き直してください。',
+}
+
+/**
+ * 送信前に ID トークンの期限を確認する。切れていれば往復せずに復帰へ回す。
+ * exp を読めないトークンは false（サーバーの判断に委ねる）。
+ */
+function checkTokenFreshness(idToken: string): EventActionResult | null {
+  return isIdTokenExpired(idToken, Date.now()) ? SESSION_EXPIRED_RESULT : null
+}
+
+/** 失敗レスポンスのボディから error コードを読む。ボディが無くても落ちない。 */
+async function readErrorCode(res: { json?: () => Promise<unknown> }): Promise<string | undefined> {
+  try {
+    const body = await res.json?.() as { error?: unknown } | null
+    return typeof body?.error === 'string' ? body.error : undefined
+  } catch {
+    return undefined
+  }
+}
+
 /** 申込系エンドポイントの失敗レスポンスを共通のメッセージに変換する。 */
-function toActionError(status: number): EventActionResult {
+function toActionError(status: number, code?: string): EventActionResult {
   if (status === 409) return { success: false, error: 'このイベントは満席です' }
   if (status === 403) {
     return { success: false, friendRequired: true, error: 'お申し込みには友だち追加が必要です' }
   }
   if (status === 401) {
-    return { success: false, error: 'LINE 認証の有効期限が切れました。画面を開き直してください。' }
+    // 期限切れは復帰できる。それ以外の 401 は復帰しても直らないので区別する。
+    if (code === 'id_token_expired') return SESSION_EXPIRED_RESULT
+    return { success: false, error: 'LINE 認証に失敗しました。画面を閉じて開き直してください。' }
   }
   if (status === 503) {
     // 友だち判定ができなかった（LINE API 障害等）。友だち追加を促しても解決しないため
@@ -118,13 +153,16 @@ export async function joinFreeEvent(
   idToken: string,
   name: string,
 ): Promise<EventActionResult> {
+  const stale = checkTokenFreshness(idToken)
+  if (stale) return stale
+
   const res = await fetch(`${API_BASE}/api/events/${eventId}/join`, {
     method: 'POST',
     headers: authHeaders(idToken),
     body: JSON.stringify({ name }),
   })
 
-  if (!res.ok) return toActionError(res.status)
+  if (!res.ok) return toActionError(res.status, await readErrorCode(res))
   return { success: true }
 }
 
@@ -133,13 +171,16 @@ export async function joinCashEvent(
   idToken: string,
   name: string,
 ): Promise<EventActionResult> {
+  const stale = checkTokenFreshness(idToken)
+  if (stale) return stale
+
   const res = await fetch(`${API_BASE}/api/events/${eventId}/join`, {
     method: 'POST',
     headers: authHeaders(idToken),
     body: JSON.stringify({ name, paymentMethod: 'cash' }),
   })
 
-  if (!res.ok) return toActionError(res.status)
+  if (!res.ok) return toActionError(res.status, await readErrorCode(res))
   return { success: true }
 }
 
@@ -148,12 +189,15 @@ export async function startCheckoutSession(
   idToken: string,
   openWindow: (params: { url: string; external: boolean }) => void,
 ): Promise<EventActionResult> {
+  const stale = checkTokenFreshness(idToken)
+  if (stale) return stale
+
   const res = await fetch(`${API_BASE}/api/events/${eventId}/checkout-session`, {
     method: 'POST',
     headers: authHeaders(idToken),
   })
 
-  if (!res.ok) return toActionError(res.status)
+  if (!res.ok) return toActionError(res.status, await readErrorCode(res))
 
   const json = await res.json() as { success: boolean; data: { url: string } }
   openWindow({ url: json.data.url, external: true })
@@ -173,10 +217,15 @@ export async function initEventBooking(options: {
    * 誘導しなかった場合は false を返すと、通常どおりエラー文言を表示する。
    */
   onFriendRequired?: () => boolean | void
+  /**
+   * LINE 認証が期限切れのときに呼ばれる（呼び出し側でセッション復帰を行う）。
+   * 復帰を開始したら true を返す。false なら通常どおりエラー文言を表示する。
+   */
+  onSessionExpired?: () => boolean | void
 } = {}): Promise<void> {
   const {
     lineUserId, displayName, idToken, payment, eventId,
-    openWindow = () => {}, onFriendRequired,
+    openWindow = () => {}, onFriendRequired, onSessionExpired,
   } = options
   const app = document.getElementById('app')
   if (!app) return
@@ -301,6 +350,10 @@ export async function initEventBooking(options: {
    * @returns 友だち追加画面へ遷移したら true（呼び出し側はボタン復帰処理を行わない）
    */
   const handleActionFailure = (result: EventActionResult): boolean => {
+    // 期限切れは「案内を出す」のではなく復帰させる。復帰できたときだけ文言を出さない。
+    if (result.sessionExpired && onSessionExpired) {
+      if (onSessionExpired() !== false) return true
+    }
     if (result.friendRequired && onFriendRequired) {
       // false を返されたら誘導しなかったということ → エラー文言の表示にフォールバックする
       return onFriendRequired() !== false

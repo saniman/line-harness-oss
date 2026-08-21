@@ -19,11 +19,20 @@ import { enrollEventFollowupScenarios, enrollEventParticipants } from '../servic
 import { resolveEventApplicant } from '../services/event-friend.js';
 import { backfillEventBookingFriends } from '../services/event-friend-backfill.js';
 import { resolveDefaultLineAccountId } from '../services/default-line-account.js';
-import { verifyCallerLineUserId } from '../services/liff-identity.js';
+import { verifyCaller } from '../services/liff-identity.js';
+import type { CallerAuthFailure } from '../services/liff-identity.js';
 import { getScenarioById } from '@line-crm/db';
 import type { Env } from '../index.js';
 
 const events = new Hono<Env>();
+
+/**
+ * 401 のエラーコード。期限切れはクライアントが再ログインで自力復帰できるため区別して返す（#28）。
+ * 一律 'unauthorized' にすると「開き直してください」しか案内できず、ユーザーが詰む。
+ */
+function authErrorCode(reason: CallerAuthFailure): string {
+  return reason === 'expired' ? 'id_token_expired' : 'unauthorized';
+}
 
 // ========== 管理API ==========
 
@@ -165,8 +174,9 @@ events.post('/api/events/:id/join', async (c) => {
 
     // 本人確認: Authorization: Bearer <LIFF idToken> を検証する。
     // クライアント申告の lineUserId は詐称できるため参照しない。
-    const lineUserId = await verifyCallerLineUserId(c);
-    if (!lineUserId) return c.json({ success: false, error: 'unauthorized' }, 401);
+    const caller = await verifyCaller(c);
+    if (!caller.ok) return c.json({ success: false, error: authErrorCode(caller.reason) }, 401);
+    const lineUserId = caller.lineUserId;
 
     const event = await getEventById(c.env.DB, id);
     if (!event) return c.json({ success: false, error: 'Event not found' }, 404);
@@ -269,8 +279,9 @@ events.post('/api/events/:id/checkout-session', async (c) => {
     const id = Number(c.req.param('id'));
 
     // 0. 本人確認: Authorization: Bearer <LIFF idToken>（x-line-user-id ヘッダは詐称可能なため参照しない）
-    const lineUserId = await verifyCallerLineUserId(c);
-    if (!lineUserId) return c.json({ success: false, error: 'unauthorized' }, 401);
+    const caller = await verifyCaller(c);
+    if (!caller.ok) return c.json({ success: false, error: authErrorCode(caller.reason) }, 401);
+    const lineUserId = caller.lineUserId;
 
     // 1. イベント取得・存在チェック・公開チェック
     const event = await getEventById(c.env.DB, id);
