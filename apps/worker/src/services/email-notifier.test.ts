@@ -61,6 +61,11 @@ describe('renderEventBookingEmail', () => {
     expect(mail.text).toContain('支払い: 無料')
   })
 
+  it('有料イベントの未払い申込は「未払い」と金額を表示する', () => {
+    const mail = renderEventBookingEmail(ctx({ paymentKind: 'unpaid', amount: 3000 }))
+    expect(mail.text).toContain('支払い: 未払い（要確認）¥3,000')
+  })
+
   it('予約IDと申込状況（申込数/定員）を含む', () => {
     const mail = renderEventBookingEmail(ctx())
     expect(mail.text).toContain('予約ID: 12')
@@ -76,6 +81,28 @@ describe('renderEventBookingEmail', () => {
     const mail = renderEventBookingEmail(ctx())
     expect(mail.text.length).toBeGreaterThan(0)
     expect(mail.html).toContain('<')
+  })
+
+  it('申込者名の改行を除去する（件名へのヘッダ挿入・送信失敗を防ぐ）', () => {
+    const mail = renderEventBookingEmail(ctx({
+      applicantName: '山田太郎\r\nBcc: attacker@example.com',
+    }))
+    expect(mail.subject).not.toMatch(/[\r\n]/)
+    expect(mail.subject).toBe('【イベント申込】沖縄AI活用セミナー（山田太郎 Bcc: attacker@example.com）')
+  })
+
+  it('イベント名の改行も除去する', () => {
+    const mail = renderEventBookingEmail(ctx({ eventTitle: 'セミナー\n第2回' }))
+    expect(mail.subject).not.toMatch(/[\r\n]/)
+    expect(mail.subject).toContain('セミナー 第2回')
+  })
+
+  it('極端に長い名前・イベント名は切り詰める（送信失敗の無音化を防ぐ）', () => {
+    const mail = renderEventBookingEmail(ctx({
+      eventTitle: 'あ'.repeat(500),
+      applicantName: 'い'.repeat(500),
+    }))
+    expect(mail.subject.length).toBeLessThanOrEqual(200)
   })
 
   it('イベント名・申込者名の HTML 特殊文字をエスケープする', () => {

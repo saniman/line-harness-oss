@@ -12,16 +12,25 @@
 送信元アドレスのドメインを有効化する。**これをやらないと送信は必ず失敗する。**
 
 ```bash
-npx wrangler email sending enable walover-co.work
+npx wrangler@latest email sending enable walover-co.work
 ```
+
+> ⚠️ **`@latest` は必須**。このリポジトリに入っている wrangler は 4.0.0 で、`email` コマンドがまだ無い。
+> `npx wrangler ...` と書くとローカルの 4.0.0 が起動し `Unknown arguments: email, sending, enable` になる
+> （D1 マイグレーションで `npx wrangler@latest` を使っているのと同じ理由。`.claude/rules/deployment.md`）。
+>
+> ⚠️ **`--env production` は付けない**。このリポジトリの deploy はデフォルト環境を使い、
+> `[env.production]` は fork 向けテンプレート。そもそも Email Sending の有効化はゾーン単位の操作で環境に紐づかない。
 
 - 対話に従って進める。DNS レコード（SPF / DKIM）の追加を求められる場合がある。
 - Cloudflare で DNS を管理していれば自動で入ることが多い。
 - 登録済みドメインの確認：
 
 ```bash
-npx wrangler email sending list
+npx wrangler@latest email sending list
 ```
+
+CLI がうまくいかない場合は Cloudflare ダッシュボード → 対象ドメイン → **Email → Email Sending** からでも有効化できる。
 
 ## 2. 通知先アドレスを secret に設定する
 
@@ -33,6 +42,7 @@ npx wrangler secret put ADMIN_NOTIFY_EMAIL
 ```
 
 > `.env` には書かない（`AGENTS.md` の必須ルール）。必ず `wrangler secret put` を使う。
+> `secret put` は 4.0.0 にもあるので `@latest` は不要。ここでも `--env production` は付けない。
 
 ## 3. 送信元アドレスを確認する
 

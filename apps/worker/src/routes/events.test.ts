@@ -737,9 +737,17 @@ describe('POST /api/events/:id/join の運営者メール通知', () => {
     MAIL_FROM_ADDRESS: 'noreply@walover-co.work',
   }
 
-  async function join(env: Record<string, unknown>, body: Record<string, unknown> = { name: '山田太郎' }) {
-    vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 2 })
-    vi.mocked(eventsService.createEventBooking).mockResolvedValue(BOOKING1)
+  async function join(
+    env: Record<string, unknown>,
+    body: Record<string, unknown> = { name: '山田太郎' },
+    event: Record<string, unknown> = {},
+  ) {
+    vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 2, ...event } as never)
+    // createEventBooking と同じく paymentMethod='cash' のときだけ payment_status='cash' になる
+    vi.mocked(eventsService.createEventBooking).mockResolvedValue({
+      ...BOOKING1,
+      payment_status: body.paymentMethod === 'cash' ? 'cash' : 'unpaid',
+    })
     return app.request('/api/events/1/join', {
       method: 'POST',
       headers: LIFF_HEADERS,
@@ -754,6 +762,22 @@ describe('POST /api/events/:id/join の運営者メール通知', () => {
     expect(mockEmailSend).toHaveBeenCalledWith(expect.objectContaining({
       to: 'admin@example.com',
       subject: expect.stringContaining('【イベント申込】無料セミナー'),
+    }))
+  })
+
+  it('有料イベントに paymentMethod なしで申し込むと「未払い」と載せる（クライアント申告を信用しない）', async () => {
+    mockEmailSend.mockResolvedValue({ messageId: 'm1' })
+    await join(EMAIL_ENV, { name: '山田太郎' })   // EVENT1 は price: 3000
+    expect(mockEmailSend).toHaveBeenCalledWith(expect.objectContaining({
+      text: expect.stringContaining('支払い: 未払い（要確認）¥3,000'),
+    }))
+  })
+
+  it('無料イベント（price なし）は「無料」と載せる', async () => {
+    mockEmailSend.mockResolvedValue({ messageId: 'm1' })
+    await join(EMAIL_ENV, { name: '山田太郎' }, { price: null })
+    expect(mockEmailSend).toHaveBeenCalledWith(expect.objectContaining({
+      text: expect.stringContaining('支払い: 無料'),
     }))
   })
 

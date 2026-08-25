@@ -18,7 +18,11 @@ export interface EmailSendClient {
   }): Promise<unknown>
 }
 
-export type EventBookingPaymentKind = 'stripe' | 'cash' | 'free'
+/**
+ * stripe=決済済み / cash=当日現金 / free=無料 / unpaid=有料イベントだが未入金
+ * （`unpaid` は運営者が未収に気づけるようにするための区分）
+ */
+export type EventBookingPaymentKind = 'stripe' | 'cash' | 'free' | 'unpaid'
 
 export interface EventBookingEmailContext {
   eventTitle: string
@@ -27,7 +31,7 @@ export interface EventBookingEmailContext {
   applicantName: string
   bookingId: number
   paymentKind: EventBookingPaymentKind
-  /** Stripe 決済額（円）。無料・現金なら null */
+  /** 金額（円）。決済済みなら実決済額、未払いならイベント価格。無料・現金なら null */
   amount?: number | null
   participantCount?: number | null
   capacity?: number | null
@@ -50,7 +54,16 @@ function paymentLabel(kind: EventBookingPaymentKind, amount?: number | null): st
       return '当日現金'
     case 'free':
       return '無料'
+    case 'unpaid':
+      return amount != null ? `未払い（要確認）${formatYen(amount)}` : '未払い（要確認）'
   }
+}
+
+/** 件名・本文に埋め込む外部入力の正規化。改行はヘッダ挿入・送信失敗の原因になるため潰す */
+const MAX_FIELD_LENGTH = 80
+
+function sanitizeField(value: string): string {
+  return value.replace(/\s+/g, ' ').trim().slice(0, MAX_FIELD_LENGTH)
 }
 
 function escapeHtml(value: string): string {
@@ -73,13 +86,15 @@ export interface RenderedEmail {
  * html / text の両方を返す（片方だけだとスパム判定が上がるため）。
  */
 export function renderEventBookingEmail(ctx: EventBookingEmailContext): RenderedEmail {
-  const applicant = ctx.applicantName.trim() || '名前未入力'
+  // 申込者名・イベント名は外部入力。改行が件名に入るとヘッダ挿入・送信失敗になるため正規化する
+  const applicant = sanitizeField(ctx.applicantName) || '名前未入力'
+  const title = sanitizeField(ctx.eventTitle) || 'イベント'
   const startAt = ctx.eventStartAt ? formatJST(ctx.eventStartAt) : '未設定'
   const payment = paymentLabel(ctx.paymentKind, ctx.amount)
   const adminUrl = ctx.adminUrl ?? DEFAULT_ADMIN_URL
 
   const rows: Array<[string, string]> = [
-    ['イベント', ctx.eventTitle],
+    ['イベント', title],
     ['開催日時', startAt],
     ['申込者', applicant],
     ['支払い', payment],
@@ -89,7 +104,7 @@ export function renderEventBookingEmail(ctx: EventBookingEmailContext): Rendered
     rows.push(['申込状況', `${ctx.participantCount} / ${ctx.capacity} 名`])
   }
 
-  const subject = `【イベント申込】${ctx.eventTitle}（${applicant}）`
+  const subject = `【イベント申込】${title}（${applicant}）`
 
   const text = [
     'イベントの申込がありました。',
