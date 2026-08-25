@@ -240,3 +240,53 @@ describe('POST /api/stripe/webhook', () => {
     expect(eventsService.confirmEventBooking).not.toHaveBeenCalled()
   })
 })
+
+describe('Stripe決済確定時の運営者メール通知', () => {
+  const mockEmailSend = vi.fn()
+  const EMAIL_ENV = {
+    ...MOCK_ENV,
+    EMAIL: { send: mockEmailSend },
+    ADMIN_NOTIFY_EMAIL: 'admin@example.com',
+    MAIL_FROM_ADDRESS: 'noreply@walover-co.work',
+  }
+
+  async function webhook(env: Record<string, unknown>, booking = PENDING_BOOKING) {
+    mockConstructEventAsync.mockResolvedValue({
+      type: 'checkout.session.completed',
+      data: { object: MOCK_SESSION },
+    })
+    vi.mocked(eventsService.getEventBookingById).mockResolvedValue(booking)
+    vi.mocked(eventsService.confirmEventBooking).mockResolvedValue(undefined)
+    vi.mocked(eventsService.getEventById).mockResolvedValue(EVENT1)
+    mockPushMessage.mockResolvedValue({})
+    return app.request('/api/stripe/webhook', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'stripe-signature': 't=123,v1=abc' },
+      body: JSON.stringify({}),
+    }, env)
+  }
+
+  it('決済確定で運営者に申込メールを送る（金額付き）', async () => {
+    mockEmailSend.mockResolvedValue({ messageId: 'm1' })
+    const res = await webhook(EMAIL_ENV)
+    expect(res.status).toBe(200)
+    expect(mockEmailSend).toHaveBeenCalledWith(expect.objectContaining({
+      to: 'admin@example.com',
+      text: expect.stringContaining('支払い: Stripe決済 ¥3,000'),
+    }))
+  })
+
+  it('webhook 再送（すでに confirmed の booking）ではメールを送らない', async () => {
+    mockEmailSend.mockResolvedValue({ messageId: 'm1' })
+    const res = await webhook(EMAIL_ENV, { ...PENDING_BOOKING, status: 'confirmed' })
+    expect(res.status).toBe(200)
+    expect(mockEmailSend).not.toHaveBeenCalled()
+  })
+
+  it('メール未設定の環境では送信せず決済確定は成功する', async () => {
+    const res = await webhook(MOCK_ENV)
+    expect(res.status).toBe(200)
+    expect(eventsService.confirmEventBooking).toHaveBeenCalled()
+    expect(mockEmailSend).not.toHaveBeenCalled()
+  })
+})

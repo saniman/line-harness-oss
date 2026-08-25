@@ -13,23 +13,13 @@ import {
   confirmEventBooking,
 } from '../services/events.js';
 import { enrollEventFollowupScenarios } from '../services/event-followup.js';
+import { sendEventBookingNotification } from '../services/email-notifier.js';
+import { formatJST } from '../utils/format-jst.js';
 import { resolveEventApplicant } from '../services/event-friend.js';
 import { resolveDefaultLineAccountId } from '../services/default-line-account.js';
 import type { Env } from '../index.js';
 
 const stripe = new Hono<Env>();
-
-function formatJST(iso: string): string {
-  const d = new Date(iso);
-  const jst = new Date(d.getTime() + 9 * 60 * 60 * 1000);
-  const mm = String(jst.getUTCMonth() + 1).padStart(2, '0');
-  const dd = String(jst.getUTCDate()).padStart(2, '0');
-  const hh = String(jst.getUTCHours()).padStart(2, '0');
-  const min = String(jst.getUTCMinutes()).padStart(2, '0');
-  const weekdays = ['日', '月', '火', '水', '木', '金', '土'];
-  const dow = weekdays[jst.getUTCDay()];
-  return `${mm}/${dd}(${dow}) ${hh}:${min}`;
-}
 
 interface StripeWebhookBody {
   id: string;
@@ -274,6 +264,28 @@ stripe.post('/api/stripe/webhook', async (c) => {
     await enrollEventFollowupScenarios(c.env.DB, friendId, eventRow?.start_at ?? null);
   } catch (err) {
     console.error('[stripe webhook] enrollEventFollowupScenarios failed:', err);
+  }
+
+  // 5c. 運営者へメール通知（ベストエフォート: 未設定なら no-op）
+  //     Stripe は webhook をリトライするため、確定前の status が confirmed のもの
+  //     （＝再送）には送らない。eventRow は confirm 後に取得しているので
+  //     participant_count はこの申込を含んだ値になっている。
+  if (booking.status !== 'confirmed') {
+    await sendEventBookingNotification({
+      email: c.env.EMAIL,
+      to: c.env.ADMIN_NOTIFY_EMAIL,
+      from: c.env.MAIL_FROM_ADDRESS,
+      ctx: {
+        eventTitle: eventRow?.title ?? 'イベント',
+        eventStartAt: eventRow?.start_at ?? null,
+        applicantName: session.customer_details?.name ?? booking.name ?? '',
+        bookingId,
+        paymentKind: 'stripe',
+        amount: session.amount_total,
+        participantCount: eventRow?.participant_count ?? null,
+        capacity: eventRow?.capacity ?? null,
+      },
+    });
   }
 
   // 6. LINE Push通知（ベストエフォート）

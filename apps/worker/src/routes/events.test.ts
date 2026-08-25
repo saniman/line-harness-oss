@@ -726,3 +726,88 @@ describe('POST /api/events/:id/enroll-participants', () => {
     expect(res.status).toBe(404)
   })
 })
+
+describe('POST /api/events/:id/join の運営者メール通知', () => {
+  /** Cloudflare Email Sending の send_email バインディングのモック */
+  const mockEmailSend = vi.fn()
+  const EMAIL_ENV = {
+    DB: mockDb,
+    EMAIL: { send: mockEmailSend },
+    ADMIN_NOTIFY_EMAIL: 'admin@example.com',
+    MAIL_FROM_ADDRESS: 'noreply@walover-co.work',
+  }
+
+  async function join(
+    env: Record<string, unknown>,
+    body: Record<string, unknown> = { name: '山田太郎' },
+    event: Record<string, unknown> = {},
+  ) {
+    vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 2, ...event } as never)
+    // createEventBooking と同じく paymentMethod='cash' のときだけ payment_status='cash' になる
+    vi.mocked(eventsService.createEventBooking).mockResolvedValue({
+      ...BOOKING1,
+      payment_status: body.paymentMethod === 'cash' ? 'cash' : 'unpaid',
+    })
+    return app.request('/api/events/1/join', {
+      method: 'POST',
+      headers: LIFF_HEADERS,
+      body: JSON.stringify(body),
+    }, env)
+  }
+
+  it('EMAIL と ADMIN_NOTIFY_EMAIL が揃っていれば運営者に申込メールを送る', async () => {
+    mockEmailSend.mockResolvedValue({ messageId: 'm1' })
+    const res = await join(EMAIL_ENV)
+    expect(res.status).toBe(201)
+    expect(mockEmailSend).toHaveBeenCalledWith(expect.objectContaining({
+      to: 'admin@example.com',
+      subject: expect.stringContaining('【イベント申込】無料セミナー'),
+    }))
+  })
+
+  it('有料イベントに paymentMethod なしで申し込むと「未払い」と載せる（クライアント申告を信用しない）', async () => {
+    mockEmailSend.mockResolvedValue({ messageId: 'm1' })
+    await join(EMAIL_ENV, { name: '山田太郎' })   // EVENT1 は price: 3000
+    expect(mockEmailSend).toHaveBeenCalledWith(expect.objectContaining({
+      text: expect.stringContaining('支払い: 未払い（要確認）¥3,000'),
+    }))
+  })
+
+  it('無料イベント（price なし）は「無料」と載せる', async () => {
+    mockEmailSend.mockResolvedValue({ messageId: 'm1' })
+    await join(EMAIL_ENV, { name: '山田太郎' }, { price: null })
+    expect(mockEmailSend).toHaveBeenCalledWith(expect.objectContaining({
+      text: expect.stringContaining('支払い: 無料'),
+    }))
+  })
+
+  it('当日現金払いはメール本文に「当日現金」と載せる', async () => {
+    mockEmailSend.mockResolvedValue({ messageId: 'm1' })
+    await join(EMAIL_ENV, { name: '山田太郎', paymentMethod: 'cash' })
+    expect(mockEmailSend).toHaveBeenCalledWith(expect.objectContaining({
+      text: expect.stringContaining('支払い: 当日現金'),
+    }))
+  })
+
+  it('この申込を含めた申込数を載せる（申込前カウント+1）', async () => {
+    mockEmailSend.mockResolvedValue({ messageId: 'm1' })
+    await join(EMAIL_ENV)
+    expect(mockEmailSend).toHaveBeenCalledWith(expect.objectContaining({
+      text: expect.stringContaining('申込状況: 3 / 10 名'),
+    }))
+  })
+
+  it('メール未設定の環境では送信せず申込は成功する', async () => {
+    const res = await join({ DB: mockDb })
+    expect(res.status).toBe(201)
+    expect(mockEmailSend).not.toHaveBeenCalled()
+  })
+
+  it('メール送信が失敗しても申込は201で成功する（ベストエフォート）', async () => {
+    mockEmailSend.mockRejectedValue(new Error('email down'))
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const res = await join(EMAIL_ENV)
+    expect(res.status).toBe(201)
+    consoleSpy.mockRestore()
+  })
+})
