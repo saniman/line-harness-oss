@@ -105,6 +105,79 @@ describe('renderEventDetail', () => {
 
 const ID_TOKEN = 'dummy.id.token'
 
+/** exp を持つダミーの ID トークン（JWT 形式） */
+function makeIdToken(expSeconds: number): string {
+  const b64url = (obj: unknown) =>
+    btoa(JSON.stringify(obj)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+  return `${b64url({ alg: 'HS256' })}.${b64url({ exp: expSeconds, sub: 'U1' })}.sig`
+}
+
+describe('ID トークン期限切れの扱い（#28）', () => {
+  it('401 + id_token_expired なら sessionExpired: true を返す', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false, status: 401,
+      json: async () => ({ success: false, error: 'id_token_expired' }),
+    }))
+    const result = await startCheckoutSession(1, ID_TOKEN, vi.fn())
+    expect(result.success).toBe(false)
+    expect(result.sessionExpired).toBe(true)
+  })
+
+  it('401 でも期限切れ以外なら sessionExpired を立てない', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false, status: 401,
+      json: async () => ({ success: false, error: 'unauthorized' }),
+    }))
+    const result = await startCheckoutSession(1, ID_TOKEN, vi.fn())
+    expect(result.success).toBe(false)
+    expect(result.sessionExpired).toBeFalsy()
+  })
+
+  it('期限切れのトークンはサーバーに送らず sessionExpired を返す（無駄な往復をしない）', async () => {
+    const mockFetch = vi.fn()
+    vi.stubGlobal('fetch', mockFetch)
+    const expired = makeIdToken(Date.now() / 1000 - 60)
+
+    const result = await startCheckoutSession(1, expired, vi.fn())
+
+    expect(result.sessionExpired).toBe(true)
+    expect(mockFetch).not.toHaveBeenCalled()
+  })
+
+  it('現金申込も期限切れなら sessionExpired を返す（決済ボタンと同じ経路のため）', async () => {
+    const mockFetch = vi.fn()
+    vi.stubGlobal('fetch', mockFetch)
+    const expired = makeIdToken(Date.now() / 1000 - 60)
+
+    const result = await joinCashEvent(1, expired, '山田太郎')
+
+    expect(result.sessionExpired).toBe(true)
+    expect(mockFetch).not.toHaveBeenCalled()
+  })
+
+  it('無料申込も期限切れなら sessionExpired を返す', async () => {
+    const mockFetch = vi.fn()
+    vi.stubGlobal('fetch', mockFetch)
+    const expired = makeIdToken(Date.now() / 1000 - 60)
+
+    const result = await joinFreeEvent(2, expired, '山田太郎')
+
+    expect(result.sessionExpired).toBe(true)
+    expect(mockFetch).not.toHaveBeenCalled()
+  })
+
+  it('有効期限内のトークンは通常どおり送信する', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ success: true }) })
+    vi.stubGlobal('fetch', mockFetch)
+    const fresh = makeIdToken(Date.now() / 1000 + 3600)
+
+    const result = await joinFreeEvent(2, fresh, '山田太郎')
+
+    expect(result.success).toBe(true)
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('startCheckoutSession', () => {
   it('checkout-session成功時にopenWindowが呼ばれる', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({

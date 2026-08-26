@@ -42,7 +42,7 @@ vi.mock('../services/event-followup.js', () => ({
 }))
 
 vi.mock('../services/liff-identity.js', () => ({
-  verifyCallerLineUserId: vi.fn(),
+  verifyCaller: vi.fn(),
 }))
 
 vi.mock('../services/event-friend.js', () => ({
@@ -63,7 +63,7 @@ vi.mock('@line-crm/db', () => ({
 
 import * as eventsService from '../services/events.js'
 import { enrollEventParticipants } from '../services/event-followup.js'
-import { verifyCallerLineUserId } from '../services/liff-identity.js'
+import { verifyCaller } from '../services/liff-identity.js'
 import { resolveEventApplicant } from '../services/event-friend.js'
 import { backfillEventBookingFriends } from '../services/event-friend-backfill.js'
 import { resolveDefaultLineAccountId } from '../services/default-line-account.js'
@@ -72,7 +72,7 @@ import { events } from './events.js'
 
 const mockEnrollParticipants = vi.mocked(enrollEventParticipants)
 const mockGetScenarioById = vi.mocked(getScenarioById)
-const mockVerifyCaller = vi.mocked(verifyCallerLineUserId)
+const mockVerifyCaller = vi.mocked(verifyCaller)
 const mockResolveApplicant = vi.mocked(resolveEventApplicant)
 const mockBackfill = vi.mocked(backfillEventBookingFriends)
 const mockResolveDefaultAccountId = vi.mocked(resolveDefaultLineAccountId)
@@ -104,7 +104,7 @@ const PENDING_BOOKING = {
 beforeEach(() => {
   vi.clearAllMocks()
   // 既定は「idToken 検証OK・友だち登録済み」。異常系は各テストで上書きする。
-  mockVerifyCaller.mockResolvedValue('U123')
+  mockVerifyCaller.mockResolvedValue({ ok: true, lineUserId: 'U123' })
   mockResolveApplicant.mockResolvedValue({ status: 'ok', friendId: 'friend-1' })
   mockResolveDefaultAccountId.mockResolvedValue('acc-1')
 })
@@ -337,7 +337,7 @@ describe('POST /api/events/:id/join', () => {
   })
 
   it('idToken が無効なら401を返し申込を作らない', async () => {
-    mockVerifyCaller.mockResolvedValue(null)
+    mockVerifyCaller.mockResolvedValue({ ok: false, reason: 'invalid' })
     vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 2 })
     const res = await app.request('/api/events/1/join', {
       method: 'POST',
@@ -345,6 +345,19 @@ describe('POST /api/events/:id/join', () => {
       body: JSON.stringify({ name: '山田太郎' }),
     }, { DB: mockDb })
     expect(res.status).toBe(401)
+    expect(eventsService.createEventBooking).not.toHaveBeenCalled()
+  })
+
+  it('idToken の期限切れは id_token_expired を返す（クライアントが再ログインで復帰できるように）', async () => {
+    mockVerifyCaller.mockResolvedValue({ ok: false, reason: 'expired' })
+    vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 2 })
+    const res = await app.request('/api/events/1/join', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: '山田太郎' }),
+    }, { DB: mockDb })
+    expect(res.status).toBe(401)
+    expect(await res.json()).toMatchObject({ error: 'id_token_expired' })
     expect(eventsService.createEventBooking).not.toHaveBeenCalled()
   })
 
@@ -457,12 +470,23 @@ describe('POST /api/events/:id/checkout-session', () => {
   })
 
   it('異常系：idToken が無効 → 401（仮登録もしない）', async () => {
-    mockVerifyCaller.mockResolvedValue(null)
+    mockVerifyCaller.mockResolvedValue({ ok: false, reason: 'invalid' })
     vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 2 })
     const res = await app.request('/api/events/1/checkout-session', {
       method: 'POST',
     }, MOCK_ENV)
     expect(res.status).toBe(401)
+    expect(eventsService.createPendingBooking).not.toHaveBeenCalled()
+  })
+
+  it('異常系：idToken の期限切れ → 401 id_token_expired（pending 行を作らない）', async () => {
+    mockVerifyCaller.mockResolvedValue({ ok: false, reason: 'expired' })
+    vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 2 })
+    const res = await app.request('/api/events/1/checkout-session', {
+      method: 'POST',
+    }, MOCK_ENV)
+    expect(res.status).toBe(401)
+    expect(await res.json()).toMatchObject({ error: 'id_token_expired' })
     expect(eventsService.createPendingBooking).not.toHaveBeenCalled()
   })
 
