@@ -196,6 +196,14 @@ app.get('/r/:ref', async (c) => {
   if (xh) liffParams.set('xh', xh);
   const ig = c.req.query('ig');
   if (ig) liffParams.set('ig', ig);
+  // 広告のクリックID + UTM のパススルー。/auth/line はクエリ文字列をまるごと
+  // /r/:ref に転送しているのに、ここで liffParams を組み直すときにこれらを拾って
+  // いなかったため、モバイル主要導線の広告アトリビューションが無言で消えていた。
+  // /auth/line が読んでいるパラメータと同じ並びを保つこと。
+  for (const key of ['gclid', 'fbclid', 'twclid', 'ttclid', 'utm_source', 'utm_medium', 'utm_campaign']) {
+    const value = c.req.query(key);
+    if (value) liffParams.set(key, value);
+  }
   const liffTarget = liffParams.toString() ? `${liffUrl}?${liffParams.toString()}` : liffUrl;
 
   // Build /auth/oauth fallback URL — forces OAuth flow without X detection,
