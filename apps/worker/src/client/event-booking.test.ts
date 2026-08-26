@@ -415,6 +415,78 @@ describe('409 の区別（満席 / 締切）', () => {
   })
 })
 
+describe('画面を開いたまま締切をまたいだとき', () => {
+  const closed409 = () => ({
+    ok: false, status: 409, json: async () => ({ success: false, error: 'application_closed' }),
+  })
+
+  /** 一覧取得は成功、その後の申込リクエストは締切 409 を返す */
+  const fetchThenClosed = (event: EventPublic) => vi.fn()
+    .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ success: true, data: [event] }) })
+    .mockResolvedValue(closed409())
+
+  it('無料申込が締切409なら、ボタンは無効のままで押し続けられない', async () => {
+    document.body.innerHTML = '<div id="app"></div>'
+    vi.stubGlobal('fetch', fetchThenClosed(EVENT_FREE))
+
+    await initEventBooking({ idToken: ID_TOKEN, eventId: EVENT_FREE.id })
+    const btn = document.getElementById('free-join-btn') as HTMLButtonElement
+    btn.click()
+
+    await vi.waitFor(() => {
+      expect(document.getElementById('app')?.innerHTML).toContain('このイベントの申し込みは締めきられました')
+    })
+    // 「処理中...」のまま固まらせず、締切として無効化する
+    const after = document.getElementById('free-join-btn') as HTMLButtonElement
+    expect(after.disabled).toBe(true)
+    expect(after.textContent).not.toContain('申し込む（無料）')
+  })
+
+  it('決済が締切409なら、当日現金ボタンも一緒に無効になる（裏口を残さない）', async () => {
+    document.body.innerHTML = '<div id="app"></div>'
+    vi.stubGlobal('fetch', fetchThenClosed(EVENT_PAID))
+
+    await initEventBooking({ idToken: ID_TOKEN, eventId: EVENT_PAID.id })
+    ;(document.getElementById('checkout-btn') as HTMLButtonElement).click()
+
+    await vi.waitFor(() => {
+      expect(document.getElementById('app')?.innerHTML).toContain('このイベントの申し込みは締めきられました')
+    })
+    expect((document.getElementById('checkout-btn') as HTMLButtonElement).disabled).toBe(true)
+    // 押されたボタンだけ止めても、もう一方の経路から申し込めてしまう
+    expect((document.getElementById('cash-join-btn') as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('当日現金が締切409なら、決済ボタンも一緒に無効になる', async () => {
+    document.body.innerHTML = '<div id="app"></div>'
+    vi.stubGlobal('fetch', fetchThenClosed(EVENT_PAID))
+
+    await initEventBooking({ idToken: ID_TOKEN, eventId: EVENT_PAID.id })
+    ;(document.getElementById('cash-join-btn') as HTMLButtonElement).click()
+
+    await vi.waitFor(() => {
+      expect(document.getElementById('app')?.innerHTML).toContain('このイベントの申し込みは締めきられました')
+    })
+    expect((document.getElementById('cash-join-btn') as HTMLButtonElement).disabled).toBe(true)
+    expect((document.getElementById('checkout-btn') as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('満席の409では従来どおりボタンが戻る（締切と混同しない）', async () => {
+    document.body.innerHTML = '<div id="app"></div>'
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ success: true, data: [EVENT_FREE] }) })
+      .mockResolvedValue({ ok: false, status: 409 }))
+
+    await initEventBooking({ idToken: ID_TOKEN, eventId: EVENT_FREE.id })
+    ;(document.getElementById('free-join-btn') as HTMLButtonElement).click()
+
+    await vi.waitFor(() => { expect(document.querySelector('.form-error')).not.toBeNull() })
+    const btn = document.getElementById('free-join-btn') as HTMLButtonElement
+    expect(btn.disabled).toBe(false)
+    expect(btn.textContent).toContain('申し込む（無料）')
+  })
+})
+
 describe('締切後も友だち追加の導線を潰さない（要件の肝）', () => {
   it('締切イベントでも申込画面は描画される（友だち追加後の戻り先が消えない）', async () => {
     document.body.innerHTML = '<div id="app"></div>'

@@ -112,6 +112,11 @@ export interface EventActionResult {
    * 呼び出し側は文言を出すのではなく **セッション復帰処理**へ流す（#28）。
    */
   sessionExpired?: boolean
+  /**
+   * 申込締切で弾かれた（409 application_closed）。
+   * 締切は最終状態なので、呼び出し側はボタンを元に戻さず締切済みとして描き直す。
+   */
+  applicationClosed?: boolean
 }
 
 /** 申込系エンドポイントの共通ヘッダ。本人確認は LIFF の idToken で行う。 */
@@ -151,7 +156,9 @@ async function readErrorCode(res: { json?: () => Promise<unknown> }): Promise<st
 function toActionError(status: number, code?: string): EventActionResult {
   if (status === 409) {
     // 409 は満席と締切の2つある。ステータスだけで判断すると締切なのに「満席」と出る。
-    if (code === 'application_closed') return { success: false, error: CLOSED_MESSAGE }
+    if (code === 'application_closed') {
+      return { success: false, applicationClosed: true, error: CLOSED_MESSAGE }
+    }
     return { success: false, error: 'このイベントは満席です' }
   }
   if (status === 403) {
@@ -384,6 +391,18 @@ export async function initEventBooking(options: {
   }
 
   const renderDetail = (event: EventPublic) => {
+    /**
+     * 締切で弾かれたときの共通処理。ボタンを元に戻すと押し続けられてしまうため、
+     * 締切済みの状態で画面ごと描き直す（有料は決済・当日現金の2経路があるので、
+     * 押されたボタンだけ止めても、もう一方から申し込めてしまう）。
+     * @returns 締切だったら true（呼び出し側はボタン復帰処理を行わない）
+     */
+    const handleClosed = (result: EventActionResult): boolean => {
+      if (!result.applicationClosed) return false
+      renderDetail({ ...event, application_closed: true })
+      return true
+    }
+
     app.innerHTML = `
       <div>
         <button id="back-btn">← 一覧に戻る</button>
@@ -400,6 +419,7 @@ export async function initEventBooking(options: {
       checkoutBtn.textContent = '処理中...'
       const result = await startCheckoutSession(event.id, idToken ?? '', openWindow)
       if (!result.success) {
+        if (handleClosed(result)) return
         if (handleActionFailure(result)) return
         checkoutBtn.disabled = false
         checkoutBtn.textContent = '申込・決済へ進む 💳'
@@ -423,6 +443,7 @@ export async function initEventBooking(options: {
           </div>
         `
       } else {
+        if (handleClosed(result)) return
         if (handleActionFailure(result)) return
         cashBtn.disabled = false
         cashBtn.textContent = '当日現金の方はこちら 💴'
@@ -446,6 +467,7 @@ export async function initEventBooking(options: {
           </div>
         `
       } else {
+        if (handleClosed(result)) return
         if (handleActionFailure(result)) return
         freeBtn.disabled = false
         freeBtn.textContent = '申し込む（無料）'

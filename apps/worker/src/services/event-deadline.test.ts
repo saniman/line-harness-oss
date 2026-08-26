@@ -13,8 +13,8 @@ describe('isApplicationClosed', () => {
     expect(APPLICATION_DEADLINE_MINUTES).toBe(60)
   })
 
-  it('締切より前（開始61分前）は申込可', () => {
-    expect(isApplicationClosed(START_AT, DEADLINE_MS - MINUTE)).toBe(false)
+  it('締切より十分前（開始2時間前）は申込可', () => {
+    expect(isApplicationClosed(START_AT, START_MS - 120 * MINUTE)).toBe(false)
   })
 
   it('締切1分前は申込可（境界値）', () => {
