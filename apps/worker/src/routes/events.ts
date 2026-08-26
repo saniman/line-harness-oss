@@ -21,6 +21,8 @@ import { backfillEventBookingFriends } from '../services/event-friend-backfill.j
 import { resolveDefaultLineAccountId } from '../services/default-line-account.js';
 import { verifyCaller } from '../services/liff-identity.js';
 import type { CallerAuthFailure } from '../services/liff-identity.js';
+import { sendEventBookingNotification } from '../services/email-notifier.js';
+import { formatJST } from '../utils/format-jst.js';
 import { getScenarioById } from '@line-crm/db';
 import type { Env } from '../index.js';
 
@@ -215,16 +217,36 @@ events.post('/api/events/:id/join', async (c) => {
       console.error('[events /join] enrollEventFollowupScenarios failed:', err);
     }
 
+    // 運営者へメール通知（ベストエフォート: 未設定なら no-op・失敗しても申込は維持）
+    // participant_count は申込前の値なので、この申込を含めて +1 する。
+    // 支払い区分はクライアント申告（body.paymentMethod）ではなく DB の事実から導出する。
+    // 有料イベントに paymentMethod なしで直接叩かれた場合を「無料」と誤通知しないため。
+    const paymentKind =
+      (event.price ?? 0) <= 0
+        ? 'free'
+        : booking.payment_status === 'cash'
+          ? 'cash'
+          : 'unpaid';
+    await sendEventBookingNotification({
+      email: c.env.EMAIL,
+      to: c.env.ADMIN_NOTIFY_EMAIL,
+      from: c.env.MAIL_FROM_ADDRESS,
+      ctx: {
+        eventTitle: event.title,
+        eventStartAt: event.start_at,
+        applicantName: body.name ?? '',
+        bookingId: booking.id,
+        paymentKind,
+        amount: paymentKind === 'unpaid' ? event.price : null,
+        participantCount: event.participant_count + 1,
+        capacity: event.capacity,
+      },
+    });
+
     // LINE push通知（ベストエフォート）
     if (lineClient) {
       try {
-        const d = new Date(new Date(event.start_at).getTime() + 9 * 60 * 60 * 1000);
-        const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
-        const dd = String(d.getUTCDate()).padStart(2, '0');
-        const hh = String(d.getUTCHours()).padStart(2, '0');
-        const min = String(d.getUTCMinutes()).padStart(2, '0');
-        const weekdays = ['日', '月', '火', '水', '木', '金', '土'];
-        const dateStr = `${mm}/${dd}(${weekdays[d.getUTCDay()]}) ${hh}:${min}`;
+        const dateStr = formatJST(event.start_at);
         const headerText = isCash ? '✅ 当日現金払いで申込完了' : '✅ お申込みが完了しました';
         const cashNote = isCash ? [
           { type: 'text', text: '💴 当日スタッフにお支払いください', size: 'sm', color: '#e67e22', wrap: true },
@@ -390,15 +412,7 @@ events.post('/api/events/bookings/:id/cancel', async (c) => {
       try {
         const event = await getEventById(c.env.DB, result.eventId);
         const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
-        const d = new Date(new Date(event?.start_at ?? '').getTime() + 9 * 60 * 60 * 1000);
-        const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
-        const dd = String(d.getUTCDate()).padStart(2, '0');
-        const hh = String(d.getUTCHours()).padStart(2, '0');
-        const min = String(d.getUTCMinutes()).padStart(2, '0');
-        const weekdays = ['日', '月', '火', '水', '木', '金', '土'];
-        const dateStr = event?.start_at
-          ? `${mm}/${dd}(${weekdays[d.getUTCDay()]}) ${hh}:${min}`
-          : '';
+        const dateStr = event?.start_at ? formatJST(event.start_at) : '';
         const bodyContents: object[] = [
           { type: 'text', text: event?.title ?? 'イベント', weight: 'bold', size: 'md', wrap: true },
           { type: 'text', text: `日時：${dateStr}`, size: 'sm', color: '#666666', wrap: true },
