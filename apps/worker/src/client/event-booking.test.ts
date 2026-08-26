@@ -12,6 +12,7 @@ interface EventPublic {
   remaining: number
   available: boolean
   price?: number | null
+  application_closed?: boolean
 }
 
 const EVENT_PAID: EventPublic = {
@@ -29,6 +30,17 @@ const EVENT_FULL: EventPublic = {
   id: 3, title: '満席イベント', description: null,
   start_at: '2026-06-15T14:00:00+09:00', end_at: '2026-06-15T16:00:00+09:00',
   capacity: 5, participant_count: 5, remaining: 0, available: false, price: null,
+}
+// 締切（開始1時間前を過ぎた）イベント。空席はあるが申し込めない。
+const EVENT_CLOSED: EventPublic = {
+  id: 4, title: '締切イベント', description: null,
+  start_at: '2026-06-20T19:00:00+09:00', end_at: '2026-06-20T21:00:00+09:00',
+  capacity: 10, participant_count: 2, remaining: 8, available: true, price: 3000,
+  application_closed: true,
+}
+const EVENT_CLOSED_FREE: EventPublic = { ...EVENT_CLOSED, id: 5, price: null }
+const EVENT_CLOSED_AND_FULL: EventPublic = {
+  ...EVENT_CLOSED, id: 6, participant_count: 10, remaining: 0, available: false,
 }
 
 import { buildEventListHtml, buildEventDetailHtml, startCheckoutSession, joinFreeEvent, joinCashEvent, initEventBooking } from './event-booking.js'
@@ -51,6 +63,27 @@ describe('renderEventList', () => {
     const html = buildEventListHtml([EVENT_FULL])
     expect(html).toContain('disabled')
     expect(html).toContain('満席')
+  })
+
+  it('締切前のイベントはボタンが押せる（デグレ防止）', () => {
+    const html = buildEventListHtml([EVENT_PAID])
+    expect(html).not.toContain('disabled')
+    expect(html).not.toContain('締めきられました')
+  })
+
+  it('締切後のイベントは「締めきられました」と表示されボタンがdisabledになる', () => {
+    const html = buildEventListHtml([EVENT_CLOSED])
+    expect(html).toContain('締めきられました')
+    expect(html).toContain('disabled')
+    // 空席はあるので「満席」と誤表示してはいけない
+    expect(html).not.toContain('満席')
+  })
+
+  it('満席かつ締切後は締切表示を優先する（満席は空きを期待させるため）', () => {
+    const html = buildEventListHtml([EVENT_CLOSED_AND_FULL])
+    expect(html).toContain('締めきられました')
+    expect(html).toContain('disabled')
+    expect(html).not.toContain('満席')
   })
 
   it('イベントがない場合「現在募集中のイベントはありません」と表示', () => {
@@ -175,6 +208,37 @@ describe('ID トークン期限切れの扱い（#28）', () => {
 
     expect(result.success).toBe(true)
     expect(mockFetch).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('renderEventDetail（申込締切）', () => {
+  it('締切後は「このイベントの申し込みは締めきられました」と表示する', () => {
+    const html = buildEventDetailHtml(EVENT_CLOSED)
+    expect(html).toContain('このイベントの申し込みは締めきられました')
+  })
+
+  it('有料イベントは決済ボタンと当日現金ボタンの両方が押せなくなる', () => {
+    const html = buildEventDetailHtml(EVENT_CLOSED)
+    const checkout = html.match(/<button id="checkout-btn"[^>]*>/)?.[0] ?? ''
+    const cash = html.match(/<button id="cash-join-btn"[^>]*>/)?.[0] ?? ''
+    expect(checkout).toContain('disabled')
+    expect(cash).toContain('disabled')
+  })
+
+  it('無料イベントも締切後は申し込めない', () => {
+    const html = buildEventDetailHtml(EVENT_CLOSED_FREE)
+    const free = html.match(/<button id="free-join-btn"[^>]*>/)?.[0] ?? ''
+    expect(free).toContain('disabled')
+    expect(html).toContain('このイベントの申し込みは締めきられました')
+  })
+
+  it('締切前は両方のボタンが押せる（デグレ防止）', () => {
+    const html = buildEventDetailHtml(EVENT_PAID)
+    const checkout = html.match(/<button id="checkout-btn"[^>]*>/)?.[0] ?? ''
+    const cash = html.match(/<button id="cash-join-btn"[^>]*>/)?.[0] ?? ''
+    expect(checkout).not.toContain('disabled')
+    expect(cash).not.toContain('disabled')
+    expect(html).not.toContain('締めきられました')
   })
 })
 
@@ -314,6 +378,70 @@ describe('joinCashEvent', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 403 }))
     const result = await joinCashEvent(1, ID_TOKEN, '山田太郎')
     expect(result.friendRequired).toBe(true)
+  })
+})
+
+describe('409 の区別（満席 / 締切）', () => {
+  const closed409 = () => ({
+    ok: false, status: 409, json: async () => ({ success: false, error: 'application_closed' }),
+  })
+
+  it('409 application_closed は締切の文言を返す（満席と混同しない）', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(closed409()))
+    const result = await joinFreeEvent(2, ID_TOKEN, '山田太郎')
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('締めきられました')
+    expect(result.error).not.toContain('満席')
+  })
+
+  it('当日現金の 409 application_closed も締切の文言になる', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(closed409()))
+    const result = await joinCashEvent(1, ID_TOKEN, '山田太郎')
+    expect(result.error).toContain('締めきられました')
+  })
+
+  it('決済の 409 application_closed も締切の文言になり openWindow を呼ばない', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(closed409()))
+    const openWindow = vi.fn()
+    const result = await startCheckoutSession(1, ID_TOKEN, openWindow)
+    expect(result.error).toContain('締めきられました')
+    expect(openWindow).not.toHaveBeenCalled()
+  })
+
+  it('error コードのない 409 は従来どおり満席として扱う', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 409 }))
+    const result = await joinFreeEvent(2, ID_TOKEN, '山田太郎')
+    expect(result.error).toContain('満席')
+  })
+})
+
+describe('締切後も友だち追加の導線を潰さない（要件の肝）', () => {
+  it('締切イベントでも申込画面は描画される（友だち追加後の戻り先が消えない）', async () => {
+    document.body.innerHTML = '<div id="app"></div>'
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true, status: 200, json: async () => ({ success: true, data: [EVENT_CLOSED] }),
+    }))
+
+    await initEventBooking({ idToken: ID_TOKEN, eventId: EVENT_CLOSED.id })
+
+    // 締切でもエラー画面にせず申込画面を出す。友だち追加 → onFriendAdded で
+    // ここへ戻ってくる導線（main.ts の initEventFlow）が成立しなくなるため。
+    const html = document.getElementById('app')?.innerHTML ?? ''
+    expect(html).toContain(EVENT_CLOSED.title)
+    expect(html).toContain('このイベントの申し込みは締めきられました')
+    expect(document.querySelector('.form-error')).toBeNull()
+  })
+
+  it('締切イベントは一覧のカードを押しても詳細に進めない（ボタンが無効）', async () => {
+    document.body.innerHTML = '<div id="app"></div>'
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true, status: 200, json: async () => ({ success: true, data: [EVENT_CLOSED] }),
+    }))
+
+    await initEventBooking({ idToken: ID_TOKEN })
+
+    const btn = document.querySelector('.event-join-btn') as HTMLButtonElement
+    expect(btn.disabled).toBe(true)
   })
 })
 
