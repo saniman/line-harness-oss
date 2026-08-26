@@ -8,7 +8,10 @@
 //   - LINE アプリ内（LIFF ブラウザ）: `liff.login()` は**使えない**
 //     （"You can't use liff.login() in a LIFF browser, as it is automatically executed
 //       when liff.init() is executed."）→ **リロードして init を走らせ直す**のが唯一の手段
-//   - 外部ブラウザ: `liff.login()` で再ログインさせる
+//   - 外部ブラウザ: `liff.logout()` → `liff.login()` の順で再ログインさせる
+//     （`liff.login()` は**すでにログイン済みだと何もしない**。ID トークンだけが期限切れでも
+//       SDK 側のログイン状態は残っているため、先に logout でセッションを捨てないと
+//       「復帰を開始したつもりで実際は何も起きない」状態になる）
 //
 // pure function に切り出して liff-token.test.ts でカバーする。
 
@@ -57,6 +60,8 @@ export function isIdTokenExpired(
 export interface LiffSessionDeps {
   /** liff.isInClient() の結果 */
   isInClient: boolean
+  /** liff.logout()（外部ブラウザでのみ使う。すでに未ログインなら何もしなくてよい） */
+  logout: () => void
   /** liff.login() */
   login: (opts: { redirectUri: string }) => void
   /** window.location.reload() */
@@ -74,7 +79,7 @@ export interface LiffSessionDeps {
  *          false なら自動復帰できなかった＝呼び出し側でユーザーに案内する。
  */
 export function recoverLiffSession(deps: LiffSessionDeps): boolean {
-  const { isInClient, login, reload, href, storage } = deps
+  const { isInClient, logout, login, reload, href, storage } = deps
 
   // 試行回数を数えられない環境では自動復帰しない。
   // リロードしても直らなかった場合に無限ループへ落ちるため。
@@ -88,6 +93,8 @@ export function recoverLiffSession(deps: LiffSessionDeps): boolean {
     // liff.init() を走らせ直して ID トークンを再発行させる
     reload()
   } else {
+    // login() は「ログイン済み」だと何もしないため、先にセッションを捨てて認可フローを必ず開始させる
+    logout()
     login({ redirectUri: href })
   }
   return true

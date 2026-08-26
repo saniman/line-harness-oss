@@ -27,6 +27,7 @@ declare const liff: {
   init(config: { liffId: string }): Promise<void>;
   isLoggedIn(): boolean;
   login(opts?: { redirectUri?: string }): void;
+  logout(): void;
   getProfile(): Promise<{ userId: string; displayName: string; pictureUrl?: string; statusMessage?: string }>;
   getIDToken(): string | null;
   getDecodedIDToken(): { sub: string; name?: string; email?: string; picture?: string } | null;
@@ -61,6 +62,8 @@ const sessionStorageOrNull = (() => {
 function recoverSession(): boolean {
   return recoverLiffSession({
     isInClient: liff.isInClient(),
+    // logout に失敗しても login は試す（復帰の可能性を潰さない）
+    logout: () => { try { liff.logout(); } catch { /* 未ログイン等。login 側で復帰を試みる */ } },
     login: (opts) => liff.login(opts),
     reload: () => window.location.reload(),
     href: window.location.href,

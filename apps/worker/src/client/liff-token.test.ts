@@ -65,24 +65,27 @@ describe('LIFF セッションの復帰', () => {
     // liff.login() は LIFF ブラウザでは使えない（init 時に自動実行されるため）
     const reload = vi.fn()
     const login = vi.fn()
+    const logout = vi.fn()
     const storage = makeStorage()
 
     const recovered = recoverLiffSession({
-      isInClient: true, reload, login, href: 'https://liff.example/?page=event', storage,
+      isInClient: true, reload, login, logout, href: 'https://liff.example/?page=event', storage,
     })
 
     expect(recovered).toBe(true)
     expect(reload).toHaveBeenCalledTimes(1)
     expect(login).not.toHaveBeenCalled()
+    expect(logout).not.toHaveBeenCalled()
   })
 
   it('外部ブラウザでは liff.login() で再ログインさせる', () => {
     const reload = vi.fn()
     const login = vi.fn()
+    const logout = vi.fn()
     const storage = makeStorage()
 
     const recovered = recoverLiffSession({
-      isInClient: false, reload, login, href: 'https://liff.example/?page=event', storage,
+      isInClient: false, reload, login, logout, href: 'https://liff.example/?page=event', storage,
     })
 
     expect(recovered).toBe(true)
@@ -90,10 +93,26 @@ describe('LIFF セッションの復帰', () => {
     expect(reload).not.toHaveBeenCalled()
   })
 
+  it('外部ブラウザでは login の前に logout してログイン状態を捨てる', () => {
+    // liff.login() は「ログイン済み」だと何もしない。ID トークンだけ期限切れのときは
+    // SDK 上はログイン済みのままなので、logout しないと復帰が無言で失敗する。
+    const calls: string[] = []
+    const logout = vi.fn(() => { calls.push('logout') })
+    const login = vi.fn(() => { calls.push('login') })
+    const storage = makeStorage()
+
+    const recovered = recoverLiffSession({
+      isInClient: false, reload: vi.fn(), login, logout, href: 'https://liff.example/', storage,
+    })
+
+    expect(recovered).toBe(true)
+    expect(calls).toEqual(['logout', 'login'])
+  })
+
   it('復帰を1回試したあとは再試行せず false を返す（リロード地獄の防止）', () => {
     const reload = vi.fn()
     const storage = makeStorage()
-    const deps = { isInClient: true, reload, login: vi.fn(), href: 'https://liff.example/', storage }
+    const deps = { isInClient: true, reload, login: vi.fn(), logout: vi.fn(), href: 'https://liff.example/', storage }
 
     expect(recoverLiffSession(deps)).toBe(true)
     expect(recoverLiffSession(deps)).toBe(false)
@@ -103,7 +122,7 @@ describe('LIFF セッションの復帰', () => {
   it('sessionStorage が使えない場合は自動復帰しない（試行回数を数えられずループするため）', () => {
     const reload = vi.fn()
     const recovered = recoverLiffSession({
-      isInClient: true, reload, login: vi.fn(), href: 'https://liff.example/', storage: null,
+      isInClient: true, reload, login: vi.fn(), logout: vi.fn(), href: 'https://liff.example/', storage: null,
     })
 
     expect(recovered).toBe(false)
@@ -113,7 +132,7 @@ describe('LIFF セッションの復帰', () => {
   it('API 呼び出しが成功したら試行回数をリセットし、次回また復帰できる', () => {
     const reload = vi.fn()
     const storage = makeStorage()
-    const deps = { isInClient: true, reload, login: vi.fn(), href: 'https://liff.example/', storage }
+    const deps = { isInClient: true, reload, login: vi.fn(), logout: vi.fn(), href: 'https://liff.example/', storage }
 
     expect(recoverLiffSession(deps)).toBe(true)
     markLiffSessionHealthy(storage)
