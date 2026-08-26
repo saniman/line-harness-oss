@@ -17,6 +17,7 @@ import {
 } from '../services/events.js';
 import { enrollEventFollowupScenarios, enrollEventParticipants } from '../services/event-followup.js';
 import { resolveEventApplicant } from '../services/event-friend.js';
+import { isApplicationClosed } from '../services/event-deadline.js';
 import { backfillEventBookingFriends } from '../services/event-friend-backfill.js';
 import { resolveDefaultLineAccountId } from '../services/default-line-account.js';
 import { verifyCaller } from '../services/liff-identity.js';
@@ -103,6 +104,8 @@ events.get('/api/events/public', async (c) => {
         participant_count: e.participant_count,
         remaining: e.capacity - e.participant_count,
         available: e.participant_count < e.capacity,
+        // 締切は満席とは別の状態。available に混ぜると「締切なのに満席」と表示されてしまう。
+        application_closed: isApplicationClosed(e.start_at),
       }));
     return c.json({ success: true, data: published });
   } catch (err) {
@@ -182,6 +185,11 @@ events.post('/api/events/:id/join', async (c) => {
 
     const event = await getEventById(c.env.DB, id);
     if (!event) return c.json({ success: false, error: 'Event not found' }, 404);
+    // 締切チェックは定員チェックより前。締切のほうが利用者にとって情報量が多い
+    // （満席は空きが出る可能性を想像させるが、締切は最終状態）。
+    if (isApplicationClosed(event.start_at)) {
+      return c.json({ success: false, error: 'application_closed' }, 409);
+    }
     if (event.participant_count >= event.capacity) {
       return c.json({ success: false, error: 'Event is full' }, 409);
     }
@@ -311,12 +319,19 @@ events.post('/api/events/:id/checkout-session', async (c) => {
       return c.json({ success: false, error: 'Event not found' }, 404);
     }
 
-    // 2. 定員チェック（participant_count は confirmed のみカウント済み）
+    // 2. 申込締切チェック（定員より前。UI でボタンを消すのは導線であってゲートはここ）
+    // NOTE: 締切直前に Checkout へ進んだ人の決済完了は妨げない（ここはセッション作成時の判定）。
+    // 塞ぐと「支払ったのに参加できない」になるため、止めるのは新規申込だけにする。
+    if (isApplicationClosed(event.start_at)) {
+      return c.json({ success: false, error: 'application_closed' }, 409);
+    }
+
+    // 3. 定員チェック（participant_count は confirmed のみカウント済み）
     if (event.participant_count >= event.capacity) {
       return c.json({ success: false, error: 'Event is full' }, 409);
     }
 
-    // 3. 友だち登録必須ゲート。pending 行を作る前に弾いてゴミ行を残さない。
+    // 4. 友だち登録必須ゲート。pending 行を作る前に弾いてゴミ行を残さない。
     const lineClient = c.env.LINE_CHANNEL_ACCESS_TOKEN
       ? new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN)
       : null;
@@ -330,10 +345,10 @@ events.post('/api/events/:id/checkout-session', async (c) => {
     }
     const friendId = applicant.friendId;
 
-    // 4. 仮登録（pending / unpaid）
+    // 5. 仮登録（pending / unpaid）
     const booking = await createPendingBooking(c.env.DB, { event_id: id, friend_id: friendId });
 
-    // 5. Stripe Checkout Session 作成
+    // 6. Stripe Checkout Session 作成
     const stripe = new Stripe(c.env.STRIPE_SECRET_KEY, {
       apiVersion: '2026-04-22.dahlia',
       httpClient: Stripe.createFetchHttpClient(),
@@ -366,7 +381,7 @@ events.post('/api/events/:id/checkout-session', async (c) => {
       return c.json({ success: false, error: 'Stripe API error' }, 500);
     }
 
-    // 6. stripe_session_id を更新
+    // 7. stripe_session_id を更新
     await updateBookingStripeSessionId(c.env.DB, booking.id, session.id);
 
     return c.json({ success: true, data: { url: session.url } });

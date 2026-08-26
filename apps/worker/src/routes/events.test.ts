@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
 
 const mockCheckoutSessionCreate = vi.hoisted(() => vi.fn())
@@ -86,6 +86,13 @@ const EVENT1 = {
   start_at: '2026-06-01T10:00:00+09:00', end_at: '2026-06-01T12:00:00+09:00',
   capacity: 10, is_published: 1, price: 3000, created_at: '', updated_at: '', participant_count: 2,
 }
+// 申込締切は start_at の60分前（services/event-deadline.ts）。
+// テストの既定時刻は「締切1分前」＝まだ申し込める時点に固定する。
+// これで既存テストは従来どおり通り、締切のテストだけ setSystemTime で時刻を進める。
+const EVENT1_START_MS = Date.parse(EVENT1.start_at)
+const EVENT1_DEADLINE_MS = EVENT1_START_MS - 60 * 60 * 1000
+const MINUTE_MS = 60 * 1000
+
 const BOOKING1 = {
   id: 1, event_id: 1, friend_id: null, name: '山田太郎',
   email: 'yamada@example.com', status: 'confirmed',
@@ -103,10 +110,18 @@ const PENDING_BOOKING = {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  // Date のみ差し替える（setTimeout 等は本物のまま）。申込締切が現在時刻に依存するため、
+  // 時刻を固定しないとテストが「実行した日」によって落ちる。
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(EVENT1_DEADLINE_MS - MINUTE_MS)
   // 既定は「idToken 検証OK・友だち登録済み」。異常系は各テストで上書きする。
   mockVerifyCaller.mockResolvedValue({ ok: true, lineUserId: 'U123' })
   mockResolveApplicant.mockResolvedValue({ status: 'ok', friendId: 'friend-1' })
   mockResolveDefaultAccountId.mockResolvedValue('acc-1')
+})
+
+afterEach(() => {
+  vi.useRealTimers()
 })
 
 /** LIFF からの申込リクエスト（Authorization: Bearer <idToken> 付き） */
@@ -193,6 +208,24 @@ describe('GET /api/events/public', () => {
     const json = await res.json() as { success: boolean; data: { remaining: number }[] }
     expect(json.success).toBe(true)
     expect(json.data[0].remaining).toBe(EVENT1.capacity - EVENT1.participant_count)
+  })
+
+  it('締切前は application_closed: false を返す', async () => {
+    vi.setSystemTime(EVENT1_DEADLINE_MS - MINUTE_MS)
+    vi.mocked(eventsService.getEvents).mockResolvedValue([{ ...EVENT1, is_published: 1 }])
+    const res = await app.request('/api/events/public', {}, { DB: mockDb })
+    const json = await res.json() as { data: { application_closed: boolean; available: boolean }[] }
+    expect(json.data[0].application_closed).toBe(false)
+  })
+
+  it('締切後は application_closed: true を返す（available には混ぜない）', async () => {
+    vi.setSystemTime(EVENT1_DEADLINE_MS)
+    vi.mocked(eventsService.getEvents).mockResolvedValue([{ ...EVENT1, is_published: 1 }])
+    const res = await app.request('/api/events/public', {}, { DB: mockDb })
+    const json = await res.json() as { data: { application_closed: boolean; available: boolean }[] }
+    expect(json.data[0].application_closed).toBe(true)
+    // 締切と満席は別の状態。混ぜると「締切なのに満席表示」になる（#14 の再発）
+    expect(json.data[0].available).toBe(true)
   })
 })
 
@@ -416,6 +449,72 @@ describe('POST /api/events/:id/join', () => {
     expect(res.status).toBe(409)
   })
 
+  it('締切1分前は申し込める（境界値）', async () => {
+    vi.setSystemTime(EVENT1_DEADLINE_MS - MINUTE_MS)
+    vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 2 })
+    vi.mocked(eventsService.createEventBooking).mockResolvedValue(BOOKING1)
+    const res = await app.request('/api/events/1/join', {
+      method: 'POST',
+      headers: LIFF_HEADERS,
+      body: JSON.stringify({ name: '山田太郎' }),
+    }, { DB: mockDb })
+    expect(res.status).toBe(201)
+  })
+
+  it('締切ちょうどは409 application_closed を返し申込を作らない（境界値）', async () => {
+    vi.setSystemTime(EVENT1_DEADLINE_MS)
+    vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 2 })
+    const res = await app.request('/api/events/1/join', {
+      method: 'POST',
+      headers: LIFF_HEADERS,
+      body: JSON.stringify({ name: '山田太郎' }),
+    }, { DB: mockDb })
+    expect(res.status).toBe(409)
+    const json = await res.json() as { error: string }
+    expect(json.error).toBe('application_closed')
+    expect(eventsService.createEventBooking).not.toHaveBeenCalled()
+  })
+
+  it('締切1分後も409 application_closed（境界値）', async () => {
+    vi.setSystemTime(EVENT1_DEADLINE_MS + MINUTE_MS)
+    vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 2 })
+    const res = await app.request('/api/events/1/join', {
+      method: 'POST',
+      headers: LIFF_HEADERS,
+      body: JSON.stringify({ name: '山田太郎' }),
+    }, { DB: mockDb })
+    expect(res.status).toBe(409)
+    const json = await res.json() as { error: string }
+    expect(json.error).toBe('application_closed')
+  })
+
+  it('当日現金（paymentMethod: cash）も締切後は弾く', async () => {
+    vi.setSystemTime(EVENT1_DEADLINE_MS + MINUTE_MS)
+    vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 2 })
+    const res = await app.request('/api/events/1/join', {
+      method: 'POST',
+      headers: LIFF_HEADERS,
+      body: JSON.stringify({ name: '山田太郎', paymentMethod: 'cash' }),
+    }, { DB: mockDb })
+    expect(res.status).toBe(409)
+    const json = await res.json() as { error: string }
+    expect(json.error).toBe('application_closed')
+    expect(eventsService.createEventBooking).not.toHaveBeenCalled()
+  })
+
+  it('締切と満席が同時なら締切を優先して返す（利用者にとって情報量が多いため）', async () => {
+    vi.setSystemTime(EVENT1_DEADLINE_MS + MINUTE_MS)
+    vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 10 })
+    const res = await app.request('/api/events/1/join', {
+      method: 'POST',
+      headers: LIFF_HEADERS,
+      body: JSON.stringify({ name: '山田太郎' }),
+    }, { DB: mockDb })
+    expect(res.status).toBe(409)
+    const json = await res.json() as { error: string }
+    expect(json.error).toBe('application_closed')
+  })
+
   it('イベントが存在しない場合は404を返す', async () => {
     vi.mocked(eventsService.getEventById).mockResolvedValue(null)
     const res = await app.request('/api/events/999/join', {
@@ -532,6 +631,44 @@ describe('POST /api/events/:id/checkout-session', () => {
       headers: LIFF_HEADERS,
     }, MOCK_ENV)
     expect(res.status).toBe(404)
+  })
+
+  it('締切1分前は決済に進める（境界値）', async () => {
+    vi.setSystemTime(EVENT1_DEADLINE_MS - MINUTE_MS)
+    vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 2 })
+    vi.mocked(eventsService.createPendingBooking).mockResolvedValue(PENDING_BOOKING)
+    mockCheckoutSessionCreate.mockResolvedValue({ id: 'cs_test_1', url: 'https://checkout.stripe.com/c/pay/cs_test_1' })
+    const res = await app.request('/api/events/1/checkout-session', {
+      method: 'POST',
+      headers: LIFF_HEADERS,
+    }, MOCK_ENV)
+    expect(res.status).toBe(200)
+  })
+
+  it('締切ちょうどは409 application_closed（pending 行も Stripe セッションも作らない・境界値）', async () => {
+    vi.setSystemTime(EVENT1_DEADLINE_MS)
+    vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 2 })
+    const res = await app.request('/api/events/1/checkout-session', {
+      method: 'POST',
+      headers: LIFF_HEADERS,
+    }, MOCK_ENV)
+    expect(res.status).toBe(409)
+    const json = await res.json() as { error: string }
+    expect(json.error).toBe('application_closed')
+    expect(eventsService.createPendingBooking).not.toHaveBeenCalled()
+    expect(mockCheckoutSessionCreate).not.toHaveBeenCalled()
+  })
+
+  it('締切1分後も409 application_closed（境界値）', async () => {
+    vi.setSystemTime(EVENT1_DEADLINE_MS + MINUTE_MS)
+    vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 2 })
+    const res = await app.request('/api/events/1/checkout-session', {
+      method: 'POST',
+      headers: LIFF_HEADERS,
+    }, MOCK_ENV)
+    expect(res.status).toBe(409)
+    const json = await res.json() as { error: string }
+    expect(json.error).toBe('application_closed')
   })
 
   it('異常系：定員満席（confirmedのみカウント） → 409', async () => {

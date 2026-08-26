@@ -13,7 +13,17 @@ export interface EventPublic {
   remaining: number
   available: boolean
   price?: number | null
+  /**
+   * 申込締切（開始1時間前）を過ぎているか。満席（available）とは別の状態として扱う。
+   * 古いバンドルがキャッシュされていても落ちないよう optional にし、true のときだけ締切扱いにする。
+   */
+  application_closed?: boolean
 }
+
+/** 締切表示（一覧・詳細で同じ文言を使う） */
+const CLOSED_MESSAGE = 'このイベントの申し込みは締めきられました'
+/** 締切時のボタン文言。ボタンに入る長さに詰める（文言本体は CLOSED_MESSAGE で別途出す） */
+const CLOSED_LABEL = '申込締切'
 
 function escapeHtml(str: string): string {
   return str
@@ -40,44 +50,52 @@ export function buildEventListHtml(events: EventPublic[]): string {
     return '<p class="no-events">現在募集中のイベントはありません</p>'
   }
   return events.map((ev) => {
+    const closed = ev.application_closed === true
     const full = !ev.available || ev.remaining === 0
+    // 締切は満席より優先する。満席は「空きが出るかも」と待たせるが、締切は最終状態。
+    const label = closed ? CLOSED_LABEL : full ? '満席' : '申し込む'
     return `
       <div class="event-card panel" data-id="${ev.id}">
         <h3 class="event-title">${escapeHtml(ev.title)}</h3>
         <p class="event-date">${formatJST(ev.start_at)} 〜 ${formatJST(ev.end_at)}</p>
-        <p class="event-remaining">残席: ${ev.remaining}名</p>
+        ${closed ? `<p class="event-closed">${CLOSED_MESSAGE}</p>` : `<p class="event-remaining">残席: ${ev.remaining}名</p>`}
         <button
           class="event-join-btn btn-pink"
           data-event-id="${ev.id}"
-          ${full ? 'disabled' : ''}
-        >${full ? '満席' : '申し込む'}</button>
+          ${closed || full ? 'disabled' : ''}
+        >${label}</button>
       </div>
     `
   }).join('')
 }
 
 export function buildEventDetailHtml(event: EventPublic): string {
+  const closed = event.application_closed === true
   const full = !event.available || event.remaining === 0
+  // 締切なら有料の2経路（決済・当日現金）と無料申込の全てを止める。
+  // 片方だけ塞ぐと同じ経路の裏口が残る（#28 で判明）。
+  const blocked = closed || full
   const isPaid = event.price != null && event.price > 0
   const priceHtml = isPaid
     ? `<p class="event-price">参加費: ¥${event.price!.toLocaleString()}</p>`
     : `<p class="event-price">参加費: 無料</p>`
+  const label = (normal: string) => (closed ? CLOSED_LABEL : full ? '満席' : normal)
   const actionHtml = isPaid
-    ? `<button id="checkout-btn" class="btn-pink" ${full ? 'disabled' : ''}>
-        ${full ? '満席' : '申込・決済へ進む 💳'}
+    ? `<button id="checkout-btn" class="btn-pink" ${blocked ? 'disabled' : ''}>
+        ${label('申込・決済へ進む 💳')}
        </button>
-       <button id="cash-join-btn" ${full ? 'disabled' : ''}>
-        当日現金の方はこちら 💴
+       <button id="cash-join-btn" ${blocked ? 'disabled' : ''}>
+        ${closed ? CLOSED_LABEL : '当日現金の方はこちら 💴'}
        </button>`
-    : `<button id="free-join-btn" class="btn-pink" ${full ? 'disabled' : ''}>
-        ${full ? '満席' : '申し込む（無料）'}
+    : `<button id="free-join-btn" class="btn-pink" ${blocked ? 'disabled' : ''}>
+        ${label('申し込む（無料）')}
        </button>`
   return `
     <div class="event-detail panel">
       <h2 class="event-title">${escapeHtml(event.title)}</h2>
       <p class="event-date">${formatJST(event.start_at)} 〜 ${formatJST(event.end_at)}</p>
       ${event.description ? `<p class="event-description">${escapeHtml(event.description)}</p>` : ''}
-      <p class="event-remaining">残席: ${event.remaining}名</p>
+      ${closed ? `<p class="event-closed">${CLOSED_MESSAGE}</p>` : `<p class="event-remaining">残席: ${event.remaining}名</p>`}
       ${priceHtml}
       ${actionHtml}
     </div>
@@ -94,6 +112,11 @@ export interface EventActionResult {
    * 呼び出し側は文言を出すのではなく **セッション復帰処理**へ流す（#28）。
    */
   sessionExpired?: boolean
+  /**
+   * 申込締切で弾かれた（409 application_closed）。
+   * 締切は最終状態なので、呼び出し側はボタンを元に戻さず締切済みとして描き直す。
+   */
+  applicationClosed?: boolean
 }
 
 /** 申込系エンドポイントの共通ヘッダ。本人確認は LIFF の idToken で行う。 */
@@ -131,7 +154,13 @@ async function readErrorCode(res: { json?: () => Promise<unknown> }): Promise<st
 
 /** 申込系エンドポイントの失敗レスポンスを共通のメッセージに変換する。 */
 function toActionError(status: number, code?: string): EventActionResult {
-  if (status === 409) return { success: false, error: 'このイベントは満席です' }
+  if (status === 409) {
+    // 409 は満席と締切の2つある。ステータスだけで判断すると締切なのに「満席」と出る。
+    if (code === 'application_closed') {
+      return { success: false, applicationClosed: true, error: CLOSED_MESSAGE }
+    }
+    return { success: false, error: 'このイベントは満席です' }
+  }
   if (status === 403) {
     return { success: false, friendRequired: true, error: 'お申し込みには友だち追加が必要です' }
   }
@@ -362,6 +391,18 @@ export async function initEventBooking(options: {
   }
 
   const renderDetail = (event: EventPublic) => {
+    /**
+     * 締切で弾かれたときの共通処理。ボタンを元に戻すと押し続けられてしまうため、
+     * 締切済みの状態で画面ごと描き直す（有料は決済・当日現金の2経路があるので、
+     * 押されたボタンだけ止めても、もう一方から申し込めてしまう）。
+     * @returns 締切だったら true（呼び出し側はボタン復帰処理を行わない）
+     */
+    const handleClosed = (result: EventActionResult): boolean => {
+      if (!result.applicationClosed) return false
+      renderDetail({ ...event, application_closed: true })
+      return true
+    }
+
     app.innerHTML = `
       <div>
         <button id="back-btn">← 一覧に戻る</button>
@@ -378,6 +419,7 @@ export async function initEventBooking(options: {
       checkoutBtn.textContent = '処理中...'
       const result = await startCheckoutSession(event.id, idToken ?? '', openWindow)
       if (!result.success) {
+        if (handleClosed(result)) return
         if (handleActionFailure(result)) return
         checkoutBtn.disabled = false
         checkoutBtn.textContent = '申込・決済へ進む 💳'
@@ -401,6 +443,7 @@ export async function initEventBooking(options: {
           </div>
         `
       } else {
+        if (handleClosed(result)) return
         if (handleActionFailure(result)) return
         cashBtn.disabled = false
         cashBtn.textContent = '当日現金の方はこちら 💴'
@@ -424,6 +467,7 @@ export async function initEventBooking(options: {
           </div>
         `
       } else {
+        if (handleClosed(result)) return
         if (handleActionFailure(result)) return
         freeBtn.disabled = false
         freeBtn.textContent = '申し込む（無料）'
