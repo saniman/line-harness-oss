@@ -31,16 +31,24 @@ npx wrangler@latest d1 migrations apply line-harness --remote
 > **注意**: wrangler 4.0.0 には `d1 execute --file` で相対パスを使うと
 > `ERR_INVALID_STATE` が発生するバグがある。`npx wrangler@latest` を使うこと。
 
-#### 現在の pending マイグレーション（034-054）
+#### 適用状況（2026-08-28 確認）
 
-034-054 は upstream から移植済みだが **本番 DB には未適用**。
-適用前に各ファイルの内容を必ず確認すること（特に 035 は `broadcasts` テーブルを再作成する）。
+**リポジトリ上のマイグレーションはすべて本番 D1 に適用済み**（`migrations list --remote` が
+`No migrations to apply!` を返す状態）。
 
 ```bash
-# 安全確認してから適用する
-npx wrangler@latest d1 migrations list line-harness --remote
-npx wrangler@latest d1 migrations apply line-harness --remote
+# 未適用の確認（読み取りのみ）
+pnpm exec wrangler d1 migrations list line-harness --remote
 ```
+
+`deploy-worker.yml` が deploy の前に `d1 migrations apply --remote` を自動実行するため、
+`main` にマージされたマイグレーションは通常そのまま本番に適用される。手動適用は
+CI が使えない例外時のみ（`.claude/rules/deployment.md` 参照）。
+
+> ⚠️ **適用済み＝ファイル名が `d1_migrations` に記録済み**ということ。
+> だからこそ既存ファイルのリネーム・削除は禁止（上記「⛔ 既存ファイルのリネーム・削除は禁止」）。
+> かつてここには「034-054 は本番未適用」と書かれていたが、その後 CI 自動適用が入って
+> 現況と乖離していた（2026-08-28 に実機確認して修正）。
 
 ---
 
