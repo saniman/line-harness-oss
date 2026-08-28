@@ -19,6 +19,7 @@ import {
 } from '@line-crm/db';
 import { buildIntroMessage } from '../services/intro-message.js';
 import { safeRedirectTarget } from '../lib/safe-redirect.js';
+import { encodeState, decodeState } from '../lib/oauth-state.js';
 import type { Env } from '../index.js';
 
 const liffRoutes = new Hono<Env>();
@@ -149,7 +150,7 @@ liffRoutes.get('/auth/line', async (c) => {
   // Without these, the form falls back to the gateId baked into the form's
   // onSubmitWebhookUrl (which is stale when a form is reused across campaigns).
   const state = JSON.stringify({ ref, redirect, form: formId, gate: gateParam, xh: xhParam2, gclid, fbclid, twclid, ttclid, utmSource, utmMedium, utmCampaign, account: accountParam || poolAccount, uid: uidParam, ig: igParam });
-  const encodedState = btoa(state);
+  const encodedState = encodeState(state);
   const loginUrl = new URL('https://access.line.me/oauth2/v2.1/authorize');
   loginUrl.searchParams.set('response_type', 'code');
   loginUrl.searchParams.set('client_id', channelId);
@@ -172,6 +173,10 @@ liffRoutes.get('/auth/line', async (c) => {
   if (uidParam) qrParams.set('uid', uidParam);
   if (accountParam) qrParams.set('account', accountParam);
   if (igParam) qrParams.set('ig', igParam);
+  // 広告パラメータはここでは付けない。qrUrl はモバイルのリダイレクト先であると同時に
+  // 240x240 の QR ペイロードでもあり、gclid + 日本語 utm_campaign を足すと QR の
+  // バージョンが上がって読み取りづらくなる。そもそも QR は別端末でスキャンされるので
+  // 広告の紐付けは成立せず、LIFF クライアントもこれらを読まない。
   const qrUrl = qrParams.toString() ? `${liffUrl}?${qrParams.toString()}` : liffUrl;
 
   // Mobile: redirect to LIFF URL (opens LINE app directly)
@@ -285,7 +290,7 @@ liffRoutes.get('/auth/oauth', async (c) => {
     utmSource, utmMedium, utmCampaign,
     account: accountParam || poolAccount, uid: uidParam, ig: igParam,
   });
-  const encodedState = btoa(state);
+  const encodedState = encodeState(state);
   const loginUrl = new URL('https://access.line.me/oauth2/v2.1/authorize');
   loginUrl.searchParams.set('response_type', 'code');
   loginUrl.searchParams.set('client_id', channelId);
@@ -324,7 +329,7 @@ liffRoutes.get('/auth/callback', async (c) => {
   let uidParam = '';
   let igParam = '';
   try {
-    const parsed = JSON.parse(atob(stateParam));
+    const parsed = JSON.parse(decodeState(stateParam));
     ref = parsed.ref || '';
     redirect = parsed.redirect || '';
     formId = parsed.form || '';
