@@ -66,32 +66,36 @@ upstream（`Shudesu/line-harness-oss`）と fork が独立して連番を採番�
 
 ### 採番ルール（今後）
 
-```
-001 〜 799  upstream 由来のマイグレーション（変更しない）
-800 〜 999  fork 固有のマイグレーション（business_hours, events, Stripe 等）
-```
+> ルールの単一の情報源は `.claude/rules/migrations.md`。ここは経緯の記録に徹する。
 
-#### upstream のマイグレーションを取り込む場合
-
-upstream が新しいマイグレーション（例: `046_xxx.sql`）を追加したら、
-fork の現在の最大番号 + 1 で取り込む：
+**新規追加は出自（fork 独自 / upstream 取り込み）を問わず、常に「現在の最大番号 + 1」**を使う。
+番号は推論せず、必ずスクリプトで取得する：
 
 ```bash
-# upstream の 046 を fork の 055 として追加する例
-cp <upstream_content> packages/db/migrations/055_xxx.sql
-# 先頭にコメントを追加
-# -- Ported from upstream Shudesu/line-harness-oss migration 046_xxx.sql
+node packages/db/scripts/next-migration-number.mjs
+# 次の採番: 819
 ```
 
-#### fork 固有の機能を追加する場合
+upstream から取り込む場合は、先頭に出典コメントを入れる：
 
-```bash
-# 800 番台を使う（現在: 800〜805 使用済み）
-packages/db/migrations/806_new_fork_feature.sql
+```sql
+-- Ported from upstream Shudesu/line-harness-oss migration 046_xxx.sql
 ```
 
-> **なぜ 800 番台か**: upstream は現在 045 番台。800 まで 755 本の余裕があり、
-> 仮に upstream が年 50 本追加しても 15 年以上衝突しない。
+#### ⛔ 既存ファイルのリネーム・削除は禁止
+
+適用済みファイルをリネームすると `d1_migrations`（ファイル名で記録）と食い違い、
+再適用されて本番が壊れる。**番号の重複は衝突ではない**（009 / 018 / 043 が 2 本ずつ
+存在し正常に動作している）。理由の詳細は `.claude/rules/migrations.md` を参照。
+
+#### 番号帯の由来（歴史。今後の採番判断には使わない）
+
+- **001〜799**: 2026-06-03 の衝突解消時点で upstream 由来だったもの
+- **800〜**: それ以降に追加したもの
+
+当初は「800番台＝fork 固有」と定めていたが、その後 upstream からの移植も 800番台に
+採番した（`816`〜`818` は upstream `046` / `048` / `049`）。現在は**番号帯から出自は
+判別できない**。出自はファイル先頭の出典コメントで判断すること。
 
 ---
 
