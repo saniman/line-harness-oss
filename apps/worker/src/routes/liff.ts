@@ -173,15 +173,10 @@ liffRoutes.get('/auth/line', async (c) => {
   if (uidParam) qrParams.set('uid', uidParam);
   if (accountParam) qrParams.set('account', accountParam);
   if (igParam) qrParams.set('ig', igParam);
-  // 広告のクリックID + UTM。これが無いと PC / QR 経由の流入だけ広告アトリビューションが
-  // 落ちる（/auth/line が OAuth state 用に読んでいるのと同じ値）。
-  if (gclid) qrParams.set('gclid', gclid);
-  if (fbclid) qrParams.set('fbclid', fbclid);
-  if (twclid) qrParams.set('twclid', twclid);
-  if (ttclid) qrParams.set('ttclid', ttclid);
-  if (utmSource) qrParams.set('utm_source', utmSource);
-  if (utmMedium) qrParams.set('utm_medium', utmMedium);
-  if (utmCampaign) qrParams.set('utm_campaign', utmCampaign);
+  // 広告パラメータはここでは付けない。qrUrl はモバイルのリダイレクト先であると同時に
+  // 240x240 の QR ペイロードでもあり、gclid + 日本語 utm_campaign を足すと QR の
+  // バージョンが上がって読み取りづらくなる。そもそも QR は別端末でスキャンされるので
+  // 広告の紐付けは成立せず、LIFF クライアントもこれらを読まない。
   const qrUrl = qrParams.toString() ? `${liffUrl}?${qrParams.toString()}` : liffUrl;
 
   // Mobile: redirect to LIFF URL (opens LINE app directly)

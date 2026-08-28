@@ -13,6 +13,7 @@ import { runExpirer } from './services/booking-expirer.js';
 import { sendBookingNotification } from './services/booking-notifier.js';
 import { DEFAULT_ACCOUNT_SETTINGS } from './services/booking-types.js';
 import type { EmailSendClient } from './services/email-notifier.js';
+import { forwardAdParams } from './lib/ad-params.js';
 import { authMiddleware } from './middleware/auth.js';
 import { rateLimitMiddleware } from './middleware/rate-limit.js';
 import { webhook } from './routes/webhook.js';
@@ -196,14 +197,9 @@ app.get('/r/:ref', async (c) => {
   if (xh) liffParams.set('xh', xh);
   const ig = c.req.query('ig');
   if (ig) liffParams.set('ig', ig);
-  // 広告のクリックID + UTM のパススルー。/auth/line はクエリ文字列をまるごと
-  // /r/:ref に転送しているのに、ここで liffParams を組み直すときにこれらを拾って
-  // いなかったため、モバイル主要導線の広告アトリビューションが無言で消えていた。
-  // /auth/line が読んでいるパラメータと同じ並びを保つこと。
-  for (const key of ['gclid', 'fbclid', 'twclid', 'ttclid', 'utm_source', 'utm_medium', 'utm_campaign']) {
-    const value = c.req.query(key);
-    if (value) liffParams.set(key, value);
-  }
+  // 広告パラメータ（gclid / utm_* 等）はここでは付けない。LIFF クライアントは
+  // これらを読まないため、LIFF URL に付けても計測にはならず URL が伸びるだけ。
+  // 記録されるのは OAuth 経路だけなので、下の authParams 側で転送している。
   const liffTarget = liffParams.toString() ? `${liffUrl}?${liffParams.toString()}` : liffUrl;
 
   // Build /auth/oauth fallback URL — forces OAuth flow without X detection,
@@ -216,6 +212,12 @@ app.get('/r/:ref', async (c) => {
   if (gate) authParams.set('gate', gate);
   if (xh) authParams.set('xh', xh);
   if (ig) authParams.set('ig', ig);
+  // 広告のクリックID + UTM。/auth/line は SNS アプリ内ブラウザ（X / Instagram /
+  // Facebook / LINE）からの流入をクエリごと /r/:ref に転送してくるが、この
+  // フォールバックが転送しないと /auth/oauth → state → /auth/callback の
+  // recordRefTracking() に空文字が渡り、広告の紐付けが無言で落ちる。
+  // ここは広告パラメータが実際に記録される唯一の経路。
+  forwardAdParams((key) => c.req.query(key), authParams);
   const authFallback = `${baseUrl}/auth/oauth?${authParams.toString()}`;
 
   const ua = (c.req.header('user-agent') || '').toLowerCase();
