@@ -8,8 +8,9 @@ upstream との差分は **GitHub Actions が毎週自動で Issue 化**する�
 毎週月曜 09:00 JST（.github/workflows/upstream-sync.yml）
   → upstream を fetch
   → scripts/upstream-sync-report.mjs が事実を集計
-  → 未取り込み 0 件 / 同じ upstream HEAD の Open Issue あり → 何もしない
-  → それ以外は Issue を起票（label: upstream-sync）
+  → 未取り込み 0 件 → 何もしない
+  → 未処理の Open Issue があれば、その Issue を最新の事実に更新
+  → 無ければ新規に起票（label: upstream-sync）
   → 🧑 人間が読む → /feature-plan で計画に育てる → /feature-implement
 ```
 
@@ -70,8 +71,15 @@ gh workflow run upstream-sync.yml -R saniman/line-harness-oss
 ## 同期地点の更新
 
 `.claude/upstream-sync-state.json` の `last_synced_commit` は **実際に取り込んだときに人間か
-エージェントが更新する**（CI は更新しない）。更新するまで同じ差分が毎週報告されるが、
-それは backlog として正しい挙動。
+エージェントが更新する**（CI は更新しない）。
+
+更新するまで差分は残り続けるが、Issue は毎週新規に立つのではなく**同じ Issue が最新の事実に
+更新される**。これは次の2つを同時に避けるため:
+
+- 毎週新規起票 → 同じ内容の Issue が積み上がる
+- Open があればスキップ → 放置されている間ずっと沈黙し、新しい差分に気づけない
+
+取り込んで Issue を閉じれば、翌週に最新の事実で新しく起票される。
 
 ## 状態管理ファイル
 

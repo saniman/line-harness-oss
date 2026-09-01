@@ -35,6 +35,14 @@ const STATE_PATH = join(REPO_ROOT, '.claude/upstream-sync-state.json');
 export const LIST_LIMIT = 20;
 
 /**
+ * コミット一覧の最大件数。
+ * `last_synced_commit` は実際に取り込んだときだけ進むため件数は単調増加する。
+ * 無制限に並べると Issue 本文が GitHub の上限 65536 文字を超え、
+ * `gh issue create` が 422 で落ちて週次ジョブごと死ぬ。
+ */
+export const COMMIT_LIMIT = 30;
+
+/**
  * 変更ファイルを4分類する。
  *
  * 「upstream のみ変更」をひとまとめに「取り込み可」とすると、fork が採用していない
@@ -78,11 +86,14 @@ export function classifyFiles(upstreamChanged, forkChanged, existsInFork, upstre
   return { updatable, notAdopted, needsCheck, contribution, deletedUpstream };
 }
 
-/** ファイル一覧を Markdown の箇条書きにする。上限を超えたら省略した件数を明示する。 */
-export function renderList(files, limit = LIST_LIMIT) {
+/**
+ * 箇条書きにする。上限を超えたら省略した件数を明示する。
+ * @param code バッククォートで囲むか（ファイルパスは true、コミット行は false）
+ */
+export function renderList(files, limit = LIST_LIMIT, code = true) {
   if (files.length === 0) return '_なし_';
   const shown = files.slice(0, limit);
-  const lines = shown.map((f) => `- \`${f}\``);
+  const lines = shown.map((f) => (code ? `- \`${f}\`` : `- ${f}`));
   if (files.length > limit) {
     lines.push(`- _…他 ${files.length - limit} 件（全 ${files.length} 件）_`);
   }
@@ -140,9 +151,11 @@ export function collectReport() {
 
   const upstreamChanged = gitLines(['diff', '--name-only', `${last}..upstream/main`]);
   const forkChanged = gitLines(['diff', '--name-only', `${mergeBase}..HEAD`]);
-  // --diff-filter=D で「upstream 側で削除された」パスだけを取る
+  // --diff-filter=D で「upstream 側で削除された」パスだけを取る。
+  // --no-renames が無いと git がリネームを検出して削除として数えず、
+  // fork に残った古いコピーを警告できない（diff.renames は既定で有効）。
   const upstreamDeleted = gitLines([
-    'diff', '--name-only', '--diff-filter=D', `${last}..upstream/main`,
+    'diff', '--name-only', '--diff-filter=D', '--no-renames', `${last}..upstream/main`,
   ]);
 
   const classified = classifyFiles(
@@ -183,7 +196,7 @@ export function renderMarkdown(r) {
 
 ## 未取り込みコミット
 
-${r.commits.length ? r.commits.map((l) => `- ${l}`).join('\n') : '_なし_'}
+${renderList(r.commits, COMMIT_LIMIT, false)}
 
 ## 変更ファイルの分類
 
@@ -201,7 +214,7 @@ ${renderList(c.notAdopted)}
 
 ${renderList(c.needsCheck)}
 
-### 🗑 upstream で削除— ${c.deletedUpstream.length} 件
+### 🗑 upstream で削除 — ${c.deletedUpstream.length} 件
 
 upstream 側に既に無いファイル。\`git checkout upstream/main -- <path>\` はできない。
 

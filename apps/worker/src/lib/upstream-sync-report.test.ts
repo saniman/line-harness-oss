@@ -34,7 +34,12 @@ const classifyFiles = mod.classifyFiles as (
   existsInFork: (path: string) => boolean,
   upstreamDeleted?: string[],
 ) => Classified;
-const renderList = mod.renderList as (files: string[], limit?: number) => string;
+const renderList = mod.renderList as (
+  files: string[],
+  limit?: number,
+  code?: boolean,
+) => string;
+const COMMIT_LIMIT = mod.COMMIT_LIMIT as number;
 
 /** fork に存在するファイルの集合から existsInFork を作る */
 function existsIn(paths: string[]) {
@@ -131,6 +136,30 @@ describe('classifyFiles（upstream で削除されたファイル）', () => {
   });
 });
 
+describe('コミット一覧の打ち切り', () => {
+  it('COMMIT_LIMIT が定義されている（Issue 本文の上限 65536 文字対策）', () => {
+    expect(typeof COMMIT_LIMIT).toBe('number');
+    expect(COMMIT_LIMIT).toBeGreaterThan(0);
+  });
+
+  it('コミット行はバッククォートで囲まずに出せる', () => {
+    // コミット行は「SHA 日付 件名」なので、コード表記にすると読みにくい
+    const out = renderList(['abc1234 2026-09-01 fix: something'], 10, false);
+    expect(out).toContain('- abc1234 2026-09-01 fix: something');
+    expect(out).not.toContain('`abc1234');
+  });
+
+  it('コミットも上限を超えたら省略し件数を明示する', () => {
+    // last_synced_commit は人が取り込んだときだけ進むので件数は単調増加する。
+    // 無制限だと Issue 本文が 65536 文字を超えて gh issue create が 422 で落ちる。
+    const commits = Array.from({ length: 5 }, (_, i) => `sha${i} 2026-09-01 msg${i}`);
+    const out = renderList(commits, 2, false);
+    expect(out).toContain('sha0');
+    expect(out).not.toContain('sha2');
+    expect(out).toContain('他 3 件');
+  });
+});
+
 describe('renderList', () => {
   it('件数が上限以下ならすべて列挙する', () => {
     const out = renderList(['a.ts', 'b.ts'], 5);
@@ -142,9 +171,11 @@ describe('renderList', () => {
   it('上限を超えたら省略し、省略した件数を明示する', () => {
     // 黙って切り捨てると「全部見た」と誤読される（.claude/rules の方針）
     const out = renderList(['a', 'b', 'c', 'd', 'e'], 2);
-    expect(out).toContain('a');
-    expect(out).toContain('b');
-    expect(out).not.toContain('\nc');
+    expect(out).toContain('- `a`');
+    expect(out).toContain('- `b`');
+    // 打ち切られた項目が行として出ていないことを確かめる
+    // （'\nc' だと実際の行が '- `c`' なので絶対に一致せず、テストが無意味になる）
+    expect(out).not.toContain('- `c`');
     expect(out).toContain('他 3 件');
   });
 

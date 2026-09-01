@@ -208,32 +208,41 @@ LINE Harness の主要ドメインをカバーするエージェントを配置�
 
 各ドメインエージェントの定義に「複雑かどうかを自己判断する基準」を追記
 
-#### 4-3. `upstream-sync` エージェント + `/upstream-sync` スキル（週次スケジュール実行）
+#### 4-3. upstream 差分の週次自動 Issue 化（GitHub Actions）
 
-upstream（`Shudesu/line-harness-oss`）の新規コミットを週次で評価し、
-fork 独自機能（Stripe 決済・LINE 通知等）との競合リスクを分類して LINE 通知する。
+upstream（`Shudesu/line-harness-oss`）の差分を週次で集計し、**GitHub Issue として自動起票**する。
+
+> **2026-09 更新**: 当初はクラウド定期エージェントが LINE 通知する設計だったが、
+> クラウドからは GitHub に書き込めない（`gh` CLI が無く MCP は 403）ことが #17 で判明し、
+> 実行基盤を GitHub Actions に移した（`.github/workflows/upstream-sync.yml`）。
 
 背景:
 - upstream は週1〜数回更新、かつ既存ファイルへの変更が多い
 - 手動追跡では意味的競合（テキスト競合がないが機能的に壊れる）を見落としやすい
 - OSS 憲章（docs/OSS-SYNC-CHARTER.md）に従い、マージは人間が判断する
 
+**起票するのは機械的に出せる事実だけ**（コミット一覧・ファイル4分類・採番）。
+リスク評価と取り込み推奨は載せない — 自動生成した推奨は3回とも危険か不要だった（#32 #37）。
+判断は `/feature-plan` で調査してから行う。
+
 分類ルール:
-- ✅ 安全: upstream のみ変更 → 取り込み推奨
-- ⚠️ 要確認: 両側で変更あり → 差分サマリー + リスク判定を提示
-- 💡 貢献候補: fork のみ変更 + 汎用性あり → OSS PR 候補
+- ✅ 更新候補: upstream のみ変更・**fork にも存在**
+- 🆕 未導入機能: upstream のみ変更・**fork に無い**（取り込み判断は #34）
+- ⚠️ 要確認: 両側で変更
+- 🗑 upstream で削除: `git checkout` できないので別枠
+- 💡 貢献候補: fork のみ変更 → OSS PR 候補
 
 スケジュール: 毎週月曜 9:00 JST（cron: `0 0 * * 1`）  
-状態管理: `.claude/upstream-sync-state.json`（最終同期コミット記録）  
-通知先: `ADMIN_LINE_USER_ID`（`.claude/.env.upstream-sync` に設定）
+状態管理: `.claude/upstream-sync-state.json`（取り込み時に人間が更新。CI は更新しない）  
+出力先: GitHub Issue（label: `upstream-sync`。未処理の Issue があれば最新の事実に更新）
 
 ### 完了条件
 
 - [ ] 「新機能を追加して」という依頼が自動でモード B に入る
 - [ ] 「文言を直して」という依頼が自動でモード A に入る
 - [ ] モードの判断が間違えた場合に人間が修正できる
-- [ ] `/upstream-sync` が実行され3分類レポートが生成される
-- [ ] 週次スケジュールで LINE 通知が届く
+- [x] upstream 差分レポートが生成される（`scripts/upstream-sync-report.mjs`・4分類＋削除）
+- [x] 週次スケジュールで GitHub Issue が自動起票される（`.github/workflows/upstream-sync.yml`）
 
 ---
 
