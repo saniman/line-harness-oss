@@ -1,0 +1,101 @@
+name: Upstream Sync Report
+
+# 毎週 upstream との差分を Issue として起票する。
+#
+# クラウド定期エージェントからは GitHub に書き込めなかった（gh CLI 無し / MCP は 403）ため、
+# 実行基盤を GitHub Actions にしている（経緯は Issue #17）。
+#
+# ⚠️ 起票するのは「機械的に出せる事実」だけ。リスク評価や取り込み推奨は含めない
+#    （自動生成した推奨が本番を壊しかけたため / #32 #37）。判断は /feature-plan で行う。
+
+on:
+  schedule:
+    # 毎週月曜 00:00 UTC = 09:00 JST。
+    # GitHub Actions の schedule は混雑時に数十分遅れることがある（週次なので実害なし）。
+    - cron: '0 0 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write # リポジトリ既定は read なので明示が必須（無いと起票が 403 になる）
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # merge-base を取るため全履歴が要る（既定の shallow clone では取れない）
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Fetch upstream
+        # upstream は public なので認証不要
+        run: |
+          git remote add upstream https://github.com/Shudesu/line-harness-oss.git
+          git fetch upstream --quiet
+
+      - name: Collect facts
+        id: facts
+        run: |
+          set -o pipefail
+          node scripts/upstream-sync-report.mjs --json > facts.json
+          cat facts.json
+          # echo "x=$(jq …)" 形式だと jq が失敗しても echo が成功するため -e で捕まらず、
+          # 「未取り込み null 件」の壊れた Issue が立つ。代入にして -er で落とす。
+          count=$(jq -er '.commitCount' facts.json)
+          head=$(jq -er '.upstreamHead' facts.json)
+          short=$(jq -er '.upstreamHead[0:7]' facts.json)
+          {
+            echo "count=$count"
+            echo "head=$head"
+            echo "short=$short"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Skip when nothing new
+        if: steps.facts.outputs.count == '0'
+        run: echo "未取り込みコミットなし。何もしない。"
+
+      - name: Ensure label exists
+        if: steps.facts.outputs.count != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # ⚠️ 上で upstream remote を足しているため、GH_REPO が無いと gh は base を
+          # Shudesu/line-harness-oss と解決する（remote のスコアが origin より高い）。
+          # その結果 label/issue の作成は 403、issue list は upstream の Issue を見る。
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh label create upstream-sync \
+            --description "upstream との差分レポート（自動起票）" \
+            --color 1d76db --force
+
+      - name: Create or update issue
+        if: steps.facts.outputs.count != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TITLE: "upstream 差分レポート ${{ steps.facts.outputs.short }}（未取り込み ${{ steps.facts.outputs.count }} 件）"
+        run: |
+          set -o pipefail
+          node scripts/upstream-sync-report.mjs > report.md
+
+          # 同期地点は取り込んだときだけ進むため、取り込むまで差分は残り続ける。
+          #   - 毎週新規起票 → 同じ内容の Issue が積み上がる
+          #   - Open があればスキップ → 放置されている間ずっと沈黙し、新しい差分に気づけない
+          # どちらも避けるため、未処理の Issue があれば「最新の事実に更新」する。
+          existing=$(gh issue list --label upstream-sync --state open --json number \
+                       --jq '.[0].number // empty')
+
+          if [ -n "$existing" ]; then
+            gh issue edit "$existing" --title "$TITLE" --body-file report.md
+            echo "既存の #${existing} を最新の事実に更新した。"
+          else
+            gh issue create --label upstream-sync --title "$TITLE" --body-file report.md
+          fi
