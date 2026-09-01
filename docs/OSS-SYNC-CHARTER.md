@@ -229,7 +229,7 @@ Mac Mini SSH 経由。wrangler.toml を一時的に書き換えてデプロイ �
 番号は推論せずスクリプトで取得する:
 
 ```bash
-node packages/db/scripts/next-migration-number.mjs
+node "$(git rev-parse --show-toplevel)/packages/db/scripts/next-migration-number.mjs"
 ```
 
 ⛔ **既存のマイグレーションファイルはリネーム・リナンバ・削除しない**（`d1_migrations` が
@@ -270,7 +270,7 @@ npx wrangler@latest d1 migrations apply line-harness --remote
 
 ```bash
 # 番号はスクリプトで取得する（最大 + 1。ハードコードしない）
-node packages/db/scripts/next-migration-number.mjs
+node "$(git rev-parse --show-toplevel)/packages/db/scripts/next-migration-number.mjs"
 # 例: 出力が「次の採番: 819」なら
 
 packages/db/migrations/819_my_fork_feature.sql

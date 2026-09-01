@@ -38,7 +38,7 @@ fork には既に **009 / 018 / 043 が 2 本ずつ**存在し、本番で正常
 > 2026-08-17 の upstream sync レポートが、この誤解から「fork の 050〜054 を 070番台に
 > リナンバせよ」を CRITICAL として提案した。実行していれば本番 D1 が壊れていた（Issue #32）。
 
-## 採番レンジ
+## 採番（常に「最大 + 1」）
 
 新しいマイグレーションを追加するときは、**出自（fork 独自 / upstream 取り込み）を問わず
 常に「現在の最大番号 + 1」**を使う。
@@ -46,7 +46,7 @@ fork には既に **009 / 018 / 043 が 2 本ずつ**存在し、本番で正常
 番号は推論せず、必ずスクリプトで取得する（ハードコードした番号はすぐ陳腐化する）:
 
 ```bash
-node packages/db/scripts/next-migration-number.mjs
+node "$(git rev-parse --show-toplevel)/packages/db/scripts/next-migration-number.mjs"
 # 次の採番: 819
 # 現在の最大: 818 (818_tracked_links_short_code.sql)
 # 番号の重複（正常・対処不要）: 009, 018, 043
@@ -57,6 +57,26 @@ upstream のファイルを取り込む場合は、先頭に出典コメント�
 ```sql
 -- Ported from upstream Shudesu/line-harness-oss migration 046_xxx.sql
 ```
+
+### ⚠️ worktree 並列レーンでは番号が衝突しうる
+
+スクリプトは**自分のブランチの migrations しか見ない**。AGENTS.md が勧める worktree 並列レーンで
+レーン A とレーン B が同じ時期に実行すると、**両方が同じ番号（例: 819）を得る**。
+両方が main にマージされると `819_a.sql` と `819_b.sql` が並び、上で警告した
+「同番号の適用順は保証されない」状態を新規に作り出してしまう。
+
+✅ **main へ rebase / merge した直後にスクリプトを再実行し、番号が衝突していたら
+自分のファイルをリネームする。**
+
+```bash
+git fetch origin && git rebase origin/main
+node "$(git rev-parse --show-toplevel)/packages/db/scripts/next-migration-number.mjs"
+# 自分が 819 を使っていて、出力が「次の採番: 820」なら → 自分のを 820 にリネームする
+```
+
+> リネーム禁止は**適用済み・マージ済みのファイル**に対する規則。
+> **まだ一度も適用もマージもされていない自分のファイル**のリネームは安全（`d1_migrations`
+> にも main にも記録が無いため）。衝突を残したままマージする方が危険。
 
 ### ⚠️ 番号帯から出自は判別できない
 
@@ -69,7 +89,7 @@ upstream のファイルを取り込む場合は、先頭に出典コメント�
 | `028`〜`033` | **fork 固有**（business_hours・events・Stripe）。`800`〜`805` に同内容の写しがある |
 | `034`〜`054` | **upstream 移植**（upstream の 028〜045） |
 | `043_z_schema_gaps` | fork 固有 |
-| `800`〜`815` | fork 固有（`800`〜`805` は `028`〜`033` の参照用コピー） |
+| `800`〜`815` | fork 固有（`800`〜`805` は `028`〜`033` の参照用コピー。⛔ 後述） |
 | `816`〜`818` | **upstream 移植**（upstream の 046 / 048 / 049） |
 
 つまり `001〜799` にも `800〜` にも両方の出自が混在している。
@@ -79,6 +99,13 @@ upstream のファイルを取り込む場合は、先頭に出典コメント�
 upstream の 028-045 を fork の 034-054 に移植して解消した。その際 fork 固有分を
 800番台に整理する方針を立てたが、`028`〜`033` は本番適用済みのため残され、
 `800`〜`805` は参照用の写しとして併存している（だから同じ内容が2つの番号で存在する）。
+
+> ⛔ **「写しだから片方は消せる／再実行しても平気」は成り立たない。**
+> 写しの中身は冪等ではない。`802` / `803` / `805` は `ALTER TABLE ADD COLUMN` で
+> `duplicate column name` になり、**`804` は `DROP TABLE event_bookings` を含む**。
+> しかも `804` が作る v2 の定義には後から `805` が足した返金カラムが無いため、
+> 再適用させると**本番の予約データと列が失われる**（`806` にも `DROP TABLE` がある）。
+> DDL 別の影響は `packages/db/MIGRATIONS.md` の該当表を参照。
 
 詳細な経緯・設計乖離については `packages/db/MIGRATIONS.md` を参照。
 

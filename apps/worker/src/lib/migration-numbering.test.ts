@@ -31,6 +31,7 @@ interface Summary {
   next: number;
   nextPrefix: string;
   duplicates: string[];
+  ignored: string[];
 }
 
 /** 指定ディレクトリに対して CLI を --json で実行し、結果をパースする */
@@ -132,6 +133,40 @@ describe('next-migration-number CLI', () => {
       const r = run(make(['001_a.sql', 'seed_data.sql']));
       expect(r.count).toBe(1);
       expect(r.max).toBe(1);
+    });
+  });
+
+  describe('数字で始まらない .sql の警告', () => {
+    // wrangler の getMigrationNames は .sql なら番号の有無に関わらず拾って実行する。
+    // このスクリプトが黙って無視すると「wrangler は実行するのにこちらの集計には
+    // 出てこない」ファイルが生まれるので、無視したものを明示する。
+    it('数字で始まらない .sql は ignored に列挙される', () => {
+      const r = run(make(['001_a.sql', 'seed_data.sql', 'helper.sql']));
+      expect(r.count).toBe(1);
+      expect(r.ignored.sort()).toEqual(['helper.sql', 'seed_data.sql']);
+    });
+
+    it('.sql 以外のファイルは ignored に含めない', () => {
+      const r = run(make(['001_a.sql', 'README.md']));
+      expect(r.ignored).toEqual([]);
+    });
+
+    it('人間向け出力にも警告が出る', () => {
+      const dir = make(['001_a.sql', 'seed_data.sql']);
+      const out = execFileSync('node', [SCRIPT, '--dir', dir], { encoding: 'utf8' });
+      expect(out).toContain('seed_data.sql');
+      expect(out).toContain('wrangler');
+    });
+  });
+
+  describe('重複の表示', () => {
+    it('「対処不要」を無条件に出さず、既存分に限定した表現にする', () => {
+      const dir = make(['009_a.sql', '009_b.sql']);
+      const out = execFileSync('node', [SCRIPT, '--dir', dir], { encoding: 'utf8' });
+      // エージェントがこの出力をレポートに貼るため、新規の重複まで
+      // 「対処不要」と読める表現にしない
+      expect(out).not.toContain('正常・対処不要');
+      expect(out).toContain('009');
     });
   });
 

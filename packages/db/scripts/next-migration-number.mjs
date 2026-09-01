@@ -63,11 +63,17 @@ export function formatMigrationPrefix(n) {
  */
 export function summarizeMigrations(filenames) {
   const seen = new Map();
+  const ignored = [];
   let max = null;
 
   for (const name of filenames) {
     const n = parseMigrationNumber(name);
-    if (n === null) continue;
+    if (n === null) {
+      // wrangler の getMigrationNames は .sql なら番号の有無に関わらず拾って実行する。
+      // 黙って無視すると「wrangler は実行するのに集計に出てこない」ファイルが生まれる。
+      if (name.endsWith('.sql')) ignored.push(name);
+      continue;
+    }
     seen.set(n, (seen.get(n) ?? 0) + 1);
     if (max === null || n > max) max = n;
   }
@@ -90,7 +96,15 @@ export function summarizeMigrations(filenames) {
   const count = [...seen.values()].reduce((a, b) => a + b, 0);
   const next = max === null ? 1 : max + 1;
 
-  return { count, max, maxFile, next, nextPrefix: formatMigrationPrefix(next), duplicates };
+  return {
+    count,
+    max,
+    maxFile,
+    next,
+    nextPrefix: formatMigrationPrefix(next),
+    duplicates,
+    ignored: ignored.sort(),
+  };
 }
 
 /** ディレクトリを読んで採番状況を返す（サブディレクトリは無視する） */
@@ -165,13 +179,24 @@ function main(argv) {
       : `現在の最大: ${formatMigrationPrefix(summary.max)} (${summary.maxFile})`,
     `ファイル数: ${summary.count}`,
     summary.duplicates.length > 0
-      ? `番号の重複（正常・対処不要）: ${summary.duplicates.join(', ')}`
-      : '番号の重複: なし',
+      ? `既存の番号重複: ${summary.duplicates.join(', ')}（適用済みなのでそのまま。新規に重複を作らないこと）`
+      : '既存の番号重複: なし',
+  ];
+
+  if (summary.ignored.length > 0) {
+    lines.push(
+      '',
+      `⚠️ 番号が付いていない .sql: ${summary.ignored.join(', ')}`,
+      '  wrangler はこれらも適用対象として拾うが、採番の集計には含めていない。',
+    );
+  }
+
+  lines.push(
     '',
     '※ 既存のマイグレーションファイルはリネーム・削除しないこと。',
     '  d1_migrations がファイル名で適用済みを記録しているため、リネームすると再適用され本番が壊れる。',
     '  詳細: .claude/rules/migrations.md',
-  ];
+  );
   process.stdout.write(lines.join('\n') + '\n');
 }
 

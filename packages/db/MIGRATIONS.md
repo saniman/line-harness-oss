@@ -80,7 +80,7 @@ upstream（`Shudesu/line-harness-oss`）と fork が独立して連番を採番�
 番号は推論せず、必ずスクリプトで取得する：
 
 ```bash
-node packages/db/scripts/next-migration-number.mjs
+node "$(git rev-parse --show-toplevel)/packages/db/scripts/next-migration-number.mjs"
 # 次の採番: 819
 ```
 
@@ -120,7 +120,7 @@ upstream から取り込む場合は、先頭に出典コメントを入れる�
 
 | fork 番号 | upstream 元ファイル | 内容 |
 |-----------|-------------------|------|
-| 001–027 | 同番号 | upstream と同一 |
+| 001–027 | 同番号 | 共通の祖先（`008` / `009_token_expiry` / `027` は内容が乖離済み） |
 | 034 | 028_messages_log_source | `messages_log.source` |
 | 035 | 029_account_management_v2 | `broadcasts` 再作成・`line_accounts` 拡張 |
 | 036 | 030_dedup_progress | `broadcasts.dedup_progress` |
@@ -143,6 +143,20 @@ upstream から取り込む場合は、先頭に出典コメントを入れる�
 | 053 | 044_forms_og | `forms` OGP カラム |
 | 054 | 045_menus_auto_tag | `menus.auto_tag_id` |
 
+### `028`〜`033` ＋ `043_z_schema_gaps`（fork 固有・`001`〜`799` の中）
+
+| 番号 | 内容 |
+|---|---|
+| 028 | `business_hours`・`business_holidays` テーブル |
+| 029 | `events`・`event_bookings` テーブル |
+| 030 | Stripe 決済カラム |
+| 031 | `events.price` |
+| 032 | `event_bookings_v2` 再作成 |
+| 033 | 返金カラム |
+| `043_z_schema_gaps` | スキーマ差分の補正（`043_scenario_delivery_mode` と同番号） |
+
+> `028`〜`033` の内容は `800`〜`805` にも写しがある（下記）。
+
 ### `800`〜`805`（`028`〜`033` の参照用コピー）
 
 | fork 番号 | 内容 |
@@ -153,27 +167,6 @@ upstream から取り込む場合は、先頭に出典コメントを入れる�
 | 803 | `events.price`（旧 031） |
 | 804 | `event_bookings_v2` 再作成（旧 032） |
 | 805 | 返金カラム（旧 033） |
-
-### `806`〜`818`（写しではない通常のマイグレーション）
-
-| 番号 | 出自 | 内容 |
-|---|---|---|
-| 806 | fork | シナリオの event_booking トリガー（`DROP TABLE` を含む） |
-| 807 | fork | シナリオのイベント基準日 |
-| 808 | fork | AI アシスタント |
-| 809 | fork | モバイルオーダー |
-| 810 | fork | `menus.menu_type` |
-| 811 | fork | 注文の会計リクエスト |
-| 812 | fork | メニューグループ |
-| 813 | fork | 客席セッション |
-| 814 | fork | 翻訳キャッシュ |
-| 815 | fork | メニュー画像 |
-| 816 | **upstream 046** | リンク計測の制御 |
-| 817 | **upstream 048** | `chats` の friend UNIQUE |
-| 818 | **upstream 049** | tracked_links の短縮コード |
-
-> 次の採番は `node packages/db/scripts/next-migration-number.mjs` で取得すること
-> （この表をハードコードした番号の根拠に使わない）。
 
 > これらの内容は**先に `028`〜`033` として本番 D1 に適用済み**で、`800`〜`805` はその
 > 参照用の写しとして後から追加したもの。現在は `028`〜`033` と `800`〜`805` の
@@ -197,6 +190,28 @@ upstream から取り込む場合は、先頭に出典コメントを入れる�
 > （`806` 以降も fork 固有だが、こちらは写しではない通常のマイグレーション。
 > なお `806` にも `DROP TABLE` が含まれるため、同様に再適用させてはいけない。）
 
+### `806`〜`818`（写しではない通常のマイグレーション）
+
+| 番号 | 出自 | 内容 |
+|---|---|---|
+| 806 | fork | シナリオの event_booking トリガー（`DROP TABLE` を含む） |
+| 807 | fork | シナリオのイベント基準日 |
+| 808 | fork | AI アシスタント |
+| 809 | fork | モバイルオーダー |
+| 810 | fork | `menus.menu_type` |
+| 811 | fork | 注文の会計リクエスト |
+| 812 | fork | メニューグループ |
+| 813 | fork | 客席セッション |
+| 814 | fork | 翻訳キャッシュ |
+| 815 | fork | メニュー画像 |
+| 816 | **upstream 046** | リンク計測の制御 |
+| 817 | **upstream 048** | `chats` の friend UNIQUE |
+| 818 | **upstream 049** | tracked_links の短縮コード |
+
+> 次の採番は `node "$(git rev-parse --show-toplevel)/packages/db/scripts/next-migration-number.mjs"` で取得すること
+> （この表をハードコードした番号の根拠に使わない）。
+
+
 ### スキップ済み
 
 | upstream ファイル | 理由 |
@@ -210,7 +225,7 @@ upstream から取り込む場合は、先頭に出典コメントを入れる�
 ### チェックリスト
 
 ```
-[ ] 番号は `node packages/db/scripts/next-migration-number.mjs` の出力（最大+1）を使った
+[ ] 番号は `node "$(git rev-parse --show-toplevel)/packages/db/scripts/next-migration-number.mjs"` の出力（最大+1）を使った
 [ ] ファイル名: NNN_snake_case_description.sql
 [ ] 先頭にコメントで変更内容を説明した
 [ ] schema.sql を同期した（後述）
