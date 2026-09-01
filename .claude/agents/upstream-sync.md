@@ -205,10 +205,12 @@ migration ファイル（`packages/db/migrations/*.sql`）の差分を扱うと�
 - **取り込み時の採番は推論せず、スクリプトの出力をそのまま使う。**
 
   ```bash
-  node /Users/akihisa/line-harness-oss/packages/db/scripts/next-migration-number.mjs
+  node "$(git rev-parse --show-toplevel)/packages/db/scripts/next-migration-number.mjs"
   ```
 
-  （相対パスだと `apps/worker` など別の cwd から実行したときに `Cannot find module` になる）
+  相対パスだと別の cwd（`apps/worker` 等）から `Cannot find module` になり、
+  絶対パスをベタ書きすると worktree で作業しているときに**main 側の migrations を読んで
+  そのブランチの採番を無視する**。リポジトリルートを解決して渡すこと。
 
   レポートには「819 から採番」のようにスクリプトの出力を書く。既存ファイルには触れない。
 

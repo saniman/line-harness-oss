@@ -107,18 +107,44 @@ function fail(message) {
   process.exit(1);
 }
 
-function main(argv) {
-  const dirFlag = argv.indexOf('--dir');
+/**
+ * 引数を解釈する。
+ *
+ * 未知のフラグや値の無い --dir を**黙って無視すると、既定ディレクトリの番号を
+ * 「指定したディレクトリの番号」として返してしまう**（打ち間違いに気づけない）。
+ * 番号を間違えさせないためのツールなので、解釈できない引数は必ず落とす。
+ */
+function parseArgs(argv) {
   let dir = DEFAULT_MIGRATIONS_DIR;
-  if (dirFlag !== -1) {
-    const value = argv[dirFlag + 1];
-    // 値を渡し忘れたときに既定ディレクトリを黙って読むと、「それらしいが要求とは
-    // 違う番号」を人に見せることになる。番号を間違えさせないためのツールなので落とす。
-    if (!value || value.startsWith('-')) {
-      fail('--dir にディレクトリを指定してください（例: --dir packages/db/migrations）');
+  let json = false;
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--json') {
+      json = true;
+    } else if (arg === '--dir') {
+      const value = argv[i + 1];
+      if (!value || value.startsWith('-')) {
+        fail('--dir にディレクトリを指定してください（例: --dir packages/db/migrations）');
+      }
+      dir = value;
+      i++;
+    } else if (arg.startsWith('--dir=')) {
+      const value = arg.slice('--dir='.length);
+      if (!value) {
+        fail('--dir= にディレクトリを指定してください（例: --dir=packages/db/migrations）');
+      }
+      dir = value;
+    } else {
+      fail(`不明な引数です: ${arg}（使えるのは --json / --dir <path> / --dir=<path>）`);
     }
-    dir = value;
   }
+
+  return { dir, json };
+}
+
+function main(argv) {
+  const { dir, json } = parseArgs(argv);
 
   let summary;
   try {
@@ -127,7 +153,7 @@ function main(argv) {
     fail(`マイグレーションディレクトリを読めません: ${dir}（${err.code ?? err.message}）`);
   }
 
-  if (argv.includes('--json')) {
+  if (json) {
     process.stdout.write(JSON.stringify(summary) + '\n');
     return;
   }

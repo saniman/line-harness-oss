@@ -194,8 +194,39 @@ describe('next-migration-number CLI', () => {
       const r = runExpectingFailure(['--dir', '/nonexistent/path/xyz']);
       expect(r.status).not.toBe(0);
       expect(r.stderr).toContain('/nonexistent/path/xyz');
-      // 生のスタックトレースを出さない
-      expect(r.stderr).not.toContain('at Object.readdirSync');
+      // 自前のハンドラを通っていること（生のスタックトレースを出さない）
+      expect(r.stderr.startsWith('エラー:')).toBe(true);
+    });
+  });
+
+  describe('--dir=<path> 形式と未知のフラグ', () => {
+    // --dir=/path の形式を素通しすると、既定ディレクトリの番号を「指定した
+    // ディレクトリの番号」として返してしまう（--dir の値なしと同じ事故）。
+    it('--dir=<path> 形式でも指定したディレクトリを読む', () => {
+      const dir = make(['700_x.sql']);
+      const out = execFileSync('node', [SCRIPT, '--json', `--dir=${dir}`], { encoding: 'utf8' });
+      const r = JSON.parse(out) as Summary;
+      expect(r.max).toBe(700);
+      expect(r.next).toBe(701);
+    });
+
+    it('--dir=<存在しないパス> の場合はエラー終了する（既定を読まない）', () => {
+      const r = runExpectingFailure(['--dir=/nonexistent/path/xyz']);
+      expect(r.status).not.toBe(0);
+      expect(r.stderr).toContain('/nonexistent/path/xyz');
+    });
+
+    it('--dir= の後ろが空の場合はエラー終了する', () => {
+      const r = runExpectingFailure(['--dir=']);
+      expect(r.status).not.toBe(0);
+      expect(r.stderr).toContain('--dir');
+    });
+
+    it('未知のフラグは黙って無視せずエラー終了する', () => {
+      // 打ち間違い（--dirr=... など）を素通しすると既定の番号を返してしまう
+      const r = runExpectingFailure(['--dirr=/tmp']);
+      expect(r.status).not.toBe(0);
+      expect(r.stderr).toContain('--dirr');
     });
   });
 
