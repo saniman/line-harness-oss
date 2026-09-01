@@ -96,12 +96,13 @@ function FlexButton({ node }: { node: FlexNode }) {
 }
 
 function FlexSeparator({ node }: { node: FlexNode }) {
+  // margin は FlexNodeRenderer のラッパーが一括で適用するので、ここで重ねて付けると
+  // 二重マージンになり、プレビューの余白が実機の倍に見える。
   return (
     <hr style={{
       border: 'none',
       borderTop: `1px solid ${node.color || '#e0e0e0'}`,
-      marginTop: getMargin(node.margin) || '0',
-      marginBottom: '0',
+      margin: 0,
     }} />
   )
 }
@@ -147,8 +148,15 @@ function FlexBox({ node }: { node: FlexNode }) {
     ...(node.width ? { width: node.width } : {}),
     ...(node.height ? { height: node.height } : {}),
     ...(node.flex !== undefined ? { flex: node.flex } : {}),
-    ...(isHorizontal ? { alignItems: node.gravity === 'center' ? 'center' : node.gravity === 'bottom' ? 'flex-end' : 'flex-start' } : {}),
-    ...(node.align === 'center' ? { alignItems: 'center' } : node.align === 'end' ? { alignItems: 'flex-end' } : {}),
+    // baseline レイアウトは常に baseline 揃え（align/gravity より優先）。
+    // それ以外は横並びのとき gravity を効かせ、align があれば下段で上書きする。
+    ...(node.layout === 'baseline'
+      ? { alignItems: 'baseline' as const }
+      : {
+          ...(isHorizontal ? { alignItems: node.gravity === 'center' ? 'center' : node.gravity === 'bottom' ? 'flex-end' : 'flex-start' } : {}),
+          // 縦並びでも align を効かせる（upstream は横並びのみだが fork はこの挙動を維持する）
+          ...(node.align === 'center' ? { alignItems: 'center' } : node.align === 'end' ? { alignItems: 'flex-end' } : {}),
+        }),
     ...(node.justifyContent ? { justifyContent: node.justifyContent === 'center' ? 'center' : node.justifyContent === 'flex-end' ? 'flex-end' : node.justifyContent === 'space-between' ? 'space-between' : node.justifyContent === 'space-around' ? 'space-around' : 'flex-start' } : {}),
     ...(node.borderWidth ? { border: `${node.borderWidth} solid ${node.borderColor || '#e0e0e0'}` } : {}),
     ...(node.position === 'absolute' ? { position: 'absolute', top: node.offsetTop, bottom: node.offsetBottom, left: node.offsetStart, right: node.offsetEnd } : {}),

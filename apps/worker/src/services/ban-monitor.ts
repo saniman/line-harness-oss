@@ -8,6 +8,7 @@
 import {
   getLineAccounts,
   createAccountHealthLog,
+  getAccountHealthLogs,
 } from '@line-crm/db';
 
 export async function checkAccountHealth(
@@ -74,6 +75,17 @@ async function checkSingleAccount(
     riskLevel = 'warning'; // レート制限
   } else if (totalSent > 5000) {
     riskLevel = 'warning'; // 大量送信の警告
+  }
+
+  // 直前の記録と同じ状態なら書かない。この関数は cron の tick ごとに呼ばれるので、
+  // 毎回 INSERT すると異常が1件も無いアカウントでもゴミ行が積み上がる
+  // （fork は */5 なので 1日288行 × アカウント数）。ヘルスログは「チェックした記録」
+  // ではなく「状態が変わった履歴」で、管理画面（apps/web/src/app/health）も最新50件を
+  // そのまま並べるだけなので、同じ状態の連投は異常の履歴を押し流してしまう。
+  // risk_level が同じでもエラーコードが変われば別の事象なので、両方を比較する。
+  const [latest] = await getAccountHealthLogs(db, account.id, 1);
+  if (latest && latest.risk_level === riskLevel && (latest.error_code ?? null) === errorCode) {
+    return;
   }
 
   await createAccountHealthLog(db, {
