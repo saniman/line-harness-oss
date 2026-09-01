@@ -23,6 +23,7 @@ interface Classified {
   notAdopted: string[];
   needsCheck: string[];
   contribution: string[];
+  deletedUpstream: string[];
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -31,6 +32,7 @@ const classifyFiles = mod.classifyFiles as (
   upstreamChanged: string[],
   forkChanged: string[],
   existsInFork: (path: string) => boolean,
+  upstreamDeleted?: string[],
 ) => Classified;
 const renderList = mod.renderList as (files: string[], limit?: number) => string;
 
@@ -86,12 +88,46 @@ describe('classifyFiles', () => {
 
   it('未取り込みが無い場合はすべて空になる', () => {
     const r = classifyFiles([], [], existsIn([]));
-    expect(r).toEqual({ updatable: [], notAdopted: [], needsCheck: [], contribution: [] });
+    expect(r).toEqual({
+      updatable: [],
+      notAdopted: [],
+      needsCheck: [],
+      contribution: [],
+      deletedUpstream: [],
+    });
   });
 
   it('同じファイルが重複して渡されても1回だけ分類される', () => {
     const r = classifyFiles(['a.ts', 'a.ts'], [], existsIn(['a.ts']));
     expect(r.updatable).toEqual(['a.ts']);
+  });
+});
+
+describe('classifyFiles（upstream で削除されたファイル）', () => {
+  it('upstream で削除されたファイルは更新候補に入れない', () => {
+    // 「そのまま取り込める」と案内された先で git checkout すると pathspec エラーになる
+    const r = classifyFiles(['gone.ts'], [], existsIn(['gone.ts']), ['gone.ts']);
+    expect(r.updatable).toEqual([]);
+    expect(r.deletedUpstream).toEqual(['gone.ts']);
+  });
+
+  it('upstream で削除され fork にも無い場合は未導入にも入れない', () => {
+    const r = classifyFiles(['gone.ts'], [], existsIn([]), ['gone.ts']);
+    expect(r.notAdopted).toEqual([]);
+    expect(r.deletedUpstream).toEqual(['gone.ts']);
+  });
+
+  it('両側で変更されている場合は削除でも要確認を優先する', () => {
+    // fork 側が触っているファイルの削除は、消してよいか人間の判断が要る
+    const r = classifyFiles(['x.ts'], ['x.ts'], existsIn(['x.ts']), ['x.ts']);
+    expect(r.needsCheck).toEqual(['x.ts']);
+    expect(r.deletedUpstream).toEqual([]);
+  });
+
+  it('削除リストが未指定でも従来どおり動く', () => {
+    const r = classifyFiles(['a.ts'], [], existsIn(['a.ts']));
+    expect(r.updatable).toEqual(['a.ts']);
+    expect(r.deletedUpstream).toEqual([]);
   });
 });
 

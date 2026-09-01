@@ -44,25 +44,38 @@ export const LIST_LIMIT = 20;
  * @param upstreamChanged upstream 側で変更されたファイル
  * @param forkChanged     fork 側で変更されたファイル
  * @param existsInFork    そのパスが fork の作業ツリーに存在するか
+ * @param upstreamDeleted upstream 側で削除されたファイル
  */
-export function classifyFiles(upstreamChanged, forkChanged, existsInFork) {
+export function classifyFiles(upstreamChanged, forkChanged, existsInFork, upstreamDeleted = []) {
   const fork = new Set(forkChanged);
   const up = new Set(upstreamChanged);
+  const deleted = new Set(upstreamDeleted);
 
   const updatable = [];
   const notAdopted = [];
   const needsCheck = [];
+  const deletedUpstream = [];
 
   for (const path of [...up].sort()) {
-    if (fork.has(path)) needsCheck.push(path);
-    else if (existsInFork(path)) updatable.push(path);
+    // fork 側も触っているなら、削除であっても消してよいかは人間の判断。
+    if (fork.has(path)) {
+      needsCheck.push(path);
+      continue;
+    }
+    // upstream で削除されたファイルを「更新候補（そのまま取り込める）」に入れると、
+    // 案内どおり git checkout したときに pathspec エラーになる。別枠にする。
+    if (deleted.has(path)) {
+      deletedUpstream.push(path);
+      continue;
+    }
+    if (existsInFork(path)) updatable.push(path);
     else notAdopted.push(path);
   }
 
   // fork でだけ変更されている＝upstream に無い独自実装。貢献候補の母集団。
   const contribution = [...fork].filter((p) => !up.has(p)).sort();
 
-  return { updatable, notAdopted, needsCheck, contribution };
+  return { updatable, notAdopted, needsCheck, contribution, deletedUpstream };
 }
 
 /** ファイル一覧を Markdown の箇条書きにする。上限を超えたら省略した件数を明示する。 */
@@ -87,13 +100,31 @@ function gitLines(args) {
   return out ? out.split('\n') : [];
 }
 
-/** 前回同期地点。state が無ければ fork の分岐点にフォールバックする。 */
+/**
+ * 前回同期地点。state が無い・壊れている・**その SHA に到達できない**場合は
+ * fork の分岐点にフォールバックする。
+ *
+ * upstream の force-push 等で SHA が消えると `git log <sha>..upstream/main` が throw し、
+ * レポート生成そのものが落ちる。週次ジョブが黙って失敗し続けるのを避ける。
+ */
 function lastSyncedCommit() {
+  let candidate = null;
   try {
     const state = JSON.parse(readFileSync(STATE_PATH, 'utf8'));
-    if (state.last_synced_commit) return state.last_synced_commit;
+    if (state.last_synced_commit) candidate = state.last_synced_commit;
   } catch {
     /* state が無い・壊れている場合は下のフォールバックへ */
+  }
+
+  if (candidate) {
+    try {
+      git(['cat-file', '-e', `${candidate}^{commit}`]);
+      return candidate;
+    } catch {
+      process.stderr.write(
+        `警告: last_synced_commit (${candidate}) に到達できません。分岐点で代用します。\n`,
+      );
+    }
   }
   return git(['merge-base', 'HEAD', 'upstream/main']);
 }
@@ -109,9 +140,16 @@ export function collectReport() {
 
   const upstreamChanged = gitLines(['diff', '--name-only', `${last}..upstream/main`]);
   const forkChanged = gitLines(['diff', '--name-only', `${mergeBase}..HEAD`]);
+  // --diff-filter=D で「upstream 側で削除された」パスだけを取る
+  const upstreamDeleted = gitLines([
+    'diff', '--name-only', '--diff-filter=D', `${last}..upstream/main`,
+  ]);
 
-  const classified = classifyFiles(upstreamChanged, forkChanged, (p) =>
-    existsSync(join(REPO_ROOT, p)),
+  const classified = classifyFiles(
+    upstreamChanged,
+    forkChanged,
+    (p) => existsSync(join(REPO_ROOT, p)),
+    upstreamDeleted,
   );
 
   // upstream 側のマイグレーション追加。番号は推論せず next-migration-number.mjs に任せる。
@@ -163,6 +201,12 @@ ${renderList(c.notAdopted)}
 
 ${renderList(c.needsCheck)}
 
+### 🗑 upstream で削除— ${c.deletedUpstream.length} 件
+
+upstream 側に既に無いファイル。\`git checkout upstream/main -- <path>\` はできない。
+
+${renderList(c.deletedUpstream)}
+
 ### 💡 貢献候補（fork のみ変更）— ${c.contribution.length} 件
 
 ${renderList(c.contribution)}
@@ -197,6 +241,7 @@ function main(argv) {
           notAdopted: report.classified.notAdopted.length,
           needsCheck: report.classified.needsCheck.length,
           contribution: report.classified.contribution.length,
+          deletedUpstream: report.classified.deletedUpstream.length,
         },
         migrations: report.migrations.length,
       }) + '\n',

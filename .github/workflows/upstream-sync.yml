@@ -59,23 +59,31 @@ jobs:
         if: steps.facts.outputs.count != '0'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # ⚠️ 上で upstream remote を足しているため、GH_REPO が無いと gh は base を
+          # Shudesu/line-harness-oss と解決する（remote のスコアが origin より高い）。
+          # その結果 label/issue の作成は 403、issue list は upstream の Issue を見る。
+          GH_REPO: ${{ github.repository }}
         run: |
           gh label create upstream-sync \
             --description "upstream との差分レポート（自動起票）" \
             --color 1d76db --force
 
-      - name: Skip when an open issue already covers this upstream HEAD
+      - name: Skip when an unhandled issue is already open
         id: dedup
         if: steps.facts.outputs.count != '0'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HEAD_SHA: ${{ steps.facts.outputs.head }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          # 同期地点は取り込み時に人間が更新するため、取り込むまで同じ差分が毎週出る。
-          # 同じ upstream HEAD の Open Issue が既にあれば重複起票しない。
-          if gh issue list --label upstream-sync --state open --json body \
-               --jq '.[].body' | grep -qF "$HEAD_SHA"; then
-            echo "既に同じ upstream HEAD の Issue がある。起票しない。"
+          # gh が失敗したときに「Issue 無し」と誤判定して重複起票しないよう pipefail を効かせる
+          set -o pipefail
+          # 同期地点は取り込み時に人間が更新するため、取り込むまで差分は残り続ける。
+          # 未処理の Open Issue が既にあれば、upstream が進んでいても新規起票しない
+          # （SHA 完全一致にすると upstream が動くたび重複した Issue が積み上がる）。
+          open_count=$(gh issue list --label upstream-sync --state open --json number \
+                         --jq 'length')
+          if [ "$open_count" -gt 0 ]; then
+            echo "未処理の upstream-sync Issue が ${open_count} 件ある。起票しない。"
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
@@ -85,6 +93,7 @@ jobs:
         if: steps.facts.outputs.count != '0' && steps.dedup.outputs.exists == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           node scripts/upstream-sync-report.mjs > report.md
           gh issue create \
