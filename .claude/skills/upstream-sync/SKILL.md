@@ -1,104 +1,82 @@
 # upstream-sync スキル
 
-## 使い方
+## 仕組み（2026-09 更新）
 
-upstream（`Shudesu/line-harness-oss`）の新規コミットを評価し、
-fork 独自機能との競合リスクを分類してレポートを生成する。
-
-```
-「/upstream-sync」          → 即時実行
-「/upstream-sync --dry-run」→ 通知なし・レポートのみ
-```
-
-スケジュール設定（週次自動実行）は後述の「初回セットアップ」を参照。
-
----
-
-## 実行手順
-
-### STEP 1: upstream-sync エージェントを呼ぶ
-
-`upstream-sync` エージェントに以下を依頼する：
+upstream との差分は **GitHub Actions が毎週自動で Issue 化**する。
 
 ```
-upstream-sync エージェントとして動いてください。
-.claude/upstream-sync-state.json を読んで前回同期コミットを確認し、
-upstream/main の新規コミットを評価してレポートを生成してください。
+毎週月曜 09:00 JST（.github/workflows/upstream-sync.yml）
+  → upstream を fetch
+  → scripts/upstream-sync-report.mjs が事実を集計
+  → 未取り込み 0 件 / 同じ upstream HEAD の Open Issue あり → 何もしない
+  → それ以外は Issue を起票（label: upstream-sync）
+  → 🧑 人間が読む → /feature-plan で計画に育てる → /feature-implement
 ```
 
-エージェントが以下を実行する：
-1. `git fetch upstream`
-2. 前回同期コミット以降の変更を取得
-3. ファイルを3分類（安全 / 要確認 / 貢献候補）
-4. `.claude/upstream-sync-report.md` にレポートを保存
-5. LINE push 通知を送信（認証情報が設定済みの場合）
-6. `.claude/upstream-sync-state.json` を更新
+> 以前はクラウド定期エージェント（`/schedule`）が Gmail の下書きを作っていたが、
+> **クラウドからは GitHub に書き込めない**（`gh` CLI が無く、GitHub MCP は 403）ことが
+> Issue #17 の実測で判明したため Actions に移行した。
 
-### STEP 2: レポートを確認
+### ⚠️ 起票されるのは「事実」だけ
+
+コミット一覧・変更ファイルの4分類・マイグレーションの採番のみを載せる。
+**リスク評価と取り込み推奨は載せない。**
+
+過去に自動生成した推奨は3回とも危険か不要だった:
+
+| 推奨 | 実際 |
+|---|---|
+| 「050〜054 を 070番台にリナンバせよ」 | 実行すれば本番 D1 が壊れた（#32） |
+| 「`git checkout upstream/main -- scheduled.test.ts`」 | fork に `scheduled.ts` が無くテストが落ちる（#37） |
+| 「5分ティック最適化を適用検討」 | fork の cron は既に5分間隔で不要（#37） |
+
+一方で事実は毎回正確だった。Issue 本文は計画の SSoT なので、検証していない推奨を
+そこに置かない。**取り込むかどうかは `/feature-plan` で調査してから判断する。**
+
+## 手動実行
 
 ```bash
-cat /Users/akihisa/line-harness-oss/.claude/upstream-sync-report.md
+# ローカルでレポートを見る（Issue は作らない）
+git fetch upstream
+node scripts/upstream-sync-report.mjs           # Markdown
+node scripts/upstream-sync-report.mjs --json    # 件数だけ
+
+# Actions を手動で走らせる（Issue が作られる）
+gh workflow run upstream-sync.yml -R saniman/line-harness-oss
 ```
 
-### STEP 3: 取り込み作業（人間が判断する）
+## ファイルの4分類
 
-**安全ファイルの取り込み：**
-```bash
-cd /Users/akihisa/line-harness-oss
-git checkout upstream/main -- <ファイルパス>
-```
+| 分類 | 条件 | 意味 |
+|---|---|---|
+| ✅ 更新候補 | upstream のみ変更・**fork にも存在** | そのまま取り込める可能性が高い |
+| 🆕 未導入機能 | upstream のみ変更・**fork に無い** | 新機能。取り込み判断は #34 |
+| ⚠️ 要確認 | 両側で変更 | 手動マージが要る |
+| 💡 貢献候補 | fork のみ変更 | upstream への PR 候補（`docs/OSS-SYNC-CHARTER.md` セクション6） |
 
-**要確認ファイルの対応：**
-各ファイルのレポート差分を読んで、手動でマージする。
-競合が複雑な場合は `migration-planner` または `event-manager` エージェントに相談。
+「upstream のみ変更」をひとまとめにすると、fork が採用していない機能まで
+「取り込み可」に混ざる（実測で 83 件中 53 件がそれだった）ため存在判定で分けている。
 
-**貢献候補の PR 送付：**
-OSS-SYNC-CHARTER.md のセクション 6「外部 PR の受け入れ基準」を参照して PR を送る。
+## 取り込むときの注意
 
----
+- **既存の migration ファイルはリネーム・削除しない**。採番は
+  `node "$(git rev-parse --show-toplevel)/packages/db/scripts/next-migration-number.mjs"`
+  で取得する（詳細は `.claude/rules/migrations.md`）
+- upstream のファイルをそのまま `git checkout` すると、**fork に無いモジュールを import する
+  テストが混ざって落ちる**ことがある（#37 の `scheduled.test.ts`）。取り込む前に
+  依存が fork に存在するか確認する
+- fork に無い機能のファイルは「取り込み可」ではない。#34 の判断に乗せる
 
-## 初回セットアップ
+## 同期地点の更新
 
-### LINE 通知認証情報の設定
-
-`.claude/.env.upstream-sync` を作成する（gitignore 済み）：
-
-```bash
-cat > /Users/akihisa/line-harness-oss/.claude/.env.upstream-sync << 'EOF'
-LINE_CHANNEL_ACCESS_TOKEN=<本番チャネルアクセストークン>
-ADMIN_LINE_USER_ID=<管理者のLINEユーザーID>
-EOF
-```
-
-トークンは Cloudflare Workers の wrangler secret と同じ値。
-`wrangler secret list` で設定済みキー名を確認できるが値は取得不可なので、
-LINE Developers コンソールから再取得すること。
-
-### スケジュール設定（週次・月曜 9:00 JST）
-
-`/schedule` スキルを呼んで以下を設定する：
-
-```
-毎週月曜日の朝9時（JST）に /upstream-sync を自動実行するスケジュールを作成してください。
-```
-
-手動で確認したい場合は `cron: "0 0 * * 1"` (UTC) で設定する。
-
----
+`.claude/upstream-sync-state.json` の `last_synced_commit` は **実際に取り込んだときに人間か
+エージェントが更新する**（CI は更新しない）。更新するまで同じ差分が毎週報告されるが、
+それは backlog として正しい挙動。
 
 ## 状態管理ファイル
 
 | ファイル | 役割 |
 |---------|------|
-| `.claude/upstream-sync-state.json` | 最終同期コミットハッシュ・最終実行日時 |
-| `.claude/upstream-sync-report.md` | 最新のレポート（毎回上書き） |
-| `.claude/.env.upstream-sync` | LINE 認証情報（git 管理外） |
-
----
-
-## 注意事項
-
-- エージェントは**評価のみ**行い、マージは実行しない
-- `.env.upstream-sync` をコミットしない（`.gitignore` に追加済み）
-- `要確認` ファイルは必ず人間が差分を確認してから取り込む
-- OSS-SYNC-CHARTER.md のチェックリストも合わせて確認すること
+| `.claude/upstream-sync-state.json` | 最終同期コミット |
+| `scripts/upstream-sync-report.mjs` | 事実の集計（依存なし・読み取り専用） |
+| `.github/workflows/upstream-sync.yml` | 週次実行と起票 |

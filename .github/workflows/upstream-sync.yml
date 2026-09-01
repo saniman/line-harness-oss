@@ -1,0 +1,93 @@
+name: Upstream Sync Report
+
+# 毎週 upstream との差分を Issue として起票する。
+#
+# クラウド定期エージェントからは GitHub に書き込めなかった（gh CLI 無し / MCP は 403）ため、
+# 実行基盤を GitHub Actions にしている（経緯は Issue #17）。
+#
+# ⚠️ 起票するのは「機械的に出せる事実」だけ。リスク評価や取り込み推奨は含めない
+#    （自動生成した推奨が本番を壊しかけたため / #32 #37）。判断は /feature-plan で行う。
+
+on:
+  schedule:
+    # 毎週月曜 00:00 UTC = 09:00 JST。
+    # GitHub Actions の schedule は混雑時に数十分遅れることがある（週次なので実害なし）。
+    - cron: '0 0 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write # リポジトリ既定は read なので明示が必須（無いと起票が 403 になる）
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # merge-base を取るため全履歴が要る（既定の shallow clone では取れない）
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Fetch upstream
+        # upstream は public なので認証不要
+        run: |
+          git remote add upstream https://github.com/Shudesu/line-harness-oss.git
+          git fetch upstream --quiet
+
+      - name: Collect facts
+        id: facts
+        run: |
+          node scripts/upstream-sync-report.mjs --json > facts.json
+          echo "count=$(jq -r '.commitCount' facts.json)" >> "$GITHUB_OUTPUT"
+          echo "head=$(jq -r '.upstreamHead' facts.json)"  >> "$GITHUB_OUTPUT"
+          echo "short=$(jq -r '.upstreamHead[0:7]' facts.json)" >> "$GITHUB_OUTPUT"
+          cat facts.json
+
+      - name: Skip when nothing new
+        if: steps.facts.outputs.count == '0'
+        run: echo "未取り込みコミットなし。何もしない。"
+
+      - name: Ensure label exists
+        if: steps.facts.outputs.count != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create upstream-sync \
+            --description "upstream との差分レポート（自動起票）" \
+            --color 1d76db --force
+
+      - name: Skip when an open issue already covers this upstream HEAD
+        id: dedup
+        if: steps.facts.outputs.count != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ steps.facts.outputs.head }}
+        run: |
+          # 同期地点は取り込み時に人間が更新するため、取り込むまで同じ差分が毎週出る。
+          # 同じ upstream HEAD の Open Issue が既にあれば重複起票しない。
+          if gh issue list --label upstream-sync --state open --json body \
+               --jq '.[].body' | grep -qF "$HEAD_SHA"; then
+            echo "既に同じ upstream HEAD の Issue がある。起票しない。"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create issue
+        if: steps.facts.outputs.count != '0' && steps.dedup.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node scripts/upstream-sync-report.mjs > report.md
+          gh issue create \
+            --label upstream-sync \
+            --title "upstream 差分レポート ${{ steps.facts.outputs.short }}（未取り込み ${{ steps.facts.outputs.count }} 件）" \
+            --body-file report.md
