@@ -74,7 +74,7 @@ PR        → push→PR作成（Closes #n）
 ## 必須ルール（普遍・常時）
 - wrangler secret は .env に書かない（`wrangler secret put` を使う）
 - デプロイ前に TypeScript エラーがないことを確認する（`npx tsc --noEmit`。vitest は型を見ない）
-- DBスキーマを変更したらローカル・リモート両方にマイグレーション実行（詳細は `.claude/rules/migrations.md`）
+- DBスキーマ変更は必ず番号付きマイグレーションファイルにする（`d1 execute` で直接流さない）。ローカルに適用して確認し、本番は CI が自動適用する（詳細は `.claude/rules/migrations.md`）
 - LIFFビルド時は3環境変数を必ず指定：VITE_LIFF_ID / VITE_API_BASE / VITE_CALENDAR_CONNECTION_ID
 - テスト実行はローカルでは `npx vitest run`（`pnpm --filter worker test` は Bun クラッシュの恐れ。CI は後者で可）
 
