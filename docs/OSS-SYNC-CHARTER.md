@@ -223,12 +223,22 @@ Mac Mini SSH 経由。wrangler.toml を一時的に書き換えてデプロイ �
 
 ## 9. マイグレーション番号管理（fork 固有ルール）
 
-### 9.1 採番レンジ
+### 9.1 採番ルール
 
-| レンジ | 用途 |
-|--------|------|
-| 001〜799 | upstream 由来のマイグレーション（変更・削除禁止） |
-| 800〜999 | この fork 固有のマイグレーション |
+**新規追加は出自（fork 独自 / upstream 取り込み）を問わず、常に「現在の最大番号 + 1」**を使う。
+番号は推論せずスクリプトで取得する:
+
+```bash
+node "$(git rev-parse --show-toplevel)/packages/db/scripts/next-migration-number.mjs"
+```
+
+⛔ **既存のマイグレーションファイルはリネーム・リナンバ・削除しない**（`d1_migrations` が
+ファイル名で適用済みを記録しているため、再適用されて本番が壊れる）。
+
+> かつて「001〜799＝upstream 由来 / 800〜999＝fork 固有」と定めていたが、実際には
+> `028`〜`033` が fork 固有、`034`〜`054` と `816`〜`818` が upstream 移植で、
+> **番号帯から出自は判別できない**。出自はファイル先頭の `-- Ported from upstream ...`
+> コメントで判断する。詳細は `.claude/rules/migrations.md`。
 
 ### 9.2 経緯
 
@@ -259,10 +269,11 @@ npx wrangler@latest d1 migrations apply line-harness --remote
 ### 9.4 fork 固有の機能を追加する手順
 
 ```bash
-# 800 番台の未使用番号を選ぶ（現在: 800-805 使用済み → 806 から）
-# 例: 新しい fork 固有テーブルを追加する場合
+# 番号はスクリプトで取得する（最大 + 1。ハードコードしない）
+node "$(git rev-parse --show-toplevel)/packages/db/scripts/next-migration-number.mjs"
+# 例: 出力が「次の採番: 819」なら
 
-packages/db/migrations/806_my_fork_feature.sql
+packages/db/migrations/819_my_fork_feature.sql
 
 # schema.sql も同時に更新する（新規インストール用の正規ソース）
 ```
@@ -382,7 +393,7 @@ MCP や Claude Code で操作する際の追加ルール。
 
 ### マイグレーション追加時
 
-- [ ] fork 固有の機能は 800 番台を使った
+- [ ] 番号は `next-migration-number.mjs` の出力（最大+1）を使った / 既存ファイルをリネームしていない
 - [ ] upstream 由来の移植は fork の最大番号 + 1 を使った
 - [ ] `packages/db/MIGRATIONS.md` の番号割り当て表を更新した
 - [ ] `schema.sql` を同期した

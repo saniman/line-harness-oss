@@ -67,14 +67,14 @@ PR        → push→PR作成（Closes #n）
 | `liff.md` | `apps/worker/src/client/**` | LIFF初期化・ルーティング・絶対URL fetch・チャンネル公開 |
 | `css.md` | `apps/worker/src/client/**` | index.html の共通クラス・カラーパレット |
 | `line-messaging.md` | `apps/worker/src/**` | Flexレイアウト・トーン・6桁HEX・clipboard |
-| `migrations.md` | `packages/db/**`・`*.sql` | 採番レンジ(800番台)・適用コマンド・schema.sql同期・SQLite制約 |
+| `migrations.md` | `packages/db/**`・`*.sql` | 採番(最大+1・スクリプト)・リネーム禁止・適用コマンド・schema.sql同期・SQLite制約 |
 | `ci-cd.md` | `.github/workflows/**` | Node24移行・wrangler4破壊的変更・Pages日本語コミット拒否 |
 | `deployment.md` | 全般（デプロイ時） | git push デプロイ・二重デプロイ禁止・fork の gh `-R`・サプライチェーン |
 
 ## 必須ルール（普遍・常時）
 - wrangler secret は .env に書かない（`wrangler secret put` を使う）
 - デプロイ前に TypeScript エラーがないことを確認する（`npx tsc --noEmit`。vitest は型を見ない）
-- DBスキーマを変更したらローカル・リモート両方にマイグレーション実行（詳細は `.claude/rules/migrations.md`）
+- DBスキーマ変更は必ず番号付きマイグレーションファイルにする（`d1 execute` で直接流さない）。ローカルに適用して確認し、本番は CI が自動適用する（詳細は `.claude/rules/migrations.md`）
 - LIFFビルド時は3環境変数を必ず指定：VITE_LIFF_ID / VITE_API_BASE / VITE_CALENDAR_CONNECTION_ID
 - テスト実行はローカルでは `npx vitest run`（`pnpm --filter worker test` は Bun クラッシュの恐れ。CI は後者で可）
 

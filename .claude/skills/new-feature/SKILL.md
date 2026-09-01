@@ -96,5 +96,5 @@ npx vitest run --reporter=dot
 - [ ] security-auditor の審査が全 PASS
 - [ ] テストが全グリーン
 - [ ] TypeScript エラーがない
-- [ ] DB 変更がある場合、ローカル・リモート両方に適用済み
+- [ ] DB 変更がある場合、番号付きマイグレーションファイルを作成しローカルに適用済み（本番は CI が自動適用）
 - [ ] schema.sql が更新済み

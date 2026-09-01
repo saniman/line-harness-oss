@@ -190,6 +190,35 @@ with open('/Users/akihisa/line-harness-oss/.claude/upstream-sync-state.json', 'w
 
 ---
 
+## マイグレーションの扱い（必須）
+
+migration ファイル（`packages/db/migrations/*.sql`）の差分を扱うときは、
+**必ず `.claude/rules/migrations.md` を読んでから**レポートを書く。
+
+- **既存のマイグレーションファイルのリネーム・リナンバ・削除を提案しない。**
+  D1 は適用済みを `d1_migrations` に**ファイル名で**記録しており、リネームすると
+  再適用されて本番が壊れる。
+- **番号の重複を「衝突」「CRITICAL」として報告しない。**
+  fork には 009 / 018 / 043 が 2 本ずつ存在し正常に動作している。ファイル名が違えば
+  `d1_migrations` 上は別レコードなので、番号が重なっても再適用は起きない。
+  （ただし同番号同士の適用順は保証されないため、**新規追加では番号を重複させない**。）
+- **取り込み時の採番は推論せず、スクリプトの出力をそのまま使う。**
+
+  ```bash
+  node "$(git rev-parse --show-toplevel)/packages/db/scripts/next-migration-number.mjs"
+  ```
+
+  相対パスだと別の cwd（`apps/worker` 等）から `Cannot find module` になり、
+  絶対パスをベタ書きすると worktree で作業しているときに**main 側の migrations を読んで
+  そのブランチの採番を無視する**。リポジトリルートを解決して渡すこと。
+
+  レポートには「819 から採番」のようにスクリプトの出力を書く。既存ファイルには触れない。
+
+> 2026-08-17 のレポートはこの3点を守らず、実行すれば本番 D1 が壊れる手順を
+> CRITICAL として提案した（Issue #32）。同じ提案を繰り返さないこと。
+
+---
+
 ## fork 固有の取り込み禁止ファイル
 
 以下は upstream との設計乖離が大きく、取り込むと fork の機能が壊れる。
@@ -211,3 +240,4 @@ with open('/Users/akihisa/line-harness-oss/.claude/upstream-sync-state.json', 'w
 - `git merge` / `git rebase` / `git cherry-pick` を自動実行しない
 - シークレットや本番 URL をレポートファイルに記載しない
 - 「要確認」ファイルを「安全」と誤分類しない（不明な場合は要確認に入れる）
+- 既存マイグレーションのリネーム・リナンバ・削除を提案しない（本番 D1 が壊れる。上記「マイグレーションの扱い」参照）

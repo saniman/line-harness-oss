@@ -31,16 +31,24 @@ npx wrangler@latest d1 migrations apply line-harness --remote
 > **注意**: wrangler 4.0.0 には `d1 execute --file` で相対パスを使うと
 > `ERR_INVALID_STATE` が発生するバグがある。`npx wrangler@latest` を使うこと。
 
-#### 現在の pending マイグレーション（034-054）
+#### 適用状況（2026-08-28 確認）
 
-034-054 は upstream から移植済みだが **本番 DB には未適用**。
-適用前に各ファイルの内容を必ず確認すること（特に 035 は `broadcasts` テーブルを再作成する）。
+**リポジトリ上のマイグレーションはすべて本番 D1 に適用済み**（`migrations list --remote` が
+`No migrations to apply!` を返す状態）。
 
 ```bash
-# 安全確認してから適用する
-npx wrangler@latest d1 migrations list line-harness --remote
-npx wrangler@latest d1 migrations apply line-harness --remote
+# 未適用の確認（読み取りのみ）
+pnpm exec wrangler d1 migrations list line-harness --remote
 ```
+
+`deploy-worker.yml` が deploy の前に `d1 migrations apply --remote` を自動実行するため、
+`main` にマージされたマイグレーションは通常そのまま本番に適用される。手動適用は
+CI が使えない例外時のみ（`.claude/rules/deployment.md` 参照）。
+
+> ⚠️ **適用済み＝ファイル名が `d1_migrations` に記録済み**ということ。
+> だからこそ既存ファイルのリネーム・削除は禁止（後述の「⛔ 既存ファイルのリネーム・削除は禁止」）。
+> かつてここには「034-054 は本番未適用」と書かれていたが、その後 CI 自動適用が入って
+> 現況と乖離していた（2026-08-28 に実機確認して修正）。
 
 ---
 
@@ -66,32 +74,43 @@ upstream（`Shudesu/line-harness-oss`）と fork が独立して連番を採番�
 
 ### 採番ルール（今後）
 
-```
-001 〜 799  upstream 由来のマイグレーション（変更しない）
-800 〜 999  fork 固有のマイグレーション（business_hours, events, Stripe 等）
-```
+> ルールの単一の情報源は `.claude/rules/migrations.md`。ここは経緯の記録に徹する。
 
-#### upstream のマイグレーションを取り込む場合
-
-upstream が新しいマイグレーション（例: `046_xxx.sql`）を追加したら、
-fork の現在の最大番号 + 1 で取り込む：
+**新規追加は出自（fork 独自 / upstream 取り込み）を問わず、常に「現在の最大番号 + 1」**を使う。
+番号は推論せず、必ずスクリプトで取得する：
 
 ```bash
-# upstream の 046 を fork の 055 として追加する例
-cp <upstream_content> packages/db/migrations/055_xxx.sql
-# 先頭にコメントを追加
-# -- Ported from upstream Shudesu/line-harness-oss migration 046_xxx.sql
+node "$(git rev-parse --show-toplevel)/packages/db/scripts/next-migration-number.mjs"
+# 次の採番: 819
 ```
 
-#### fork 固有の機能を追加する場合
+upstream から取り込む場合は、先頭に出典コメントを入れる：
 
-```bash
-# 800 番台を使う（現在: 800〜805 使用済み）
-packages/db/migrations/806_new_fork_feature.sql
+```sql
+-- Ported from upstream Shudesu/line-harness-oss migration 046_xxx.sql
 ```
 
-> **なぜ 800 番台か**: upstream は現在 045 番台。800 まで 755 本の余裕があり、
-> 仮に upstream が年 50 本追加しても 15 年以上衝突しない。
+#### ⛔ 既存ファイルのリネーム・削除は禁止
+
+適用済みファイルをリネームすると `d1_migrations`（ファイル名で記録）と食い違い、
+再適用されて本番が壊れる。**番号の重複は衝突ではない**（009 / 018 / 043 が 2 本ずつ
+存在し正常に動作している）。理由の詳細は `.claude/rules/migrations.md` を参照。
+
+#### ⚠️ 番号帯から出自は判別できない
+
+当初は「001〜799＝upstream 由来 / 800〜999＝fork 固有」と定めていたが、実態は違う。
+
+| 番号帯 | 出自 |
+|---|---|
+| `001`〜`027` | fork 作成前から両方にある共通の祖先 |
+| `028`〜`033` | **fork 固有**（`800`〜`805` に同内容の写しがある） |
+| `034`〜`054` | **upstream 移植**（upstream の 028〜045） |
+| `043_z_schema_gaps` | **fork 固有**（`034`〜`054` の中の例外） |
+| `800`〜`815` | fork 固有（`800`〜`805` は `028`〜`033` の写し） |
+| `816`〜`818` | **upstream 移植**（upstream の 046 / 048 / 049） |
+
+`001〜799` にも `800〜` にも両方の出自が混在している。
+**出自はファイル先頭の `-- Ported from upstream ...` コメントの有無で判断すること。**
 
 ---
 
@@ -101,7 +120,7 @@ packages/db/migrations/806_new_fork_feature.sql
 
 | fork 番号 | upstream 元ファイル | 内容 |
 |-----------|-------------------|------|
-| 001–027 | 同番号 | upstream と同一 |
+| 001–027 | 同番号 | 共通の祖先（`008` / `009_token_expiry` / `027` は内容が乖離済み） |
 | 034 | 028_messages_log_source | `messages_log.source` |
 | 035 | 029_account_management_v2 | `broadcasts` 再作成・`line_accounts` 拡張 |
 | 036 | 030_dedup_progress | `broadcasts.dedup_progress` |
@@ -124,7 +143,21 @@ packages/db/migrations/806_new_fork_feature.sql
 | 053 | 044_forms_og | `forms` OGP カラム |
 | 054 | 045_menus_auto_tag | `menus.auto_tag_id` |
 
-### fork 固有（800 番台）
+### `028`〜`033` ＋ `043_z_schema_gaps`（fork 固有・`001`〜`799` の中）
+
+| 番号 | 内容 |
+|---|---|
+| 028 | `business_hours`・`business_holidays` テーブル |
+| 029 | `events`・`event_bookings` テーブル |
+| 030 | Stripe 決済カラム |
+| 031 | `events.price` |
+| 032 | `event_bookings_v2` 再作成 |
+| 033 | 返金カラム |
+| `043_z_schema_gaps` | スキーマ差分の補正（`043_scenario_delivery_mode` と同番号） |
+
+> `028`〜`033` の内容は `800`〜`805` にも写しがある（下記）。
+
+### `800`〜`805`（`028`〜`033` の参照用コピー）
 
 | fork 番号 | 内容 |
 |-----------|------|
@@ -135,8 +168,49 @@ packages/db/migrations/806_new_fork_feature.sql
 | 804 | `event_bookings_v2` 再作成（旧 032） |
 | 805 | 返金カラム（旧 033） |
 
-> これらは**本番 D1 には既に 028-033 として適用済み**。800 番台ファイルは
-> 新規インストール用の参照ドキュメントとして作成する（次のステップ）。
+> これらの内容は**先に `028`〜`033` として本番 D1 に適用済み**で、`800`〜`805` はその
+> 参照用の写しとして後から追加したもの。現在は `028`〜`033` と `800`〜`805` の
+> **両方が `d1_migrations` に記録済み**で、`migrations list --remote` は
+> `No migrations to apply!` を返す。
+>
+> ### ⛔ 「写しだから再実行しても平気」は成り立たない
+>
+> 写しの中身は冪等ではない。実ファイルを確認した結果:
+>
+> | ファイル | DDL | 再適用したら |
+> |---|---|---|
+> | `800` / `801` | `CREATE TABLE IF NOT EXISTS` | 無害 |
+> | `802` / `803` / `805` | `ALTER TABLE ... ADD COLUMN` | `duplicate column name` で失敗 |
+> | **`804`** | `CREATE TABLE v2` → `INSERT SELECT` → **`DROP TABLE event_bookings`** → rename | **本番の予約テーブルを作り直す**。しかも v2 の定義には後から `805` が足した返金カラムが無いため、**データと列が失われる** |
+>
+> つまり `800`〜`805` を「重複しているから」と削除・リネームして再適用させると、
+> 最悪の場合 `event_bookings` の中身が壊れる。**どちらのファイルも触らないこと。**
+> 削除すると新規インストールが再現できなくなり、リネームすると再適用される。
+>
+> （`806` 以降も fork 固有だが、こちらは写しではない通常のマイグレーション。
+> なお `806` にも `DROP TABLE` が含まれるため、同様に再適用させてはいけない。）
+
+### `806`〜`818`（写しではない通常のマイグレーション）
+
+| 番号 | 出自 | 内容 |
+|---|---|---|
+| 806 | fork | シナリオの event_booking トリガー（`DROP TABLE` を含む） |
+| 807 | fork | シナリオのイベント基準日 |
+| 808 | fork | AI アシスタント |
+| 809 | fork | モバイルオーダー |
+| 810 | fork | `menus.menu_type` |
+| 811 | fork | 注文の会計リクエスト |
+| 812 | fork | メニューグループ |
+| 813 | fork | 客席セッション |
+| 814 | fork | 翻訳キャッシュ |
+| 815 | fork | メニュー画像 |
+| 816 | **upstream 046** | リンク計測の制御 |
+| 817 | **upstream 048** | `chats` の friend UNIQUE |
+| 818 | **upstream 049** | tracked_links の短縮コード |
+
+> 次の採番は `node "$(git rev-parse --show-toplevel)/packages/db/scripts/next-migration-number.mjs"` で取得すること
+> （この表をハードコードした番号の根拠に使わない）。
+
 
 ### スキップ済み
 
@@ -151,7 +225,7 @@ packages/db/migrations/806_new_fork_feature.sql
 ### チェックリスト
 
 ```
-[ ] 番号は 800〜999 の未使用番号を選んだ（fork 固有機能の場合）
+[ ] 番号は `node "$(git rev-parse --show-toplevel)/packages/db/scripts/next-migration-number.mjs"` の出力（最大+1）を使った
 [ ] ファイル名: NNN_snake_case_description.sql
 [ ] 先頭にコメントで変更内容を説明した
 [ ] schema.sql を同期した（後述）

@@ -90,14 +90,19 @@ CREATE INDEX IF NOT EXISTS idx_event_bookings_event_id ON event_bookings(event_i
 packages/db/migrations/<番号>_<内容>.sql
 ```
 
-番号は最新ファイルの番号 + 1（ゼロ埋め 3 桁）。
+番号は**必ずスクリプトで取得する**（推論・ハードコードしない）:
 
 ```bash
-# 最新番号の確認
-ls packages/db/migrations/ | tail -3
+node "$(git rev-parse --show-toplevel)/packages/db/scripts/next-migration-number.mjs"
+# 次の採番: 819
 ```
 
-現在の最新: `033_event_booking_refund.sql` → 次は `034_xxxxx.sql`
+> ⚠️ `ls packages/db/migrations/ | tail -3` で判断しないこと。文字列順なので
+> 4 桁になると壊れ、既存の番号を見落として**同じ番号のファイルを新規に作ってしまう**。
+> 番号が重複すると適用順が保証されなくなる（`.claude/rules/migrations.md` 参照）。
+
+⛔ **既存のマイグレーションファイルはリネーム・リナンバ・削除しない**
+（`d1_migrations` がファイル名で適用済みを記録しているため、再適用されて本番が壊れる）。
 
 ---
 
