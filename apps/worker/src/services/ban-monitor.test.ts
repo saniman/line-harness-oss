@@ -142,6 +142,18 @@ describe('checkAccountHealth', () => {
     expect(createAccountHealthLog).not.toHaveBeenCalled();
   });
 
+  test('created_at が未来の場合は書く（オフセット無しの行が UTC 解釈されるケース）', async () => {
+    // スキーマの DEFAULT はオフセット無し（strftime の JST 壁時計）。それが UTC として
+    // 解釈されると 9 時間先の未来になり、経過時間が負になる。「新しい」と誤判定すると
+    // ハートビートが実時間で約15時間止まるため、未来は「古い」扱いにして書く。
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+    getAccountHealthLogs.mockResolvedValue([log('normal', null, -9)]);
+
+    await checkAccountHealth(dbStub());
+
+    expect(createAccountHealthLog).toHaveBeenCalledTimes(1);
+  });
+
   test('created_at が解釈できない場合は書く（取りこぼすより余分に記録する）', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
     getAccountHealthLogs.mockResolvedValue([{ ...log('normal', null), created_at: 'not-a-date' }]);

@@ -18,13 +18,22 @@ import {
  */
 const HEARTBEAT_HOURS = 6;
 
-/** 直近ログが HEARTBEAT_HOURS 以内に書かれたか。解釈できない値は「古い」扱いにする。 */
+/**
+ * 直近ログが HEARTBEAT_HOURS 以内に書かれたか。
+ * 判定できない値は「古い」扱いにする（生存確認を握りつぶすより、余分に1行書く方が安全）。
+ */
 function isRecent(createdAt: string): boolean {
   const at = Date.parse(createdAt);
-  // パースできない値（オフセット無しの古い行など）で握りつぶすと生存確認が消える。
-  // 取りこぼすより余分に1行書く方が安全なので false を返す。
   if (Number.isNaN(at)) return false;
-  return Date.now() - at < HEARTBEAT_HOURS * 60 * 60 * 1000;
+
+  const age = Date.now() - at;
+  // 負（＝未来）になるのは、オフセット無しの文字列が UTC として解釈された場合。
+  // account_health_logs.created_at の DEFAULT は strftime の JST 壁時計でオフセットを
+  // 持たないため、そういう行が入ると 9 時間先の未来として読める。これを「新しい」と
+  // 見なすとハートビートが実時間で約15時間止まるので、未来も「古い」扱いにする。
+  if (age < 0) return false;
+
+  return age < HEARTBEAT_HOURS * 60 * 60 * 1000;
 }
 
 export async function checkAccountHealth(
