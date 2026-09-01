@@ -21,7 +21,7 @@
  *
  * 読み取り専用。ファイルの作成・変更・削除は一切行わない。
  */
-import { readdirSync } from 'node:fs';
+import { readdirSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 
@@ -52,25 +52,34 @@ export function formatMigrationPrefix(n) {
 /**
  * ファイル名の配列から採番の状況をまとめる。
  *
- * 番号の重複は**衝突ではない**。fork には 009 / 018 / 043 が 2 本ずつ存在し、
- * 本番で正常に動作している（ファイル名が違えば d1_migrations 上は別レコードで、
- * 適用順もファイル名のソート順で決定的）。誤って「衝突」と報告されないよう、
- * 重複は「正常・対処不要」として明示的に返す。
+ * 番号の重複は**再適用を引き起こさない**。ファイル名が違えば d1_migrations 上は
+ * 別レコードなので、fork に 009 / 018 / 043 が 2 本ずつあっても本番は正常に動作している。
+ * 誤って「衝突」と報告されないよう、重複は「正常・対処不要」として明示的に返す。
+ *
+ * ただし wrangler は数値プレフィックスだけでソートし、同番号は tie-break せず
+ * readdir の順序が残る（4.0.0 で確認）。**同番号のファイル同士の適用順は保証されない**
+ * ため、依存関係のあるマイグレーションを同じ番号で作ってはいけない。
+ * だからこそ新規追加は常に「最大 + 1」を使う。
  */
 export function summarizeMigrations(filenames) {
   const seen = new Map();
   let max = null;
-  let maxFile = null;
 
   for (const name of filenames) {
     const n = parseMigrationNumber(name);
     if (n === null) continue;
     seen.set(n, (seen.get(n) ?? 0) + 1);
-    if (max === null || n > max) {
-      max = n;
-      maxFile = name;
-    }
+    if (max === null || n > max) max = n;
   }
+
+  // 最大番号が重複している場合、readdir の順序に依存すると実行ごとに表示が変わる。
+  // ファイル名でソートして先頭を採ることで決定的にする。
+  const maxFile =
+    max === null
+      ? null
+      : filenames
+          .filter((name) => parseMigrationNumber(name) === max)
+          .sort()[0];
 
   const duplicates = [...seen.entries()]
     .filter(([, count]) => count > 1)
@@ -92,10 +101,31 @@ export function summarizeMigrationsDir(dir = DEFAULT_MIGRATIONS_DIR) {
   return summarizeMigrations(names);
 }
 
+/** 引数エラーを標準エラーに出して終了する */
+function fail(message) {
+  process.stderr.write(`エラー: ${message}\n`);
+  process.exit(1);
+}
+
 function main(argv) {
   const dirFlag = argv.indexOf('--dir');
-  const dir = dirFlag !== -1 ? argv[dirFlag + 1] : DEFAULT_MIGRATIONS_DIR;
-  const summary = summarizeMigrationsDir(dir);
+  let dir = DEFAULT_MIGRATIONS_DIR;
+  if (dirFlag !== -1) {
+    const value = argv[dirFlag + 1];
+    // 値を渡し忘れたときに既定ディレクトリを黙って読むと、「それらしいが要求とは
+    // 違う番号」を人に見せることになる。番号を間違えさせないためのツールなので落とす。
+    if (!value || value.startsWith('-')) {
+      fail('--dir にディレクトリを指定してください（例: --dir packages/db/migrations）');
+    }
+    dir = value;
+  }
+
+  let summary;
+  try {
+    summary = summarizeMigrationsDir(dir);
+  } catch (err) {
+    fail(`マイグレーションディレクトリを読めません: ${dir}（${err.code ?? err.message}）`);
+  }
 
   if (argv.includes('--json')) {
     process.stdout.write(JSON.stringify(summary) + '\n');
@@ -119,7 +149,15 @@ function main(argv) {
   process.stdout.write(lines.join('\n') + '\n');
 }
 
-// 直接実行されたときだけ CLI として動く（import 時は副作用なし）
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main(process.argv.slice(2));
+// 直接実行されたときだけ CLI として動く（import 時は副作用なし）。
+// import.meta.url は realpath 解決済みなので、argv[1] も realpath に揃えないと
+// シンボリックリンク経由の実行で一致せず、何も出力せず終了してしまう。
+if (process.argv[1]) {
+  let invoked = resolve(process.argv[1]);
+  try {
+    invoked = realpathSync(invoked);
+  } catch {
+    /* 解決できなければ resolve 結果のまま比較する */
+  }
+  if (invoked === fileURLToPath(import.meta.url)) main(process.argv.slice(2));
 }

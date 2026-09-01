@@ -12,7 +12,7 @@
 import { describe, it, expect, afterAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -37,6 +37,17 @@ interface Summary {
 function run(dir?: string): Summary {
   const args = ['--json', ...(dir ? ['--dir', dir] : [])];
   return JSON.parse(execFileSync('node', [SCRIPT, ...args], { encoding: 'utf8' }));
+}
+
+/** CLI を実行し、終了コードと stderr を返す（失敗を期待するケース用） */
+function runExpectingFailure(args: string[]): { status: number; stderr: string } {
+  try {
+    execFileSync('node', [SCRIPT, ...args], { encoding: 'utf8', stdio: 'pipe' });
+    return { status: 0, stderr: '' };
+  } catch (err) {
+    const e = err as { status?: number; stderr?: string };
+    return { status: e.status ?? -1, stderr: e.stderr ?? '' };
+  }
 }
 
 /** ファイル名の一覧から一時ディレクトリを作る */
@@ -160,6 +171,56 @@ describe('next-migration-number CLI', () => {
     it('既知の重複（009 / 018 / 043）が衝突ではなく重複として報告される', () => {
       const r = run();
       expect(r.duplicates).toEqual(expect.arrayContaining(['009', '018', '043']));
+    });
+  });
+
+  describe('引数エラー（黙って既定ディレクトリを読まない）', () => {
+    // --dir を付けたのに値を渡し忘れたとき、既定ディレクトリの番号を返すと
+    // 「それらしいが要求とは違う番号」を人に見せることになる。番号を間違えさせない
+    // ためのツールなので、曖昧なときは黙って続行せず落とす。
+    it('--dir に値が無い場合はエラー終了する', () => {
+      const r = runExpectingFailure(['--dir']);
+      expect(r.status).not.toBe(0);
+      expect(r.stderr).toContain('--dir');
+    });
+
+    it('--dir の次がフラグの場合もエラー終了する', () => {
+      const r = runExpectingFailure(['--dir', '--json']);
+      expect(r.status).not.toBe(0);
+      expect(r.stderr).toContain('--dir');
+    });
+
+    it('存在しないディレクトリの場合は読めるエラーメッセージで終了する', () => {
+      const r = runExpectingFailure(['--dir', '/nonexistent/path/xyz']);
+      expect(r.status).not.toBe(0);
+      expect(r.stderr).toContain('/nonexistent/path/xyz');
+      // 生のスタックトレースを出さない
+      expect(r.stderr).not.toContain('at Object.readdirSync');
+    });
+  });
+
+  describe('決定性', () => {
+    it('最大番号が重複していても maxFile が決定的になる', () => {
+      // readdir の順序はファイルシステム依存なので、同番号が最大のときに
+      // 表示されるファイル名が実行ごとに変わらないようにする。
+      const dir = make(['818_b_second.sql', '818_a_first.sql', '817_x.sql']);
+      const first = run(dir);
+      const second = run(dir);
+      expect(first.maxFile).toBe(second.maxFile);
+      expect(first.maxFile).toBe('818_a_first.sql');
+      expect(first.next).toBe(819);
+    });
+  });
+
+  describe('シンボリックリンク経由の実行', () => {
+    it('シンボリックリンク経由でも無言終了せず出力する', () => {
+      const linkDir = mkdtempSync(join(tmpdir(), 'miglink-'));
+      dirs.push(linkDir);
+      const link = join(linkDir, 'nmn.mjs');
+      symlinkSync(SCRIPT, link);
+      const out = execFileSync('node', [link, '--json'], { encoding: 'utf8' });
+      expect(out.trim()).not.toBe('');
+      expect(JSON.parse(out).next).toBeGreaterThan(0);
     });
   });
 

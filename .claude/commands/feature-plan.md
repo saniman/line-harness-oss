@@ -12,7 +12,7 @@ argument-hint: "<実装したい機能の説明>"
 ### 1. 調査（推測で進めない）
 - 既存コードに再利用できる関数・パターンがないか `grep`/Read で調べる（**新規より再利用を優先**）。
 - 該当領域の `.claude/rules/*` を物差しにする（API=`api-coding.md`・LIFF=`liff.md`・LINE通知=`line-messaging.md`・デプロイ=`deployment.md`・CSS=`css.md`）。
-- DB スキーマ変更を伴いそうなら `.claude/rules/migrations.md`（800番台の採番）と `packages/db/MIGRATIONS.md` を確認する。
+- DB スキーマ変更を伴いそうなら `.claude/rules/migrations.md`（採番は `node packages/db/scripts/next-migration-number.mjs` の出力＝最大+1。既存ファイルのリネーム禁止）と `packages/db/MIGRATIONS.md` を確認する。
 - 外部SDK（Stripe・LINE・Google Calendar）連携なら `.claude/rules/api-coding.md` の該当インターフェース設計・落とし穴を確認する。
 
 ### 2. 計画ドラフト → 自己レビュー（ここで一度「確認・修正」する）

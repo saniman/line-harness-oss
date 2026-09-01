@@ -200,12 +200,15 @@ migration ファイル（`packages/db/migrations/*.sql`）の差分を扱うと�
   再適用されて本番が壊れる。
 - **番号の重複を「衝突」「CRITICAL」として報告しない。**
   fork には 009 / 018 / 043 が 2 本ずつ存在し正常に動作している。ファイル名が違えば
-  別レコードで、適用順もファイル名のソート順で決定的。
+  `d1_migrations` 上は別レコードなので、番号が重なっても再適用は起きない。
+  （ただし同番号同士の適用順は保証されないため、**新規追加では番号を重複させない**。）
 - **取り込み時の採番は推論せず、スクリプトの出力をそのまま使う。**
 
   ```bash
-  node packages/db/scripts/next-migration-number.mjs
+  node /Users/akihisa/line-harness-oss/packages/db/scripts/next-migration-number.mjs
   ```
+
+  （相対パスだと `apps/worker` など別の cwd から実行したときに `Cannot find module` になる）
 
   レポートには「819 から採番」のようにスクリプトの出力を書く。既存ファイルには触れない。
 
