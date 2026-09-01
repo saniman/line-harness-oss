@@ -517,6 +517,9 @@ CREATE TABLE IF NOT EXISTS account_health_logs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_health_logs_account ON account_health_logs (line_account_id);
+-- ban-monitor が「アカウントごとの最新1件」を引くための複合インデックス（migration 819）。
+-- line_account_id だけのインデックスだと ORDER BY created_at で全行ソートになる。
+CREATE INDEX IF NOT EXISTS idx_health_logs_account_created ON account_health_logs (line_account_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS account_migrations (
   id               TEXT PRIMARY KEY,
