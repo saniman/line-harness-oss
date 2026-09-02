@@ -244,7 +244,8 @@ events.post('/api/events/:id/join', async (c) => {
         applicantName: body.name ?? '',
         bookingId: booking.id,
         paymentKind,
-        amount: paymentKind === 'unpaid' ? event.price : null,
+        // 無料以外は金額を載せる（当日現金＝集金額 / 未払い＝請求額）
+        amount: paymentKind === 'free' ? null : event.price,
         participantCount: event.participant_count + 1,
         capacity: event.capacity,
       },

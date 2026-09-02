@@ -57,7 +57,8 @@ function paymentLabel(kind: EventBookingPaymentKind, amount?: number | null): st
     case 'stripe':
       return amount != null ? `Stripe決済 ${formatYen(amount)}` : 'Stripe決済'
     case 'cash':
-      return '当日現金'
+      // その場で集金するので金額が要る（未払いだけ金額が出るのは逆）
+      return amount != null ? `当日現金 ${formatYen(amount)}` : '当日現金'
     case 'free':
       return '無料'
     case 'unpaid':
@@ -174,7 +175,8 @@ export interface NotifyAdminEventBookingParams {
  * 運営者へ申込通知を push する（ベストエフォート）。
  *
  * - クライアント・宛先のどちらかが未設定なら何もしない（OSS 利用者やローカル開発で
- *   LINE 設定が無くても申込フローが壊れないようにするため）
+ *   LINE 設定が無くても申込フローが壊れないようにするため）。
+ *   ただし設定漏れと区別できるよう console.warn で理由を残す
  * - 送信失敗は console.error に記録するだけで例外を投げない（申込自体は必ず成功させる）
  *
  * @returns 実際に送信したら true
@@ -183,7 +185,18 @@ export async function notifyAdminEventBooking(
   params: NotifyAdminEventBookingParams,
 ): Promise<boolean> {
   const { client, adminLineUserId, ctx } = params
-  if (!client || !adminLineUserId) return false
+  if (!client || !adminLineUserId) {
+    // 未設定で送らないのは意図した設計だが、黙って return すると「設定漏れ」と区別がつかず
+    // #49 と同じ「申込は成功・通知だけ無音で失敗・痕跡なし」に戻ってしまう。
+    // 宛先そのものは残さない（ログに個人を特定する ID を出さない）。
+    console.warn(
+      '[admin-notifier] 運営者通知をスキップ（未設定）:',
+      `bookingId=${ctx.bookingId}`,
+      `lineClient=${client ? 'ok' : 'missing'}`,
+      `adminLineUserId=${adminLineUserId ? 'ok' : 'missing'}`,
+    )
+    return false
+  }
 
   try {
     const { altText, contents } = renderEventBookingNotice(ctx)

@@ -936,13 +936,15 @@ describe('POST /api/events/:id/join の運営者 LINE 通知', () => {
   })
 
   it('無料イベント（price なし）は「無料」と載せる', async () => {
-    await join(ADMIN_ENV, { name: '山田太郎' }, { price: null })
+    // EVENT1 のタイトルが「無料セミナー」だと支払いラベルを見ずに通ってしまうため、
+    // このケースだけタイトルを差し替えて本当に支払いラベルを検証する
+    await join(ADMIN_ENV, { name: '山田太郎' }, { price: null, title: '体験会' })
     expect(adminMessage()).toContain('無料')
   })
 
-  it('当日現金払いは「当日現金」と載せる', async () => {
-    await join(ADMIN_ENV, { name: '山田太郎', paymentMethod: 'cash' })
-    expect(adminMessage()).toContain('当日現金')
+  it('当日現金払いは金額付きで「当日現金」と載せる（その場で集金するため）', async () => {
+    await join(ADMIN_ENV, { name: '山田太郎', paymentMethod: 'cash' })   // EVENT1 は price: 3000
+    expect(adminMessage()).toContain('当日現金 ¥3,000')
   })
 
   it('この申込を含めた申込数を載せる（申込前カウント+1）', async () => {
@@ -951,9 +953,13 @@ describe('POST /api/events/:id/join の運営者 LINE 通知', () => {
   })
 
   it('ADMIN_LINE_USER_ID 未設定の環境では通知せず申込は成功する', async () => {
+    // 未設定は console.warn を出す設計（設定漏れと区別するため）。テスト出力を汚さないよう抑える
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const res = await join({ DB: mockDb, LINE_CHANNEL_ACCESS_TOKEN: 'token' })
     expect(res.status).toBe(201)
     expect(adminPush()).toBeUndefined()
+    expect(warnSpy).toHaveBeenCalled()
+    warnSpy.mockRestore()
   })
 
   it('運営者への通知が失敗しても申込は201で成功する（ベストエフォート）', async () => {

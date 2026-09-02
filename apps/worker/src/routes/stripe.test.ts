@@ -282,10 +282,14 @@ describe('Stripe決済確定時の運営者 LINE 通知', () => {
   })
 
   it('ADMIN_LINE_USER_ID 未設定の環境では通知せず決済確定は成功する', async () => {
+    // 未設定は console.warn を出す設計（設定漏れと区別するため）。テスト出力を汚さないよう抑える
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const res = await webhook(MOCK_ENV)
     expect(res.status).toBe(200)
     expect(eventsService.confirmEventBooking).toHaveBeenCalled()
     expect(adminPush()).toBeUndefined()
+    expect(warnSpy).toHaveBeenCalled()
+    warnSpy.mockRestore()
   })
 
   it('運営者への通知が失敗しても決済確定は成功する（ベストエフォート）', async () => {

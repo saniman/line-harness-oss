@@ -63,6 +63,8 @@ describe('renderEventBookingNotice', () => {
       asText(renderEventBookingNotice({ ...BASE, ...ctx } as EventBookingNoticeContext).contents)
 
     expect(label({ paymentKind: 'stripe', amount: 2000 })).toContain('Stripe決済 ¥2,000')
+    // 当日現金はその場で集金するので金額が要る
+    expect(label({ paymentKind: 'cash', amount: 3000 })).toContain('当日現金 ¥3,000')
     expect(label({ paymentKind: 'cash', amount: null })).toContain('当日現金')
     expect(label({ paymentKind: 'free', amount: null })).toContain('無料')
     // 未入金は運営者が見分けられないと取りっぱぐれる
@@ -125,6 +127,8 @@ describe('notifyAdminEventBooking', () => {
 
   it('宛先（ADMIN_LINE_USER_ID）が未設定なら送らない', async () => {
     const pushMessage = vi.fn()
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
     const sent = await notifyAdminEventBooking({
       client: { pushMessage },
       adminLineUserId: undefined,
@@ -133,15 +137,40 @@ describe('notifyAdminEventBooking', () => {
 
     expect(sent).toBe(false)
     expect(pushMessage).not.toHaveBeenCalled()
+    warnSpy.mockRestore()
   })
 
   it('LINE クライアントが無い場合は送らない（未設定環境でも落ちない）', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const sent = await notifyAdminEventBooking({
       client: null,
       adminLineUserId: 'Uadmin',
       ctx: BASE,
     })
     expect(sent).toBe(false)
+    warnSpy.mockRestore()
+  })
+
+  it('未設定でスキップしたことをログに残す（設定漏れと区別できるように）', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    await notifyAdminEventBooking({ client: null, adminLineUserId: null, ctx: BASE })
+
+    expect(warnSpy).toHaveBeenCalled()
+    const logged = warnSpy.mock.calls[0].join(' ')
+    expect(logged).toContain('[admin-notifier]')
+    expect(logged).toContain('bookingId=34')   // どの申込を取りこぼしたか追える
+    expect(logged).toContain('missing')
+    warnSpy.mockRestore()
+  })
+
+  it('スキップのログに宛先そのもの（LINE ユーザーID）は出さない', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    await notifyAdminEventBooking({ client: null, adminLineUserId: 'Usecret123', ctx: BASE })
+
+    expect(warnSpy.mock.calls[0].join(' ')).not.toContain('Usecret123')
+    warnSpy.mockRestore()
   })
 
   it('push が失敗しても例外を投げない（申込フローを壊さない）', async () => {

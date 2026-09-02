@@ -15,8 +15,17 @@
 かつ Workers のログ保持も無効だったため、**申込は成功・通知だけ無音で失敗・痕跡なし**という状態が
 発覚まで放置された（`event_bookings.id = 34` の申込で発覚）。
 
-そこで通知経路を、運営者が毎日見ていて追加コストもかからない **LINE に一本化**した。
+そこで通知経路を、運営者が毎日見ていて **Cloudflare 側の追加費用がかからない LINE に一本化**した。
 メール通知のコードは削除済み。将来 Workers Paid にするなら PR #21 / #27 を git から復元できる。
+
+> ⚠️ **「無料」なのは Cloudflare の話。LINE 側には通数の上限がある。**
+> LINE 公式アカウントの push は月間メッセージ通数を消費する（無料の
+> コミュニケーションプランは **200通/月・追加購入不可**）。
+> 今回の変更で **申込1件あたりの消費が2通**（申込者への完了通知＋運営者への申込通知）になる。
+> 通数を使い切ると push が 4xx を返し、**運営者通知だけでなく申込者への完了通知も落ちる**。
+> どちらもベストエフォート（catch して console.error）なので、
+> **枯渇したことは LINE Official Account Manager か Workers Logs を見ないと気づけない**。
+> 申込が増えてきたらプラン（ライト / スタンダード）を検討する。
 
 同時に `wrangler.toml` に `[observability]` を追加し、
 今後は「無音の失敗」を Workers Logs から追えるようにした。
@@ -87,6 +96,8 @@ git push origin main   # CI が自動デプロイ（手動 wrangler deploy は�
 | 通知が来ない | `ADMIN_LINE_USER_ID` 未設定 | `npx wrangler secret list` で確認し、手順1を実行 |
 | 通知が来ない | 運営者が公式アカウントの友だちでない | 友だち追加する |
 | 通知が来ない | LINE API エラー | Cloudflare ダッシュボード → Workers → line-harness → Logs で `[admin-notifier]` を探す |
+| 通知が来ない | 月間メッセージ通数の枯渇 | LINE Official Account Manager で当月の利用通数を確認する。申込者への完了通知も同時に落ちているはず |
+| 通知が来ない（ログに `スキップ（未設定）`） | `ADMIN_LINE_USER_ID` か `LINE_CHANNEL_ACCESS_TOKEN` が未設定 | Logs の `[admin-notifier] 運営者通知をスキップ（未設定）` を見て、`missing` の方を設定する |
 | Stripe決済で2通届く | webhook のリトライ | 通常は `status = 'confirmed'` のガードで抑止される。Logs を確認 |
 
 ## 実装の場所
