@@ -8,6 +8,7 @@ const triggerLabels: Record<string, string> = {
   tag_added: 'タグ付与時',
   manual: '手動',
   event_booking: 'イベント参加・決済時',
+  event_cancelled: 'イベントキャンセル時',
 }
 
 interface ScenarioListProps {

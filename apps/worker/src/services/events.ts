@@ -1,3 +1,5 @@
+import { switchToCancelledFollowup } from './event-followup.js'
+
 export interface StripeRefundClient {
   checkout: {
     sessions: {
@@ -240,6 +242,19 @@ export async function cancelEventBooking(
   await db.prepare(
     "UPDATE event_bookings SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?",
   ).bind(bookingId).run()
+
+  // 参加確定後のキャンセルだけ、お礼シナリオを止めてキャンセル者向けへ切り替える（ベストエフォート）。
+  // pending（決済せず取り消しただけ）は申込意思が薄いため対象外。
+  // ここで失敗してもキャンセル・返金自体は成功として返す。
+  if (booking.status === 'confirmed') {
+    try {
+      const event = await db.prepare('SELECT start_at FROM events WHERE id = ?')
+        .bind(booking.event_id).first<{ start_at: string }>()
+      await switchToCancelledFollowup(db, booking.friend_id, event?.start_at ?? null)
+    } catch (err) {
+      console.error('[cancelEventBooking] switchToCancelledFollowup failed:', err)
+    }
+  }
 
   return { success: true, refunded, refundId, eventId: booking.event_id }
 }

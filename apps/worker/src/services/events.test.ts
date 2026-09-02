@@ -34,6 +34,10 @@ interface EventBookingRow {
   updated_at: string
 }
 
+vi.mock('./event-followup.js', () => ({
+  switchToCancelledFollowup: vi.fn().mockResolvedValue({ stopped: 0, enrolled: 0 }),
+}))
+
 function makeStmt(firstResult: unknown = null, allResult: { results: unknown[] } = { results: [] }) {
   return {
     bind: vi.fn().mockReturnThis(),
@@ -48,6 +52,7 @@ function makeDb(...stmts: ReturnType<typeof makeStmt>[]) {
   return { prepare: vi.fn().mockImplementation(() => stmts[i++] ?? makeStmt()) } as unknown as D1Database
 }
 
+import { switchToCancelledFollowup } from './event-followup.js'
 import {
   createEvent,
   getEvents,
@@ -63,6 +68,8 @@ import {
   confirmEventBooking,
   cancelEventBooking,
 } from './events.js'
+
+const mockSwitchToCancelled = vi.mocked(switchToCancelledFollowup)
 
 const EVENT1: EventWithCount = {
   id: 1, title: '無料セミナー', description: null,
@@ -374,5 +381,37 @@ describe('cancelEventBooking', () => {
     expect(result.success).toBe(true)
     expect(result.refunded).toBe(false)
     expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining("status = 'cancelled'"))
+  })
+
+  it('confirmedの予約をキャンセルすると開催日を渡してキャンセル者向けフォローへ切り替える', async () => {
+    const confirmed: EventBookingRow = { ...BOOKING1, friend_id: 'f1', status: 'confirmed' }
+    const db = makeDb(
+      makeStmt(confirmed),                                    // SELECT booking
+      makeStmt(null),                                         // UPDATE status='cancelled'
+      makeStmt({ start_at: '2026-06-01T10:00:00+09:00' }),    // SELECT events.start_at
+    )
+    const stripe = makeStripe()
+    const result = await cancelEventBooking(db, 1, 'f1', stripe)
+    expect(result.success).toBe(true)
+    expect(mockSwitchToCancelled).toHaveBeenCalledWith(db, 'f1', '2026-06-01T10:00:00+09:00')
+  })
+
+  it('pendingの予約のキャンセルではフォロー切り替えを行わない', async () => {
+    // 決済せず放置して取り消しただけの人には「残念でした」を送らない
+    const pending: EventBookingRow = { ...BOOKING1, friend_id: 'f1', status: 'pending' }
+    const db = makeDb(makeStmt(pending), makeStmt(null))
+    const stripe = makeStripe()
+    const result = await cancelEventBooking(db, 1, 'f1', stripe)
+    expect(result.success).toBe(true)
+    expect(mockSwitchToCancelled).not.toHaveBeenCalled()
+  })
+
+  it('フォロー切り替えが失敗してもキャンセル自体は成功する', async () => {
+    const confirmed: EventBookingRow = { ...BOOKING1, friend_id: 'f1', status: 'confirmed' }
+    const db = makeDb(makeStmt(confirmed), makeStmt(null), makeStmt({ start_at: '2026-06-01T10:00:00+09:00' }))
+    const stripe = makeStripe()
+    mockSwitchToCancelled.mockRejectedValueOnce(new Error('boom'))
+    const result = await cancelEventBooking(db, 1, 'f1', stripe)
+    expect(result.success).toBe(true)
   })
 })

@@ -15,7 +15,16 @@ const triggerOptions: { value: ScenarioTriggerType; label: string }[] = [
   { value: 'tag_added', label: 'タグ付与時' },
   { value: 'manual', label: '手動' },
   { value: 'event_booking', label: 'イベント参加・決済時' },
+  { value: 'event_cancelled', label: 'イベントキャンセル時' },
 ]
+
+/**
+ * 開催日アンカー（開催日の N 日後 + 時刻）でステップを組むトリガーか。
+ * 参加者向け・キャンセル者向けのどちらもイベント開催日が起点になる。
+ */
+function isEventAnchored(triggerType?: ScenarioTriggerType): boolean {
+  return triggerType === 'event_booking' || triggerType === 'event_cancelled'
+}
 
 const messageTypeOptions: { value: MessageType; label: string }[] = [
   { value: 'text', label: 'テキスト' },
@@ -178,8 +187,8 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
     setStepSaving(true)
     setStepError('')
     try {
-      // イベント開催日アンカー: trigger=event_booking のとき開催日基準で配信する
-      const eventAnchored = scenario?.triggerType === 'event_booking'
+      // イベント開催日アンカー: イベント系トリガーのとき開催日基準で配信する
+      const eventAnchored = isEventAnchored(scenario?.triggerType)
       const stepPayload = {
         stepOrder: stepForm.stepOrder,
         delayMinutes: eventAnchored ? 0 : stepForm.delayMinutes,
@@ -400,7 +409,7 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
                     onChange={(e) => setStepForm({ ...stepForm, stepOrder: Number(e.target.value) })}
                   />
                 </div>
-                {scenario?.triggerType === 'event_booking' ? (
+                {isEventAnchored(scenario?.triggerType) ? (
                   <div>
                     <label className="block text-xs font-medium text-gray-600 mb-1">配信タイミング（起点: イベント開催日）</label>
                     <div className="flex items-center gap-2">

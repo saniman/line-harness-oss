@@ -99,4 +99,5 @@ PR        → push→PR作成（Closes #n）
 - 管理画面デプロイ: docs/setup/admin-deploy.md
 - Stripe決済統合: docs/setup/stripe-setup.md
 - 申込の運営者通知(LINE): docs/setup/admin-notification.md
+- イベント参加者アフターフォロー: docs/setup/event-followup.md
 - 開発パイプライン: docs/dev-workflow.md
