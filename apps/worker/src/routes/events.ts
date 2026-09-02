@@ -22,7 +22,7 @@ import { backfillEventBookingFriends } from '../services/event-friend-backfill.j
 import { resolveDefaultLineAccountId } from '../services/default-line-account.js';
 import { verifyCaller } from '../services/liff-identity.js';
 import type { CallerAuthFailure } from '../services/liff-identity.js';
-import { sendEventBookingNotification } from '../services/email-notifier.js';
+import { notifyAdminEventBooking } from '../services/admin-notifier.js';
 import { formatJST } from '../utils/format-jst.js';
 import { getScenarioById } from '@line-crm/db';
 import type { Env } from '../index.js';
@@ -225,7 +225,7 @@ events.post('/api/events/:id/join', async (c) => {
       console.error('[events /join] enrollEventFollowupScenarios failed:', err);
     }
 
-    // 運営者へメール通知（ベストエフォート: 未設定なら no-op・失敗しても申込は維持）
+    // 運営者へ LINE 通知（ベストエフォート: 未設定なら no-op・失敗しても申込は維持）
     // participant_count は申込前の値なので、この申込を含めて +1 する。
     // 支払い区分はクライアント申告（body.paymentMethod）ではなく DB の事実から導出する。
     // 有料イベントに paymentMethod なしで直接叩かれた場合を「無料」と誤通知しないため。
@@ -235,17 +235,17 @@ events.post('/api/events/:id/join', async (c) => {
         : booking.payment_status === 'cash'
           ? 'cash'
           : 'unpaid';
-    await sendEventBookingNotification({
-      email: c.env.EMAIL,
-      to: c.env.ADMIN_NOTIFY_EMAIL,
-      from: c.env.MAIL_FROM_ADDRESS,
+    await notifyAdminEventBooking({
+      client: lineClient,
+      adminLineUserId: c.env.ADMIN_LINE_USER_ID,
       ctx: {
         eventTitle: event.title,
         eventStartAt: event.start_at,
         applicantName: body.name ?? '',
         bookingId: booking.id,
         paymentKind,
-        amount: paymentKind === 'unpaid' ? event.price : null,
+        // 無料以外は金額を載せる（当日現金＝集金額 / 未払い＝請求額）
+        amount: paymentKind === 'free' ? null : event.price,
         participantCount: event.participant_count + 1,
         capacity: event.capacity,
       },

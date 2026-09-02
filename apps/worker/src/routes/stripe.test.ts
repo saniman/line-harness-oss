@@ -240,14 +240,13 @@ describe('POST /api/stripe/webhook', () => {
     expect(eventsService.confirmEventBooking).not.toHaveBeenCalled()
   })
 })
+describe('Stripe決済確定時の運営者 LINE 通知', () => {
+  // 運営者の宛先。申込者本人（U123）と区別できるよう別 ID にする
+  const ADMIN_ENV = { ...MOCK_ENV, ADMIN_LINE_USER_ID: 'Uadmin' }
 
-describe('Stripe決済確定時の運営者メール通知', () => {
-  const mockEmailSend = vi.fn()
-  const EMAIL_ENV = {
-    ...MOCK_ENV,
-    EMAIL: { send: mockEmailSend },
-    ADMIN_NOTIFY_EMAIL: 'admin@example.com',
-    MAIL_FROM_ADDRESS: 'noreply@walover-co.work',
+  /** 運営者宛の push だけを取り出す（申込者本人への push と同じモックを共有しているため） */
+  function adminPush() {
+    return mockPushMessage.mock.calls.find(([to]) => to === 'Uadmin')
   }
 
   async function webhook(env: Record<string, unknown>, booking = PENDING_BOOKING) {
@@ -266,27 +265,53 @@ describe('Stripe決済確定時の運営者メール通知', () => {
     }, env)
   }
 
-  it('決済確定で運営者に申込メールを送る（金額付き）', async () => {
-    mockEmailSend.mockResolvedValue({ messageId: 'm1' })
-    const res = await webhook(EMAIL_ENV)
+  it('決済確定で運営者に申込を通知する（金額付き）', async () => {
+    const res = await webhook(ADMIN_ENV)
     expect(res.status).toBe(200)
-    expect(mockEmailSend).toHaveBeenCalledWith(expect.objectContaining({
-      to: 'admin@example.com',
-      text: expect.stringContaining('支払い: Stripe決済 ¥3,000'),
-    }))
+
+    const call = adminPush()
+    expect(call).toBeDefined()
+    expect(call?.[1][0].type).toBe('flex')
+    expect(JSON.stringify(call?.[1])).toContain('Stripe決済 ¥3,000')
   })
 
-  it('webhook 再送（すでに confirmed の booking）ではメールを送らない', async () => {
-    mockEmailSend.mockResolvedValue({ messageId: 'm1' })
-    const res = await webhook(EMAIL_ENV, { ...PENDING_BOOKING, status: 'confirmed' })
+  it('webhook 再送（すでに confirmed の booking）では通知しない', async () => {
+    const res = await webhook(ADMIN_ENV, { ...PENDING_BOOKING, status: 'confirmed' })
     expect(res.status).toBe(200)
-    expect(mockEmailSend).not.toHaveBeenCalled()
+    expect(adminPush()).toBeUndefined()
   })
 
-  it('メール未設定の環境では送信せず決済確定は成功する', async () => {
+  it('ADMIN_LINE_USER_ID 未設定の環境では通知せず決済確定は成功する', async () => {
+    // 未設定は console.warn を出す設計（設定漏れと区別するため）。テスト出力を汚さないよう抑える
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const res = await webhook(MOCK_ENV)
     expect(res.status).toBe(200)
     expect(eventsService.confirmEventBooking).toHaveBeenCalled()
-    expect(mockEmailSend).not.toHaveBeenCalled()
+    expect(adminPush()).toBeUndefined()
+    expect(warnSpy).toHaveBeenCalled()
+    warnSpy.mockRestore()
+  })
+
+  it('運営者への通知が失敗しても決済確定は成功する（ベストエフォート）', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    mockConstructEventAsync.mockResolvedValue({
+      type: 'checkout.session.completed',
+      data: { object: MOCK_SESSION },
+    })
+    vi.mocked(eventsService.getEventBookingById).mockResolvedValue(PENDING_BOOKING)
+    vi.mocked(eventsService.confirmEventBooking).mockResolvedValue(undefined)
+    vi.mocked(eventsService.getEventById).mockResolvedValue(EVENT1)
+    // Once にして後続テストへ実装が漏れないようにする（clearAllMocks は実装を戻さない）
+    mockPushMessage.mockRejectedValueOnce(new Error('LINE down'))
+
+    const res = await app.request('/api/stripe/webhook', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'stripe-signature': 't=123,v1=abc' },
+      body: JSON.stringify({}),
+    }, ADMIN_ENV)
+
+    expect(res.status).toBe(200)
+    expect(eventsService.confirmEventBooking).toHaveBeenCalled()
+    consoleSpy.mockRestore()
   })
 })

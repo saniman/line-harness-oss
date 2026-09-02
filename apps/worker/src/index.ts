@@ -12,7 +12,6 @@ import { processDueReminders } from './services/booking-reminders.js';
 import { runExpirer } from './services/booking-expirer.js';
 import { sendBookingNotification } from './services/booking-notifier.js';
 import { DEFAULT_ACCOUNT_SETTINGS } from './services/booking-types.js';
-import type { EmailSendClient } from './services/email-notifier.js';
 import { forwardAdParams } from './lib/ad-params.js';
 import { authMiddleware } from './middleware/auth.js';
 import { rateLimitMiddleware } from './middleware/rate-limit.js';
@@ -80,11 +79,6 @@ export type Env = {
     STRIPE_SECRET_KEY: string;
     STRIPE_WEBHOOK_SECRET: string;
     LIFF_BASE_URL: string;
-    // Cloudflare Email Sending（send_email バインディング）。3つとも未設定なら
-    // メール通知は no-op になる（未設定環境でも申込フローを壊さないため）。
-    EMAIL?: EmailSendClient;
-    ADMIN_NOTIFY_EMAIL?: string;   // 通知先（wrangler secret put で設定）
-    MAIL_FROM_ADDRESS?: string;    // 送信元（Email Sending を有効化したドメインのアドレス）
   };
   Variables: {
     staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' };
