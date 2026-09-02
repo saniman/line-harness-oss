@@ -887,16 +887,19 @@ describe('POST /api/events/:id/enroll-participants', () => {
     expect(res.status).toBe(404)
   })
 })
-
-describe('POST /api/events/:id/join の運営者メール通知', () => {
-  /** Cloudflare Email Sending の send_email バインディングのモック */
-  const mockEmailSend = vi.fn()
-  const EMAIL_ENV = {
+describe('POST /api/events/:id/join の運営者 LINE 通知', () => {
+  // 運営者の宛先。申込者本人（U123）と区別できるよう別 ID にする
+  const ADMIN_ENV = {
     DB: mockDb,
-    EMAIL: { send: mockEmailSend },
-    ADMIN_NOTIFY_EMAIL: 'admin@example.com',
-    MAIL_FROM_ADDRESS: 'noreply@walover-co.work',
+    LINE_CHANNEL_ACCESS_TOKEN: 'token',
+    ADMIN_LINE_USER_ID: 'Uadmin',
   }
+
+  /** 運営者宛の push だけを取り出す（申込者本人への push と同じモックを共有しているため） */
+  function adminPush() {
+    return mockPushMessage.mock.calls.find(([to]) => to === 'Uadmin')
+  }
+  const adminMessage = () => JSON.stringify(adminPush()?.[1])
 
   async function join(
     env: Record<string, unknown>,
@@ -916,58 +919,48 @@ describe('POST /api/events/:id/join の運営者メール通知', () => {
     }, env)
   }
 
-  it('EMAIL と ADMIN_NOTIFY_EMAIL が揃っていれば運営者に申込メールを送る', async () => {
-    mockEmailSend.mockResolvedValue({ messageId: 'm1' })
-    const res = await join(EMAIL_ENV)
+  it('ADMIN_LINE_USER_ID が設定されていれば運営者に申込を通知する', async () => {
+    const res = await join(ADMIN_ENV)
     expect(res.status).toBe(201)
-    expect(mockEmailSend).toHaveBeenCalledWith(expect.objectContaining({
-      to: 'admin@example.com',
-      subject: expect.stringContaining('【イベント申込】無料セミナー'),
-    }))
+
+    const call = adminPush()
+    expect(call).toBeDefined()
+    expect(call?.[1][0].type).toBe('flex')
+    expect(call?.[1][0].altText).toContain('無料セミナー')
+    expect(adminMessage()).toContain('山田太郎')
   })
 
   it('有料イベントに paymentMethod なしで申し込むと「未払い」と載せる（クライアント申告を信用しない）', async () => {
-    mockEmailSend.mockResolvedValue({ messageId: 'm1' })
-    await join(EMAIL_ENV, { name: '山田太郎' })   // EVENT1 は price: 3000
-    expect(mockEmailSend).toHaveBeenCalledWith(expect.objectContaining({
-      text: expect.stringContaining('支払い: 未払い（要確認）¥3,000'),
-    }))
+    await join(ADMIN_ENV, { name: '山田太郎' })   // EVENT1 は price: 3000
+    expect(adminMessage()).toContain('未払い（要確認）¥3,000')
   })
 
   it('無料イベント（price なし）は「無料」と載せる', async () => {
-    mockEmailSend.mockResolvedValue({ messageId: 'm1' })
-    await join(EMAIL_ENV, { name: '山田太郎' }, { price: null })
-    expect(mockEmailSend).toHaveBeenCalledWith(expect.objectContaining({
-      text: expect.stringContaining('支払い: 無料'),
-    }))
+    await join(ADMIN_ENV, { name: '山田太郎' }, { price: null })
+    expect(adminMessage()).toContain('無料')
   })
 
-  it('当日現金払いはメール本文に「当日現金」と載せる', async () => {
-    mockEmailSend.mockResolvedValue({ messageId: 'm1' })
-    await join(EMAIL_ENV, { name: '山田太郎', paymentMethod: 'cash' })
-    expect(mockEmailSend).toHaveBeenCalledWith(expect.objectContaining({
-      text: expect.stringContaining('支払い: 当日現金'),
-    }))
+  it('当日現金払いは「当日現金」と載せる', async () => {
+    await join(ADMIN_ENV, { name: '山田太郎', paymentMethod: 'cash' })
+    expect(adminMessage()).toContain('当日現金')
   })
 
   it('この申込を含めた申込数を載せる（申込前カウント+1）', async () => {
-    mockEmailSend.mockResolvedValue({ messageId: 'm1' })
-    await join(EMAIL_ENV)
-    expect(mockEmailSend).toHaveBeenCalledWith(expect.objectContaining({
-      text: expect.stringContaining('申込状況: 3 / 10 名'),
-    }))
+    await join(ADMIN_ENV)
+    expect(adminMessage()).toContain('3 / 10 名')
   })
 
-  it('メール未設定の環境では送信せず申込は成功する', async () => {
-    const res = await join({ DB: mockDb })
+  it('ADMIN_LINE_USER_ID 未設定の環境では通知せず申込は成功する', async () => {
+    const res = await join({ DB: mockDb, LINE_CHANNEL_ACCESS_TOKEN: 'token' })
     expect(res.status).toBe(201)
-    expect(mockEmailSend).not.toHaveBeenCalled()
+    expect(adminPush()).toBeUndefined()
   })
 
-  it('メール送信が失敗しても申込は201で成功する（ベストエフォート）', async () => {
-    mockEmailSend.mockRejectedValue(new Error('email down'))
+  it('運営者への通知が失敗しても申込は201で成功する（ベストエフォート）', async () => {
+    // Once にして後続テストへ実装が漏れないようにする（clearAllMocks は実装を戻さない）
+    mockPushMessage.mockRejectedValueOnce(new Error('LINE down'))
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-    const res = await join(EMAIL_ENV)
+    const res = await join(ADMIN_ENV)
     expect(res.status).toBe(201)
     consoleSpy.mockRestore()
   })

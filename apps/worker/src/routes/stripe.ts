@@ -13,7 +13,7 @@ import {
   confirmEventBooking,
 } from '../services/events.js';
 import { enrollEventFollowupScenarios } from '../services/event-followup.js';
-import { sendEventBookingNotification } from '../services/email-notifier.js';
+import { notifyAdminEventBooking } from '../services/admin-notifier.js';
 import { formatJST } from '../utils/format-jst.js';
 import { resolveEventApplicant } from '../services/event-friend.js';
 import { resolveDefaultLineAccountId } from '../services/default-line-account.js';
@@ -266,15 +266,17 @@ stripe.post('/api/stripe/webhook', async (c) => {
     console.error('[stripe webhook] enrollEventFollowupScenarios failed:', err);
   }
 
-  // 5c. 運営者へメール通知（ベストエフォート: 未設定なら no-op）
+  // 5c. 運営者へ LINE 通知（ベストエフォート: 未設定なら no-op）
   //     Stripe は webhook をリトライするため、確定前の status が confirmed のもの
   //     （＝再送）には送らない。eventRow は confirm 後に取得しているので
   //     participant_count はこの申込を含んだ値になっている。
   if (booking.status !== 'confirmed') {
-    await sendEventBookingNotification({
-      email: c.env.EMAIL,
-      to: c.env.ADMIN_NOTIFY_EMAIL,
-      from: c.env.MAIL_FROM_ADDRESS,
+    const adminLineClient = c.env.LINE_CHANNEL_ACCESS_TOKEN
+      ? new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN)
+      : null;
+    await notifyAdminEventBooking({
+      client: adminLineClient,
+      adminLineUserId: c.env.ADMIN_LINE_USER_ID,
       ctx: {
         eventTitle: eventRow?.title ?? 'イベント',
         eventStartAt: eventRow?.start_at ?? null,

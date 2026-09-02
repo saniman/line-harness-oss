@@ -37,15 +37,17 @@ migrations_dir = "../../packages/db/migrations"
 [triggers]
 crons = ["*/5 * * * *", "0 */6 * * *", "0 23 * * SUN", "0 23 * * WED"]  # 6h=booking expirer SUN=月曜08:00 JST(AIニュース) WED=木曜08:00 JST(プロンプト)
 
-# Cloudflare Email Sending（イベント申込の運営者通知メール）
-# 事前に `npx wrangler email sending enable walover-co.work` でドメイン有効化が必要。
-# 手順は docs/setup/email-notification.md 参照。
-[[send_email]]
-name = "EMAIL"
+# Workers Logs（#49）。console.error だけのベストエフォート処理が「無音で失敗」しても
+# 後から追えるようにする。イベント申込のメール通知が一度も動いていなかったのに
+# 誰も気づけなかった事故（2026-09-02）の再発防止。
+# head_sampling_rate = 1 は 100% 収集。この規模なら無料枠に収まる想定で、
+# ログ量が増えたら下げる余地がある。
+[observability]
+enabled = true
+head_sampling_rate = 1
 
 [vars]
 LIFF_BASE_URL = "https://liff.line.me/1661159603-5qlDj5wV"
-MAIL_FROM_ADDRESS = "noreply@walover-co.work"
 
 # Stripe シークレット（wrangler secret put で設定する）
 # STRIPE_SECRET_KEY        - Stripe ダッシュボード > APIキー
@@ -73,11 +75,9 @@ database_id = "YOUR_D1_DATABASE_ID"
 binding = "IMAGES"
 bucket_name = "line-harness-images"
 
-[[env.production.send_email]]
-name = "EMAIL"
-
-[env.production.vars]
-MAIL_FROM_ADDRESS = "noreply@YOUR_DOMAIN"
+[env.production.observability]
+enabled = true
+head_sampling_rate = 1
 
 [env.production.triggers]
 crons = ["*/5 * * * *", "0 */6 * * *", "0 23 * * SUN", "0 23 * * WED"]  # 6h=booking expirer SUN=月曜08:00 JST(AIニュース) WED=木曜08:00 JST(プロンプト)
