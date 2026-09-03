@@ -29,6 +29,7 @@ import { liffRoutes } from './routes/liff.js';
 // Round 3 ルート
 import { webhooks } from './routes/webhooks.js';
 import { calendar } from './routes/calendar.js';
+import { freee } from './routes/freee.js';
 import { reminders } from './routes/reminders.js';
 import { scoring } from './routes/scoring.js';
 import { templates } from './routes/templates.js';
@@ -74,6 +75,9 @@ export type Env = {
     GOOGLE_CLIENT_ID: string;
     GOOGLE_CLIENT_SECRET: string;
     GOOGLE_REDIRECT_URI?: string;
+    FREEE_CLIENT_ID: string;
+    FREEE_CLIENT_SECRET: string;
+    FREEE_REDIRECT_URI?: string;
     ANTHROPIC_API_KEY: string;
     ADMIN_LINE_USER_ID?: string;
     STRIPE_SECRET_KEY: string;
@@ -112,6 +116,7 @@ app.route('/', liffRoutes);
 // Mount route groups — Round 3
 app.route('/', webhooks);
 app.route('/', calendar);
+app.route('/', freee);
 app.route('/', reminders);
 app.route('/', scoring);
 app.route('/', templates);

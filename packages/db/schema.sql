@@ -327,6 +327,26 @@ CREATE TABLE IF NOT EXISTS google_calendar_connections (
   updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
+-- ============================================================
+-- freee 連携（OAuth2 トークン保管）
+-- ============================================================
+-- ⚠️ freee のリフレッシュトークンは「1回限り・有効期限90日」。
+--    リフレッシュのたびに新しい refresh_token が発行され、古い値は無効になる。
+--    更新時は必ず refresh_token も差し替えること（Google のように使い回せない）。
+CREATE TABLE IF NOT EXISTS freee_accounts (
+  id               TEXT PRIMARY KEY,
+  company_id       INTEGER,
+  company_name     TEXT,
+  access_token     TEXT,
+  refresh_token    TEXT,
+  token_expires_at TEXT,
+  is_active        INTEGER NOT NULL DEFAULT 1,
+  created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_freee_accounts_is_active ON freee_accounts (is_active);
+
 CREATE TABLE IF NOT EXISTS calendar_bookings (
   id             TEXT PRIMARY KEY,
   connection_id  TEXT NOT NULL REFERENCES google_calendar_connections (id) ON DELETE CASCADE,
