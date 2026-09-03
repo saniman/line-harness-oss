@@ -1,13 +1,18 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { ScenarioWithStepCount } from '@line-crm/db';
 
 vi.mock('@line-crm/db', () => ({
   getScenarios: vi.fn(),
   enrollFriendInScenario: vi.fn(),
+  jstNow: vi.fn(() => '2026-06-10T09:00:00.000+09:00'),
 }));
 
 import { getScenarios, enrollFriendInScenario } from '@line-crm/db';
-import { enrollEventFollowupScenarios, enrollEventParticipants } from './event-followup.js';
+import {
+  enrollEventFollowupScenarios,
+  enrollEventParticipants,
+  switchToCancelledFollowup,
+} from './event-followup.js';
 
 const mockGetScenarios = vi.mocked(getScenarios);
 const mockEnroll = vi.mocked(enrollFriendInScenario);
@@ -59,10 +64,12 @@ const FRIEND_SCENARIO = {
 };
 
 describe('enrollEventFollowupScenarios', () => {
-  const db = {} as D1Database;
+  // 先頭で「キャンセル者向けシナリオの停止」UPDATE を1本打つため prepare 可能なモックが要る
+  let db: D1Database;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    db = makeDb();
     mockEnroll.mockResolvedValue(FRIEND_SCENARIO);
   });
 
@@ -125,6 +132,18 @@ describe('enrollEventFollowupScenarios', () => {
     expect(mockEnroll).toHaveBeenCalledWith(db, 'friend-1', 'sc-1', null);
   });
 
+  it('再申込時はキャンセル者向けシナリオの登録を止めてから参加者向けにenrollする', async () => {
+    // キャンセル → 再申込で「残念でした」と「お礼」が両方届く事故を防ぐ
+    const stopStmt = makeStmt();
+    db = makeDb(stopStmt);
+    mockGetScenarios.mockResolvedValue([scenario({ id: 'sc-1' })]);
+
+    const count = await enrollEventFollowupScenarios(db, 'friend-1', EVENT_START);
+
+    expect(count).toBe(1);
+    expect(stopStmt.bind).toHaveBeenCalledWith(expect.any(String), 'friend-1', 'event_cancelled');
+  });
+
   it('既に登録済み（enrollがnullを返す）の場合はカウントしない', async () => {
     mockGetScenarios.mockResolvedValue([
       scenario({ id: 'sc-1' }),
@@ -134,6 +153,110 @@ describe('enrollEventFollowupScenarios', () => {
     const count = await enrollEventFollowupScenarios(db, 'friend-1', EVENT_START);
     expect(count).toBe(1);
     expect(mockEnroll).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('switchToCancelledFollowup', () => {
+  let db: D1Database;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // EVENT_START(2026-06-13) より前を「現在」にする＝開催前のキャンセル
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-10T00:00:00Z'));
+    db = makeDb();
+    mockEnroll.mockResolvedValue(FRIEND_SCENARIO);
+  });
+
+  afterEach(() => { vi.useRealTimers() });
+
+  it('friend_idがnullの場合は何もしない', async () => {
+    const res = await switchToCancelledFollowup(db, null, EVENT_START);
+    expect(res).toEqual({ stopped: 0, enrolled: 0 });
+    expect(mockGetScenarios).not.toHaveBeenCalled();
+    expect(mockEnroll).not.toHaveBeenCalled();
+  });
+
+  it('参加者向けシナリオを止めてキャンセル者向けシナリオにenrollする', async () => {
+    const stopStmt = makeStmt();
+    stopStmt.run.mockResolvedValue({ meta: { changes: 1 } });
+    db = makeDb(stopStmt);
+    mockGetScenarios.mockResolvedValue([
+      scenario({ id: 'sc-cancel', trigger_type: 'event_cancelled' }),
+    ]);
+
+    const res = await switchToCancelledFollowup(db, 'friend-1', EVENT_START);
+
+    expect(res).toEqual({ stopped: 1, enrolled: 1 });
+    // 参加者向け(event_booking)の登録だけを completed にする
+    expect(stopStmt.bind).toHaveBeenCalledWith(expect.any(String), 'friend-1', 'event_booking');
+    // 開催日アンカーは参加者向けと同じ start_at
+    expect(mockEnroll).toHaveBeenCalledWith(db, 'friend-1', 'sc-cancel', EVENT_START);
+  });
+
+  it('event_cancelled以外のトリガーはキャンセル者向けの対象外になる', async () => {
+    mockGetScenarios.mockResolvedValue([
+      scenario({ id: 'sc-1', trigger_type: 'event_booking' }),
+      scenario({ id: 'sc-2', trigger_type: 'friend_add' }),
+    ]);
+    const res = await switchToCancelledFollowup(db, 'friend-1', EVENT_START);
+    expect(res.enrolled).toBe(0);
+    expect(mockEnroll).not.toHaveBeenCalled();
+  });
+
+  it('非activeなキャンセル者向けシナリオは対象外になる', async () => {
+    mockGetScenarios.mockResolvedValue([
+      scenario({ id: 'sc-cancel', trigger_type: 'event_cancelled', is_active: 0 }),
+    ]);
+    const res = await switchToCancelledFollowup(db, 'friend-1', EVENT_START);
+    expect(res.enrolled).toBe(0);
+    expect(mockEnroll).not.toHaveBeenCalled();
+  });
+
+  it('line_account_idが一致しないキャンセル者向けシナリオは対象外になる', async () => {
+    mockGetScenarios.mockResolvedValue([
+      scenario({ id: 'sc-cancel', trigger_type: 'event_cancelled', line_account_id: 'acc-A' }),
+    ]);
+    const res = await switchToCancelledFollowup(db, 'friend-1', EVENT_START, 'acc-B');
+    expect(res.enrolled).toBe(0);
+    expect(mockEnroll).not.toHaveBeenCalled();
+  });
+
+  it('キャンセル者向けシナリオが1件も無くても参加者向けの停止は行う', async () => {
+    const stopStmt = makeStmt();
+    stopStmt.run.mockResolvedValue({ meta: { changes: 1 } });
+    db = makeDb(stopStmt);
+    mockGetScenarios.mockResolvedValue([]);
+
+    const res = await switchToCancelledFollowup(db, 'friend-1', EVENT_START);
+
+    expect(res).toEqual({ stopped: 1, enrolled: 0 });
+    expect(stopStmt.bind).toHaveBeenCalledWith(expect.any(String), 'friend-1', 'event_booking');
+  });
+
+  it('開催日を過ぎてからのキャンセルは登録しない（停止だけ行う）', async () => {
+    // 過去日アンカーだと next_delivery_at が過去になり次のcronで即時配信されてしまう
+    vi.setSystemTime(new Date('2026-06-14T00:00:00Z'));
+    const stopStmt = makeStmt();
+    stopStmt.run.mockResolvedValue({ meta: { changes: 1 } });
+    db = makeDb(stopStmt);
+    mockGetScenarios.mockResolvedValue([
+      scenario({ id: 'sc-cancel', trigger_type: 'event_cancelled' }),
+    ]);
+
+    const res = await switchToCancelledFollowup(db, 'friend-1', EVENT_START);
+
+    expect(res).toEqual({ stopped: 1, enrolled: 0 });
+    expect(mockEnroll).not.toHaveBeenCalled();
+  });
+
+  it('eventStartAtがnullなら開催日判定をスキップしてenrollする（相対遅延フォールバック）', async () => {
+    mockGetScenarios.mockResolvedValue([
+      scenario({ id: 'sc-cancel', trigger_type: 'event_cancelled' }),
+    ]);
+    const res = await switchToCancelledFollowup(db, 'friend-1', null);
+    expect(res.enrolled).toBe(1);
+    expect(mockEnroll).toHaveBeenCalledWith(db, 'friend-1', 'sc-cancel', null);
   });
 });
 

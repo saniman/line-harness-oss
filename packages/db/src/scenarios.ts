@@ -31,7 +31,14 @@ export function computeAnchoredDeliveryAt(
   );
 }
 
-export type ScenarioTriggerType = 'friend_add' | 'tag_added' | 'manual' | 'event_booking';
+export type ScenarioTriggerType =
+  | 'friend_add'
+  | 'tag_added'
+  | 'manual'
+  /** イベント参加/決済の確定 */
+  | 'event_booking'
+  /** 参加確定後のキャンセル */
+  | 'event_cancelled';
 export type MessageType = 'text' | 'image' | 'flex';
 export type FriendScenarioStatus = 'active' | 'paused' | 'completed';
 

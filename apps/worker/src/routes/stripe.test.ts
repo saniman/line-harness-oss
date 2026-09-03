@@ -36,6 +36,7 @@ vi.mock('../services/events.js', () => ({
 
 vi.mock('../services/event-followup.js', () => ({
   enrollEventFollowupScenarios: vi.fn().mockResolvedValue(0),
+  switchToCancelledFollowup: vi.fn().mockResolvedValue({ stopped: 0, enrolled: 0 }),
 }))
 
 vi.mock('../services/event-friend.js', () => ({
