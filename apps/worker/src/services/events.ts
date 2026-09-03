@@ -41,6 +41,12 @@ export interface EventBookingRow {
   amount: number | null
   stripe_refund_id: string | null
   refund_status: string | null
+  /** 当日現金を受け取った日時。null = 未受領（payment_status='cash' と併せて判定する） */
+  cash_received_at: string | null
+  /** freee が発行した領収書の URL。null = 未発行 */
+  receipt_url: string | null
+  /** 領収書を発行した日時。null = 未発行 */
+  receipt_issued_at: string | null
   created_at: string
   updated_at: string
 }

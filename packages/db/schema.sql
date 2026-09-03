@@ -676,6 +676,12 @@ CREATE TABLE IF NOT EXISTS event_bookings (
   amount INTEGER,
   stripe_refund_id TEXT,
   refund_status TEXT,
+  -- 当日現金を受け取った日時。NULL = 未受領（payment_status='cash' と併せて判定する）
+  cash_received_at TEXT,
+  -- freee が発行した領収書の URL。NULL = 未発行
+  receipt_url TEXT,
+  -- 領収書を発行した日時。NULL = 未発行
+  receipt_issued_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

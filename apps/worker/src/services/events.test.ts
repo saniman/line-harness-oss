@@ -30,6 +30,9 @@ interface EventBookingRow {
   amount: number | null
   stripe_refund_id: string | null
   refund_status: string | null
+  cash_received_at: string | null
+  receipt_url: string | null
+  receipt_issued_at: string | null
   created_at: string
   updated_at: string
 }
@@ -83,6 +86,7 @@ const BOOKING1: EventBookingRow = {
   email: 'yamada@example.com', status: 'confirmed',
   payment_status: 'unpaid', stripe_session_id: null, paid_at: null, amount: null,
   stripe_refund_id: null, refund_status: null,
+  cash_received_at: null, receipt_url: null, receipt_issued_at: null,
   created_at: '', updated_at: '',
 }
 
