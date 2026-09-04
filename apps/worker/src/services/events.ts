@@ -60,6 +60,8 @@ export interface EventBookingRow {
 /** 決済に至らなかった申込に付く cancel_reason。null（本人都合のキャンセル）と区別する。 */
 export const CHECKOUT_ABANDONED = 'checkout_abandoned'
 export const CHECKOUT_EXPIRED = 'checkout_expired'
+/** Stripe セッションを作れなかった＝申込者の離脱ではなく、こちら側の障害。 */
+export const CHECKOUT_CREATE_FAILED = 'checkout_create_failed'
 
 const PARTICIPANT_COUNT_SQL = `(SELECT COUNT(*) FROM event_bookings WHERE event_id = e.id AND status = 'confirmed') AS participant_count`
 
@@ -281,7 +283,7 @@ export async function cancelEventBooking(
 }
 
 /**
- * Stripe Checkout セッションが期限切れになった pending 申込を取り消す。
+ * 決済に至らなかった pending 申込を、理由付きで取り消す。
  *
  * 条件付き UPDATE（status='pending' のときだけ書き換える）にしているのは、
  * Stripe が webhook をリトライするうえ、期限切れ通知が遅れて届く場合があるため。
@@ -289,19 +291,43 @@ export async function cancelEventBooking(
  *
  * @returns 実際に取り消したら true（＝この呼び出しが状態を変えた）
  */
-export async function expireCheckoutBooking(
+async function cancelPendingCheckout(
   db: D1Database,
   bookingId: number,
+  reason: string,
 ): Promise<boolean> {
   const result = await db.prepare(
     `UPDATE event_bookings
         SET status = 'cancelled',
-            cancel_reason = '${CHECKOUT_EXPIRED}',
+            cancel_reason = '${reason}',
             updated_at = datetime('now')
       WHERE id = ? AND status = 'pending'`,
   ).bind(bookingId).run()
   const changes = (result as { meta?: { changes?: number } }).meta?.changes ?? 0
   return changes > 0
+}
+
+/** Stripe Checkout セッションが期限切れになった pending 申込を取り消す。 */
+export async function expireCheckoutBooking(
+  db: D1Database,
+  bookingId: number,
+): Promise<boolean> {
+  return cancelPendingCheckout(db, bookingId, CHECKOUT_EXPIRED)
+}
+
+/**
+ * Stripe セッションを作れなかった pending 申込を取り消す。
+ *
+ * 期限切れ（＝申込者が離脱した）と分けて記録する。鍵の設定ミスや Stripe 障害では
+ * 申込者全員がこの経路に落ちるため、離脱と同じ理由にすると
+ * 参加者一覧の折りたたみの中で「今日は誰も申し込まなかった」と見分けがつかなくなり、
+ * 運営者が障害に気づく手がかりが消える。
+ */
+export async function failCheckoutBooking(
+  db: D1Database,
+  bookingId: number,
+): Promise<boolean> {
+  return cancelPendingCheckout(db, bookingId, CHECKOUT_CREATE_FAILED)
 }
 
 export async function confirmEventBooking(

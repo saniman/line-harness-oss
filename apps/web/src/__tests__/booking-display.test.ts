@@ -74,6 +74,17 @@ describe('決済離脱の判定', () => {
     expect(isCheckoutDropout(row({ status: 'cancelled', cancel_reason: null }))).toBe(false)
   })
 
+  it('Stripe セッション作成の失敗も離脱とみなす', () => {
+    expect(isCheckoutDropout(row({ status: 'cancelled', cancel_reason: 'checkout_create_failed' }))).toBe(true)
+  })
+
+  it('未知の理由は畳まず一覧に出す', () => {
+    // cancel_reason に CHECK 制約を付けていない＝値は今後増える前提。
+    // 知らない理由を無条件で畳むと、例えば運営都合の返金対象キャンセルが
+    // 誰にも気づかれず折りたたみに消える（同ファイルの他の関数と方針を揃える）
+    expect(isCheckoutDropout(row({ status: 'cancelled', cancel_reason: 'admin_cancelled' }))).toBe(false)
+  })
+
   it('確定済みは cancel_reason が残っていても離脱としない', () => {
     // 期限切れ扱いの後に決済が完了したケース。確定を隠すと当日の人数が合わなくなる
     expect(isCheckoutDropout(row({ status: 'confirmed', cancel_reason: 'checkout_expired' }))).toBe(false)
@@ -97,6 +108,13 @@ describe('決済離脱の理由ラベル', () => {
     expect(getDropoutReasonLabel('something_new')).toBe('something_new')
   })
 
+  it('Stripe セッション作成の失敗は離脱と区別できる言葉にする', () => {
+    // 鍵の設定ミスや Stripe 障害を「客が離脱しただけ」と読み違えないようにする
+    const failed = getDropoutReasonLabel('checkout_create_failed')
+    expect(failed).not.toBe(getDropoutReasonLabel('checkout_expired'))
+    expect(failed).not.toContain('checkout')
+  })
+
   it('理由が無い場合も空文字にならない', () => {
     expect(getDropoutReasonLabel(null)).not.toBe('')
   })
@@ -109,12 +127,13 @@ describe('参加者一覧の仕分け', () => {
     row({ status: 'cancelled', name: '黒部', cancel_reason: null }),
     row({ status: 'cancelled', name: '', cancel_reason: 'checkout_abandoned' }),
     row({ status: 'cancelled', name: '', cancel_reason: 'checkout_expired' }),
+    row({ status: 'cancelled', name: '', cancel_reason: 'checkout_create_failed' }),
   ]
 
   it('離脱行を通常の一覧から外す', () => {
     const { active, dropouts } = partitionBookings(bookings)
     expect(active).toHaveLength(3)
-    expect(dropouts).toHaveLength(2)
+    expect(dropouts).toHaveLength(3)
   })
 
   it('確定人数は確定ステータスだけ数える', () => {

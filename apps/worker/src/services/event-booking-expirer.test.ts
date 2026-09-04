@@ -43,7 +43,7 @@ describe('runEventBookingExpirer', () => {
     expect(result.expired).toBe(3);
     expect(updates).toHaveLength(1);
     expect(updates[0].sql).toContain("status = 'cancelled'");
-    expect(updates[0].sql).toContain("cancel_reason = 'checkout_expired'");
+    expect(updates[0].sql).toContain("'checkout_expired'");
   });
 
   it('対象は pending のみ（confirmed / cancelled を巻き込まない）', async () => {
@@ -62,14 +62,26 @@ describe('runEventBookingExpirer', () => {
     expect(updates[0].sql).toContain('paid_at IS NULL');
   });
 
-  it('stripe_session_id が NULL の pending も対象にする', async () => {
-    // Stripe のセッション作成に失敗した申込は session_id が NULL のまま残り、
-    // webhook も届かない（metadata が無い）。この掃除ネットが最後の受け皿になる
+  it('セッションを作れなかった行は理由を出し分ける', async () => {
+    // session_id が NULL ＝ Stripe セッション作成に失敗した行。
+    // 客の離脱と同じ理由にすると障害が折りたたみに隠れる
     const { db, updates } = stubDB(0);
 
     await runEventBookingExpirer(db, { now: NOW });
 
-    expect(updates[0].sql).not.toContain('stripe_session_id');
+    expect(updates[0].sql).toContain('checkout_create_failed');
+    expect(updates[0].sql).toContain('CASE');
+  });
+
+  it('stripe_session_id が NULL の pending も対象にする', async () => {
+    // Stripe のセッション作成に失敗した申込は session_id が NULL のまま残り、
+    // webhook も届かない（metadata が無い）。この掃除ネットが最後の受け皿になる。
+    // session_id は理由の出し分け（CASE）にだけ使い、絞り込みには使わない
+    const { db, updates } = stubDB(0);
+
+    await runEventBookingExpirer(db, { now: NOW });
+
+    expect(updates[0].sql).not.toContain('stripe_session_id IS NOT NULL');
   });
 
   it('now から 2 時間前を締切としてバインドする', async () => {

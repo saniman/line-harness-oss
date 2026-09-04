@@ -51,7 +51,12 @@ export async function runEventBookingExpirer(
     .prepare(
       `UPDATE event_bookings
           SET status = 'cancelled',
-              cancel_reason = 'checkout_expired',
+              -- セッションを作れなかった行（session_id が NULL）は申込者の離脱ではなく
+              -- こちら側の障害。同じ理由にすると折りたたみの中で見分けがつかなくなる
+              cancel_reason = CASE
+                WHEN stripe_session_id IS NULL THEN 'checkout_create_failed'
+                ELSE 'checkout_expired'
+              END,
               updated_at = datetime('now')
         WHERE id IN (
                 SELECT id FROM event_bookings

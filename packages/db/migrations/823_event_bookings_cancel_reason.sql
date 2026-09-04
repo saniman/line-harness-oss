@@ -18,8 +18,9 @@
 --
 -- 値の意味:
 --   NULL                 … 本人都合のキャンセル（従来どおり。返金対象になり得る）
---   'checkout_abandoned' … Stripe 決済画面から戻った（cancel_url 経由で LIFF が自動キャンセル）
---   'checkout_expired'   … Stripe セッションが期限切れ（webhook / cron スイープ）
+--   'checkout_abandoned'     … Stripe 決済画面から戻った（cancel_url 経由で LIFF が自動キャンセル）
+--   'checkout_expired'       … Stripe セッションが期限切れ（webhook / cron スイープ）
+--   'checkout_create_failed' … Stripe セッションを作れなかった（＝こちら側の障害。要確認）
 
 -- キャンセルの理由。NULL = 本人都合のキャンセル。
 ALTER TABLE event_bookings ADD COLUMN cancel_reason TEXT;
@@ -41,9 +42,15 @@ ALTER TABLE event_bookings ADD COLUMN cancel_reason TEXT;
 --    created_at の 2 時間ガードは、このマイグレーションが CI のデプロイ中に流れる点への配慮。
 --    ちょうど決済画面を開いている人の行を巻き込まないようにする
 --    （Stripe の expires_at は 30 分。cron スイープと同じ猶予を取る）。
+--    理由は session_id の有無で出し分ける。session_id が NULL＝Stripe セッションを
+--    作れなかった行で、申込者の離脱ではなくこちら側の障害（鍵ミス・API 障害）。
+--    同じ理由にすると参加者一覧の折りたたみの中で見分けがつかなくなる。
 UPDATE event_bookings
    SET status        = 'cancelled',
-       cancel_reason = 'checkout_expired',
+       cancel_reason = CASE
+                         WHEN stripe_session_id IS NULL THEN 'checkout_create_failed'
+                         ELSE 'checkout_expired'
+                       END,
        updated_at    = datetime('now')
  WHERE status             = 'pending'
    AND payment_status     = 'unpaid'

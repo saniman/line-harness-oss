@@ -44,13 +44,28 @@ export function participantDisplayName(booking: BookingDisplayRow): string {
 }
 
 /**
+ * 折りたたみ対象にする cancel_reason。
+ *
+ * ホワイトリストにしているのは、cancel_reason に CHECK 制約を付けていない
+ * （＝値が今後増える前提）ため。「null 以外は全部畳む」にすると、後から増えた理由
+ * ——たとえば運営都合で返金対象の申込を取り消したケース——が、誰にも気づかれないまま
+ * 折りたたみに消える。知らない値は畳まず一覧に出して気づけるようにする。
+ */
+const CHECKOUT_DROPOUT_REASONS = [
+  'checkout_abandoned',
+  'checkout_expired',
+  'checkout_create_failed',
+]
+
+/**
  * 決済に至らなかった申込か。
  *
  * status も見るのは、期限切れ扱いの後に決済が完了した申込（cancel_reason が
  * 残ったまま confirmed になる可能性がある）を隠さないため。
  */
 export function isCheckoutDropout(booking: BookingDisplayRow): boolean {
-  return booking.status === 'cancelled' && booking.cancel_reason !== null
+  if (booking.status !== 'cancelled') return false
+  return booking.cancel_reason !== null && CHECKOUT_DROPOUT_REASONS.includes(booking.cancel_reason)
 }
 
 /**
@@ -60,6 +75,9 @@ export function isCheckoutDropout(booking: BookingDisplayRow): boolean {
 export function getDropoutReasonLabel(cancelReason: string | null): string {
   if (cancelReason === 'checkout_expired') return '決済画面を離脱（期限切れ）'
   if (cancelReason === 'checkout_abandoned') return '決済画面から戻る'
+  // 申込者の離脱ではなく、こちら側の障害（Stripe の鍵ミス・API 障害）。
+  // 「客が来なかった」と読み違えると原因調査が始まらないので明示的に分ける
+  if (cancelReason === 'checkout_create_failed') return '⚠️ 決済の開始に失敗（要確認）'
   // 想定外の値・null は無言で丸めず、そのまま出して気づけるようにする
   return cancelReason ?? 'キャンセル'
 }

@@ -296,8 +296,12 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
               </span>
             </div>
 
-            {bookings.length === 0 ? (
-              <div className="p-8 text-center text-sm text-gray-400">参加申込はまだありません</div>
+            {/* 表に出すのは active。判定を bookings.length にすると、
+                離脱行しか無いイベントで見出しだけ出て中身ゼロになる */}
+            {active.length === 0 ? (
+              <div className="p-8 text-center text-sm text-gray-400">
+                {dropouts.length > 0 ? '決済に至った申込はまだありません' : '参加申込はまだありません'}
+              </div>
             ) : (
               <>
                 <div className="hidden sm:grid sm:grid-cols-[1fr_100px_100px_80px_140px] gap-4 px-4 py-2 bg-gray-50 border-b border-gray-100 text-xs font-semibold text-gray-500 uppercase tracking-wider">

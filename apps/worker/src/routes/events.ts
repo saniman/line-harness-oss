@@ -12,7 +12,7 @@ import {
   createEventBooking,
   createPendingBooking,
   updateBookingStripeSessionId,
-  expireCheckoutBooking,
+  failCheckoutBooking,
   cancelEventBooking,
   linkBookingToFriend,
 } from '../services/events.js';
@@ -383,7 +383,7 @@ events.post('/api/events/:id/checkout-session', async (c) => {
       // 名前が空の行が残り、Stripe 側にセッションが無いので expired webhook も届かない。
       // ベストエフォート（失敗しても 6h cron の掃除ネットが拾う）。
       try {
-        await expireCheckoutBooking(c.env.DB, booking.id);
+        await failCheckoutBooking(c.env.DB, booking.id);
       } catch (cleanupErr) {
         console.error('[checkout-session] pending cleanup failed:', cleanupErr);
       }

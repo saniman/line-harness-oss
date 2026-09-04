@@ -72,6 +72,7 @@ import {
   confirmEventBooking,
   cancelEventBooking,
   expireCheckoutBooking,
+  failCheckoutBooking,
 } from './events.js'
 
 const mockSwitchToCancelled = vi.mocked(switchToCancelledFollowup)
@@ -498,5 +499,37 @@ describe('expireCheckoutBooking', () => {
     const db = { prepare: vi.fn().mockReturnValue(stmt) } as unknown as D1Database
 
     expect(await expireCheckoutBooking(db, 42)).toBe(false)
+  })
+})
+
+describe('failCheckoutBooking', () => {
+  function makeRunStmt(changes: number) {
+    return {
+      bind: vi.fn().mockReturnThis(),
+      run: vi.fn().mockResolvedValue({ meta: { changes } }),
+      first: vi.fn().mockResolvedValue(null),
+      all: vi.fn().mockResolvedValue({ results: [] }),
+    }
+  }
+
+  it('離脱ではなく checkout_create_failed として記録する', async () => {
+    // Stripe の鍵ミス・API 障害を「客が離脱しただけ」と混ぜると、
+    // 折りたたみに隠れて障害に気づけなくなる
+    const stmt = makeRunStmt(1)
+    const db = { prepare: vi.fn().mockReturnValue(stmt) } as unknown as D1Database
+
+    expect(await failCheckoutBooking(db, 7)).toBe(true)
+    const sql = (db.prepare as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
+    expect(sql).toContain("cancel_reason = 'checkout_create_failed'")
+    expect(sql).not.toContain("'checkout_expired'")
+  })
+
+  it('pending 以外は書き換えない', async () => {
+    const stmt = makeRunStmt(0)
+    const db = { prepare: vi.fn().mockReturnValue(stmt) } as unknown as D1Database
+
+    expect(await failCheckoutBooking(db, 7)).toBe(false)
+    const sql = (db.prepare as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
+    expect(sql).toContain("status = 'pending'")
   })
 })
