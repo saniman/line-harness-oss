@@ -39,12 +39,21 @@ ALTER TABLE event_bookings ADD COLUMN cancel_reason TEXT;
 --    session_id が NULL のまま残り、Stripe 側にセッションが無いので expired webhook も
 --    届かない。この backfill と cron スイープだけが受け皿になる。
 --
---    created_at の 2 時間ガードは、このマイグレーションが CI のデプロイ中に流れる点への配慮。
---    ちょうど決済画面を開いている人の行を巻き込まないようにする
---    （Stripe の expires_at は 30 分。cron スイープと同じ猶予を取る）。
 --    理由は session_id の有無で出し分ける。session_id が NULL＝Stripe セッションを
 --    作れなかった行で、申込者の離脱ではなくこちら側の障害（鍵ミス・API 障害）。
---    同じ理由にすると参加者一覧の折りたたみの中で見分けがつかなくなる。
+--    同じ理由にすると参加者一覧で見分けがつかなくなる。
+--
+--    猶予も session_id の有無で変える（cron スイープと同じルール）。
+--
+--    セッション未作成（-2 hours）… Stripe に到達していないので決済済みの可能性がゼロ。
+--      短くてよい。このマイグレーションは CI のデプロイ中に流れるため、
+--      ちょうど申込中の人を巻き込まない程度は空ける。
+--
+--    セッション作成済み（-4 days）… event_bookings に payment_status='paid' を書くのは
+--      completed webhook だけなので、webhook が遅れている間は「実は決済済みなのに
+--      pending / unpaid」の行が存在しうる。唯一のガードである paid_at も同じ webhook
+--      由来なので保険にならない。Stripe がリトライを打ち切る（3日程度）まで待ってから
+--      取り消し、支払った人の申込を消してしまう事故を防ぐ。
 UPDATE event_bookings
    SET status        = 'cancelled',
        cancel_reason = CASE
@@ -56,7 +65,10 @@ UPDATE event_bookings
    AND payment_status     = 'unpaid'
    AND paid_at           IS NULL
    AND stripe_refund_id  IS NULL
-   AND created_at         < datetime('now', '-2 hours');
+   AND (
+         (stripe_session_id IS NULL     AND created_at < datetime('now', '-2 hours'))
+      OR (stripe_session_id IS NOT NULL AND created_at < datetime('now', '-4 days'))
+       );
 
 -- 2) 名前が空のまま cancelled になっている行（決済画面から戻ったケース）。
 --    名前が入っているキャンセルは本人都合なので cancel_reason は NULL のまま残す。

@@ -54,8 +54,12 @@ export function participantDisplayName(booking: BookingDisplayRow): string {
 const CHECKOUT_DROPOUT_REASONS = [
   'checkout_abandoned',
   'checkout_expired',
-  'checkout_create_failed',
 ]
+
+// checkout_create_failed はあえて含めない。あれは申込者の離脱ではなく
+// こちら側の障害（Stripe の鍵ミス・API 障害）で、鍵を間違えた日は申込者全員が
+// これになる。畳むと一覧が「決済に至った申込はまだありません」になり、
+// 折りたたみを開かない限り警告に到達しない。通常の一覧に出して目に入るようにする。
 
 /**
  * 決済に至らなかった申込か。

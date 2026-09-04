@@ -477,8 +477,9 @@ describe('expireCheckoutBooking', () => {
     expect(result).toBe(true)
     const sql = (db.prepare as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
     expect(sql).toContain("status = 'cancelled'")
-    expect(sql).toContain("cancel_reason = 'checkout_expired'")
-    expect(stmt.bind).toHaveBeenCalledWith(42)
+    // 理由は SQL に埋め込まず bind する（値に ' が入っても壊れないように）
+    expect(sql).toContain('cancel_reason = ?')
+    expect(stmt.bind).toHaveBeenCalledWith('checkout_expired', 42)
   })
 
   it('pending 以外は書き換えない（条件付き UPDATE）', async () => {
@@ -519,9 +520,7 @@ describe('failCheckoutBooking', () => {
     const db = { prepare: vi.fn().mockReturnValue(stmt) } as unknown as D1Database
 
     expect(await failCheckoutBooking(db, 7)).toBe(true)
-    const sql = (db.prepare as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
-    expect(sql).toContain("cancel_reason = 'checkout_create_failed'")
-    expect(sql).not.toContain("'checkout_expired'")
+    expect(stmt.bind).toHaveBeenCalledWith('checkout_create_failed', 7)
   })
 
   it('pending 以外は書き換えない', async () => {

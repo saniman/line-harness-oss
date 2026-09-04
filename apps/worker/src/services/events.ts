@@ -299,10 +299,10 @@ async function cancelPendingCheckout(
   const result = await db.prepare(
     `UPDATE event_bookings
         SET status = 'cancelled',
-            cancel_reason = '${reason}',
+            cancel_reason = ?,
             updated_at = datetime('now')
       WHERE id = ? AND status = 'pending'`,
-  ).bind(bookingId).run()
+  ).bind(reason, bookingId).run()
   const changes = (result as { meta?: { changes?: number } }).meta?.changes ?? 0
   return changes > 0
 }

@@ -323,6 +323,11 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
                       <div>
                         <p className="text-sm font-medium text-gray-900">{participantDisplayName(b)}</p>
                         <p className="text-xs text-gray-400 truncate">{b.email}</p>
+                        {/* 畳まれずにここへ来た cancel_reason は、運営者に確認してほしい理由
+                            （Stripe 障害・未知の値）。文言が出る場所がないと気づけない */}
+                        {b.cancel_reason && (
+                          <p className="text-xs text-red-600 mt-0.5">{getDropoutReasonLabel(b.cancel_reason)}</p>
+                        )}
                         {friendBadge && (
                           <div className="flex items-center gap-2 mt-1">
                             <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${friendBadge.cls}`}>

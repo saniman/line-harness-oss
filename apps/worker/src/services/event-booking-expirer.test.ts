@@ -75,23 +75,21 @@ describe('runEventBookingExpirer', () => {
 
   it('stripe_session_id が NULL の pending も対象にする', async () => {
     // Stripe のセッション作成に失敗した申込は session_id が NULL のまま残り、
-    // webhook も届かない（metadata が無い）。この掃除ネットが最後の受け皿になる。
-    // session_id は理由の出し分け（CASE）にだけ使い、絞り込みには使わない
+    // webhook も届かない（metadata が無い）。この掃除ネットが最後の受け皿になる
     const { db, updates } = stubDB(0);
 
     await runEventBookingExpirer(db, { now: NOW });
 
-    expect(updates[0].sql).not.toContain('stripe_session_id IS NOT NULL');
+    expect(updates[0].sql).toContain('checkout_create_failed');
   });
 
-  it('now から 2 時間前を締切としてバインドする', async () => {
+  it('セッションの有無で 2 つの締切をバインドする', async () => {
     const { db, updates } = stubDB(0);
 
     await runEventBookingExpirer(db, { now: NOW });
 
-    // Stripe の expires_at は 30 分。webhook 遅延との二重処理を避けて猶予を取る。
-    // created_at と同じ datetime('now') 形式（スペース区切り・Z なし）で渡すこと。
-    expect(updates[0].bound[0]).toBe('2026-09-04 10:00:00');
+    // 短い方=セッション未作成用（2時間）／長い方=セッション作成済み用（4日）
+    expect(updates[0].bound).toEqual(['2026-09-04 10:00:00', '2026-08-31 12:00:00']);
   });
 
   it('締切を created_at と比較可能な形式で渡す', async () => {
@@ -101,7 +99,9 @@ describe('runEventBookingExpirer', () => {
 
     // created_at の既定値は datetime('now') = 'YYYY-MM-DD HH:MM:SS'。
     // ISO 形式（'T' 区切り・ミリ秒・Z）を渡すと SQLite の文字列比較が壊れる
-    expect(updates[0].bound[0]).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+    for (const cutoff of updates[0].bound) {
+      expect(cutoff).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+    }
   });
 
   it('猶予内に作られた申込を締切より古いと判定しない', async () => {
@@ -113,12 +113,38 @@ describe('runEventBookingExpirer', () => {
 
     await runEventBookingExpirer(db, { now: NOW });
 
-    const cutoff = updates[0].bound[0] as string;
+    const shortCutoff = updates[0].bound[0] as string;
     const twoMinutesAgo = '2026-09-04 11:58:00'; // NOW の 2 分前 = まだ決済中
     const threeHoursAgo = '2026-09-04 09:00:00'; // 猶予超え = 取り消してよい
 
-    expect(twoMinutesAgo < cutoff).toBe(false);
-    expect(threeHoursAgo < cutoff).toBe(true);
+    expect(twoMinutesAgo < shortCutoff).toBe(false);
+    expect(threeHoursAgo < shortCutoff).toBe(true);
+  });
+
+  it('セッション作成済みの行は Stripe のリトライ期間を過ぎるまで取り消さない', async () => {
+    // payment_status='paid' を書くのは completed webhook だけ。webhook が遅れている間は
+    // 「実は決済済みなのに pending」の行が存在しうる。Stripe がリトライを打ち切る前に
+    // 取り消すと、支払った人が一覧から消え、返金導線（cancelEventBooking）も塞がる。
+    const { db, updates } = stubDB(0);
+
+    await runEventBookingExpirer(db, { now: NOW });
+
+    const longCutoff = updates[0].bound[1] as string;
+    const threeHoursAgo = '2026-09-04 09:00:00'; // webhook 待ちの可能性あり = まだ触らない
+    const fiveDaysAgo = '2026-08-30 12:00:00';   // リトライ期間超え = 取り消してよい
+
+    expect(threeHoursAgo < longCutoff).toBe(false);
+    expect(fiveDaysAgo < longCutoff).toBe(true);
+  });
+
+  it('セッション未作成の行だけは短い猶予で取り消す', async () => {
+    // Stripe に到達していない＝決済済みの可能性がゼロなので待つ理由がない
+    const { db, updates } = stubDB(0);
+
+    await runEventBookingExpirer(db, { now: NOW });
+
+    expect(updates[0].sql).toContain('stripe_session_id IS NULL');
+    expect(updates[0].sql).toContain('stripe_session_id IS NOT NULL');
   });
 
   it('1 tick あたりの件数に上限を設ける', async () => {

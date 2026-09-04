@@ -74,8 +74,10 @@ describe('決済離脱の判定', () => {
     expect(isCheckoutDropout(row({ status: 'cancelled', cancel_reason: null }))).toBe(false)
   })
 
-  it('Stripe セッション作成の失敗も離脱とみなす', () => {
-    expect(isCheckoutDropout(row({ status: 'cancelled', cancel_reason: 'checkout_create_failed' }))).toBe(true)
+  it('Stripe セッション作成の失敗は畳まない（障害に気づけなくなるため）', () => {
+    // 鍵ミスの日は申込者全員がこれになる。畳むと一覧が
+    // 「決済に至った申込はまだありません」になり、開かない限り警告が見えない
+    expect(isCheckoutDropout(row({ status: 'cancelled', cancel_reason: 'checkout_create_failed' }))).toBe(false)
   })
 
   it('未知の理由は畳まず一覧に出す', () => {
@@ -132,8 +134,9 @@ describe('参加者一覧の仕分け', () => {
 
   it('離脱行を通常の一覧から外す', () => {
     const { active, dropouts } = partitionBookings(bookings)
-    expect(active).toHaveLength(3)
-    expect(dropouts).toHaveLength(3)
+    // 障害由来（checkout_create_failed）は畳まないので active 側に残る
+    expect(active).toHaveLength(4)
+    expect(dropouts).toHaveLength(2)
   })
 
   it('確定人数は確定ステータスだけ数える', () => {
@@ -150,6 +153,6 @@ describe('参加者一覧の仕分け', () => {
 
   it('元の並び順を保つ', () => {
     const { active } = partitionBookings(bookings)
-    expect(active.map((b) => b.name)).toEqual(['あきひさ', 'まみ', '黒部'])
+    expect(active.map((b) => b.name)).toEqual(['あきひさ', 'まみ', '黒部', ''])
   })
 })

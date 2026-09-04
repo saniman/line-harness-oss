@@ -5,8 +5,23 @@
 // 設定漏れに気づく手立てが無い。ゴミ行が溜まり続けると参加者一覧が読めなくなるため、
 // webhook が届かなくても最終的に片付く掃除ネットを置く（Issue #56）。
 
-/** Stripe の expires_at（30分）に対する猶予。webhook 遅延との二重処理を避ける。 */
-const EXPIRE_GRACE_HOURS = 2;
+/**
+ * Stripe セッションを作れなかった行の猶予（時間）。
+ * Stripe に到達していない＝決済済みの可能性がゼロなので、待つ理由がない。
+ * Stripe の expires_at（30分）より長めに取り、webhook 遅延との二重処理を避ける。
+ */
+const NO_SESSION_GRACE_HOURS = 2;
+
+/**
+ * セッションを作れた行の猶予（日）。
+ *
+ * event_bookings に payment_status='paid' を書くのは completed webhook だけなので、
+ * webhook が遅れている間は「実は決済済みなのに pending / unpaid」の行が存在しうる。
+ * 唯一のガードである paid_at も同じ webhook 由来なので保険にならない。
+ * Stripe がリトライを打ち切る（3日程度）まで待ってから取り消すことで、
+ * 支払った人の申込を消してしまう事故を防ぐ。
+ */
+const SESSION_GRACE_DAYS = 4;
 
 /** 1 tick で処理する上限。cron の実行時間が読めなくならないようにする。 */
 const BATCH_LIMIT = 200;
@@ -34,17 +49,22 @@ function toSqliteDatetime(d: Date): string {
  * - status='pending' … 確定済み・キャンセル済みを巻き込まない。
  *   pending になるのは checkout-session ルートだけで、無料・当日現金の申込は
  *   /join が confirmed として作るためここには入らない。
- * - paid_at IS NULL  … 入金済みを取り消さないための保険
+ * - paid_at IS NULL  … 入金済みを取り消さないための保険（ただし webhook 由来なので過信しない）
  *
- * stripe_session_id では絞らない。Stripe のセッション作成が失敗した申込は
- * session_id が NULL のまま pending で残り、webhook も届かない（metadata が無い）ため、
- * この掃除ネットだけが最後の受け皿になる。
+ * 猶予は session_id の有無で変える。セッションを作れなかった行は Stripe に到達して
+ * いないので短く、作れた行は「決済済みなのに webhook が届いていない」可能性があるため
+ * Stripe のリトライ期間を過ぎるまで待つ。
  */
 export async function runEventBookingExpirer(
   db: D1Database,
   params: RunEventBookingExpirerParams,
 ): Promise<{ expired: number }> {
-  const cutoff = toSqliteDatetime(new Date(params.now.getTime() - EXPIRE_GRACE_HOURS * 3600_000));
+  const noSessionCutoff = toSqliteDatetime(
+    new Date(params.now.getTime() - NO_SESSION_GRACE_HOURS * 3600_000),
+  );
+  const sessionCutoff = toSqliteDatetime(
+    new Date(params.now.getTime() - SESSION_GRACE_DAYS * 24 * 3600_000),
+  );
 
   // UPDATE ... LIMIT は SQLite のビルドオプション依存なので、サブクエリで件数を絞る。
   const result = await db
@@ -62,11 +82,14 @@ export async function runEventBookingExpirer(
                 SELECT id FROM event_bookings
                  WHERE status = 'pending'
                    AND paid_at IS NULL
-                   AND created_at < ?
+                   AND (
+                         (stripe_session_id IS NULL     AND created_at < ?)
+                      OR (stripe_session_id IS NOT NULL AND created_at < ?)
+                       )
                  LIMIT ${BATCH_LIMIT}
               )`,
     )
-    .bind(cutoff)
+    .bind(noSessionCutoff, sessionCutoff)
     .run();
 
   const changes = (result as { meta?: { changes?: number } }).meta?.changes ?? 0;
