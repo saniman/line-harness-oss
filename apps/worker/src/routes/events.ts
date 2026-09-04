@@ -12,6 +12,7 @@ import {
   createEventBooking,
   createPendingBooking,
   updateBookingStripeSessionId,
+  expireCheckoutBooking,
   cancelEventBooking,
   linkBookingToFriend,
 } from '../services/events.js';
@@ -378,6 +379,14 @@ events.post('/api/events/:id/checkout-session', async (c) => {
       });
     } catch (stripeErr) {
       console.error('Stripe checkout.sessions.create error:', stripeErr);
+      // 作りかけの pending を後始末する。ここで放置すると stripe_session_id が NULL のまま
+      // 名前が空の行が残り、Stripe 側にセッションが無いので expired webhook も届かない。
+      // ベストエフォート（失敗しても 6h cron の掃除ネットが拾う）。
+      try {
+        await expireCheckoutBooking(c.env.DB, booking.id);
+      } catch (cleanupErr) {
+        console.error('[checkout-session] pending cleanup failed:', cleanupErr);
+      }
       return c.json({ success: false, error: 'Stripe API error' }, 500);
     }
 

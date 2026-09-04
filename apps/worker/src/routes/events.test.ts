@@ -30,6 +30,7 @@ vi.mock('../services/events.js', () => ({
   createEventBooking: vi.fn(),
   createPendingBooking: vi.fn(),
   updateBookingStripeSessionId: vi.fn(),
+  expireCheckoutBooking: vi.fn(),
   getEventBookingById: vi.fn(),
   confirmEventBooking: vi.fn(),
   cancelEventBooking: vi.fn(),
@@ -693,6 +694,36 @@ describe('POST /api/events/:id/checkout-session', () => {
       method: 'POST',
       headers: LIFF_HEADERS,
     }, MOCK_ENV)
+    expect(res.status).toBe(500)
+  })
+
+  it('Stripe APIエラー時は作りかけの pending を取り消す', async () => {
+    // セッション作成前に pending 行を作っているため、ここで放置すると
+    // stripe_session_id が NULL のゴミ行になる。webhook は metadata が無いので届かない
+    vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 2 })
+    vi.mocked(eventsService.createPendingBooking).mockResolvedValue(PENDING_BOOKING)
+    vi.mocked(eventsService.expireCheckoutBooking).mockResolvedValue(true)
+    mockCheckoutSessionCreate.mockRejectedValue(new Error('Stripe API error'))
+
+    await app.request('/api/events/1/checkout-session', {
+      method: 'POST',
+      headers: LIFF_HEADERS,
+    }, MOCK_ENV)
+
+    expect(eventsService.expireCheckoutBooking).toHaveBeenCalledWith(MOCK_ENV.DB, PENDING_BOOKING.id)
+  })
+
+  it('取り消しに失敗しても 500 を返す（掃除は cron に任せる）', async () => {
+    vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 2 })
+    vi.mocked(eventsService.createPendingBooking).mockResolvedValue(PENDING_BOOKING)
+    vi.mocked(eventsService.expireCheckoutBooking).mockRejectedValue(new Error('D1 down'))
+    mockCheckoutSessionCreate.mockRejectedValue(new Error('Stripe API error'))
+
+    const res = await app.request('/api/events/1/checkout-session', {
+      method: 'POST',
+      headers: LIFF_HEADERS,
+    }, MOCK_ENV)
+
     expect(res.status).toBe(500)
   })
 })

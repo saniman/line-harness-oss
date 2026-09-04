@@ -54,14 +54,22 @@ describe('runEventBookingExpirer', () => {
     expect(updates[0].sql).toContain("status = 'pending'");
   });
 
-  it('カード決済フローに乗った行だけを対象にする（無料・当日現金を巻き込まない）', async () => {
+  it('入金済みは取り消さない', async () => {
     const { db, updates } = stubDB(0);
 
     await runEventBookingExpirer(db, { now: NOW });
 
-    // 無料 / 当日現金の申込は /join で confirmed として作られ stripe_session_id を持たない
-    expect(updates[0].sql).toContain('stripe_session_id IS NOT NULL');
     expect(updates[0].sql).toContain('paid_at IS NULL');
+  });
+
+  it('stripe_session_id が NULL の pending も対象にする', async () => {
+    // Stripe のセッション作成に失敗した申込は session_id が NULL のまま残り、
+    // webhook も届かない（metadata が無い）。この掃除ネットが最後の受け皿になる
+    const { db, updates } = stubDB(0);
+
+    await runEventBookingExpirer(db, { now: NOW });
+
+    expect(updates[0].sql).not.toContain('stripe_session_id');
   });
 
   it('now から 2 時間前を締切としてバインドする', async () => {
@@ -69,8 +77,36 @@ describe('runEventBookingExpirer', () => {
 
     await runEventBookingExpirer(db, { now: NOW });
 
-    // Stripe の expires_at は 30 分。webhook 遅延との二重処理を避けて猶予を取る
-    expect(updates[0].bound[0]).toBe('2026-09-04T10:00:00.000Z');
+    // Stripe の expires_at は 30 分。webhook 遅延との二重処理を避けて猶予を取る。
+    // created_at と同じ datetime('now') 形式（スペース区切り・Z なし）で渡すこと。
+    expect(updates[0].bound[0]).toBe('2026-09-04 10:00:00');
+  });
+
+  it('締切を created_at と比較可能な形式で渡す', async () => {
+    const { db, updates } = stubDB(0);
+
+    await runEventBookingExpirer(db, { now: NOW });
+
+    // created_at の既定値は datetime('now') = 'YYYY-MM-DD HH:MM:SS'。
+    // ISO 形式（'T' 区切り・ミリ秒・Z）を渡すと SQLite の文字列比較が壊れる
+    expect(updates[0].bound[0]).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+  });
+
+  it('猶予内に作られた申込を締切より古いと判定しない', async () => {
+    // SQLite の BINARY 照合は文字コード順。'T'(0x54) より ' '(0x20) が小さいため、
+    // ISO 形式の締切と datetime 形式の created_at を比べると
+    // 「同じ日付なら常に締切より古い」と誤判定し、決済中の申込まで取り消してしまう。
+    // JS の文字列比較は SQLite の BINARY 照合と同じ順序なのでここで再現できる。
+    const { db, updates } = stubDB(0);
+
+    await runEventBookingExpirer(db, { now: NOW });
+
+    const cutoff = updates[0].bound[0] as string;
+    const twoMinutesAgo = '2026-09-04 11:58:00'; // NOW の 2 分前 = まだ決済中
+    const threeHoursAgo = '2026-09-04 09:00:00'; // 猶予超え = 取り消してよい
+
+    expect(twoMinutesAgo < cutoff).toBe(false);
+    expect(threeHoursAgo < cutoff).toBe(true);
   });
 
   it('1 tick あたりの件数に上限を設ける', async () => {

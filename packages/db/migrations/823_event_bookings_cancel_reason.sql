@@ -31,8 +31,12 @@ ALTER TABLE event_bookings ADD COLUMN cancel_reason TEXT;
 -- paid_at IS NULL / stripe_refund_id IS NULL / payment_status='unpaid' の3条件で守る。
 
 -- 1) 放置された pending（Stripe 画面を閉じたまま戻ってこなかった申込）。
---    stripe_session_id が入っている＝カード決済フローに乗った行だけを対象にする。
---    無料・当日現金の申込は /join で作られ pending にならないため、ここには入らない。
+--    pending になるのは checkout-session ルートだけなので、無料・当日現金の申込
+--    （/join が confirmed として作る）はここに入らない。
+--
+--    stripe_session_id では絞らない。Stripe のセッション作成に失敗した申込は
+--    session_id が NULL のまま残り、Stripe 側にセッションが無いので expired webhook も
+--    届かない。この backfill と cron スイープだけが受け皿になる。
 --
 --    created_at の 2 時間ガードは、このマイグレーションが CI のデプロイ中に流れる点への配慮。
 --    ちょうど決済画面を開いている人の行を巻き込まないようにする
@@ -45,11 +49,16 @@ UPDATE event_bookings
    AND payment_status     = 'unpaid'
    AND paid_at           IS NULL
    AND stripe_refund_id  IS NULL
-   AND stripe_session_id IS NOT NULL
    AND created_at         < datetime('now', '-2 hours');
 
 -- 2) 名前が空のまま cancelled になっている行（決済画面から戻ったケース）。
 --    名前が入っているキャンセルは本人都合なので cancel_reason は NULL のまま残す。
+--
+--    stripe_session_id IS NOT NULL でカード決済フローの行だけに絞る。
+--    payment_status='unpaid' は無料イベントの申込にも当てはまり（'cash' だけが現金）、
+--    /join は name に body.name ?? '' を入れるため、プロフィール取得に失敗した
+--    無料申込は名前が空になり得る。それを本人がキャンセルした行まで離脱扱いにすると、
+--    参加者一覧の折りたたみに隠れてしまう。
 UPDATE event_bookings
    SET cancel_reason = 'checkout_abandoned',
        updated_at    = datetime('now')
@@ -58,4 +67,5 @@ UPDATE event_bookings
    AND TRIM(COALESCE(name, ''))  = ''
    AND payment_status            = 'unpaid'
    AND paid_at                  IS NULL
-   AND stripe_refund_id         IS NULL;
+   AND stripe_refund_id         IS NULL
+   AND stripe_session_id        IS NOT NULL;
