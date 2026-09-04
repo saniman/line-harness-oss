@@ -5,6 +5,12 @@ import { useRouter } from 'next/navigation'
 import { api } from '@/lib/api'
 import type { EventItem, EventBookingItem, FriendWithTags } from '@/lib/api'
 import { getPaymentBadge } from '@/lib/payment-badge'
+import {
+  getStatusBadge,
+  participantDisplayName,
+  partitionBookings,
+  getDropoutReasonLabel,
+} from '@/lib/booking-display'
 import Header from '@/components/layout/header'
 
 const FIELD_CLASS = 'text-sm border border-gray-300 rounded-lg px-3 py-2 w-full focus:outline-none focus:ring-2 focus:ring-green-500'
@@ -267,6 +273,8 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
   }
 
   const full = event.participant_count >= event.capacity
+  // 決済に至らなかった申込を通常の一覧から外す（Issue #56）
+  const { active, dropouts, confirmedCount } = partitionBookings(bookings)
 
   return (
     <div>
@@ -282,7 +290,10 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
           <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
             <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
               <h2 className="text-sm font-semibold text-gray-700">参加者一覧</h2>
-              <span className="text-xs text-gray-500">{bookings.length} 名</span>
+              {/* 全件数だけを出すと定員と混同して「満席では」と誤読される（Issue #56） */}
+              <span className="text-xs text-gray-500">
+                確定 {confirmedCount} 名 <span className="text-gray-300">/</span> 全 {bookings.length} 件
+              </span>
             </div>
 
             {bookings.length === 0 ? (
@@ -296,8 +307,9 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
                   <span>金額</span>
                   <span>申込日時</span>
                 </div>
-                {bookings.map((b) => {
+                {active.map((b) => {
                   const paymentBadge = getPaymentBadge(b)
+                  const statusBadge = getStatusBadge(b.status)
                   const friendBadge = getFriendLinkBadge(b)
                   return (
                     <div key={b.id} className="border-b border-gray-100 last:border-0">
@@ -305,7 +317,7 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
                       className="grid grid-cols-1 sm:grid-cols-[1fr_100px_100px_80px_140px] gap-1 sm:gap-4 px-4 py-3 hover:bg-gray-50 transition-colors"
                     >
                       <div>
-                        <p className="text-sm font-medium text-gray-900">{b.name}</p>
+                        <p className="text-sm font-medium text-gray-900">{participantDisplayName(b)}</p>
                         <p className="text-xs text-gray-400 truncate">{b.email}</p>
                         {friendBadge && (
                           <div className="flex items-center gap-2 mt-1">
@@ -327,8 +339,8 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
                           </div>
                         )}
                       </div>
-                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700 w-fit self-center">
-                        {b.status === 'confirmed' ? '確定' : b.status === 'pending' ? '保留' : 'キャンセル'}
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium w-fit self-center ${statusBadge.cls}`}>
+                        {statusBadge.label}
                       </span>
                       <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium w-fit self-center ${paymentBadge.cls}`}>
                         {paymentBadge.label}
@@ -375,6 +387,27 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
                   )
                 })}
               </>
+            )}
+
+            {/* 決済に至らなかった申込。参加者数の把握を邪魔しないよう既定で畳む（Issue #56） */}
+            {dropouts.length > 0 && (
+              <details className="border-t border-gray-100">
+                <summary className="px-4 py-3 text-xs text-gray-500 cursor-pointer hover:bg-gray-50">
+                  決済に至らなかった申込 {dropouts.length} 件を表示
+                </summary>
+                <div className="pb-2">
+                  {dropouts.map((b) => (
+                    <div
+                      key={b.id}
+                      className="grid grid-cols-1 sm:grid-cols-[1fr_140px_140px] gap-1 sm:gap-4 px-4 py-2 text-gray-400"
+                    >
+                      <p className="text-sm">{participantDisplayName(b)}</p>
+                      <p className="text-xs self-center">{getDropoutReasonLabel(b.cancel_reason)}</p>
+                      <p className="text-xs self-center">{formatJST(b.created_at)}</p>
+                    </div>
+                  ))}
+                </div>
+              </details>
             )}
           </div>
 

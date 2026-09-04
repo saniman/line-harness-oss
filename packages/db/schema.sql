@@ -682,6 +682,9 @@ CREATE TABLE IF NOT EXISTS event_bookings (
   receipt_url TEXT,
   -- 領収書を発行した日時。NULL = 未発行
   receipt_issued_at TEXT,
+  -- キャンセルの理由。NULL = 本人都合のキャンセル
+  -- 'checkout_abandoned' = Stripe 決済画面から戻った / 'checkout_expired' = セッション期限切れ
+  cancel_reason TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

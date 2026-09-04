@@ -32,6 +32,7 @@ vi.mock('../services/events.js', () => ({
   updateBookingStripeSessionId: vi.fn(),
   getEventBookingById: vi.fn(),
   confirmEventBooking: vi.fn(),
+  expireCheckoutBooking: vi.fn(),
 }))
 
 vi.mock('../services/event-followup.js', () => ({
@@ -82,6 +83,7 @@ const PENDING_BOOKING = {
   stripe_session_id: 'cs_test_xxx', paid_at: null, amount: null,
   stripe_refund_id: null, refund_status: null,
   cash_received_at: null, receipt_url: null, receipt_issued_at: null,
+  cancel_reason: null,
   created_at: '', updated_at: '',
 }
 
@@ -222,6 +224,77 @@ describe('POST /api/stripe/webhook', () => {
 
     expect(res.status).toBe(200)
     expect(eventsService.confirmEventBooking).toHaveBeenCalledWith(mockDb, 1, 3000, null, null)
+  })
+
+  it('checkout.session.expired：pending を期限切れとして取り消す', async () => {
+    // 決済画面を閉じたまま戻ってこなかった申込。放置すると名前が空のゴミ行が
+    // 参加者一覧に溜まり続ける（Issue #56）
+    mockConstructEventAsync.mockResolvedValue({
+      type: 'checkout.session.expired',
+      data: { object: MOCK_SESSION },
+    })
+    vi.mocked(eventsService.expireCheckoutBooking).mockResolvedValue(true)
+
+    const res = await app.request('/api/stripe/webhook', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'stripe-signature': 't=123,v1=abc' },
+      body: JSON.stringify({}),
+    }, MOCK_ENV)
+
+    expect(res.status).toBe(200)
+    expect(eventsService.expireCheckoutBooking).toHaveBeenCalledWith(mockDb, 1)
+    // 確定処理は走らせない
+    expect(eventsService.confirmEventBooking).not.toHaveBeenCalled()
+  })
+
+  it('checkout.session.expired：離脱者に LINE 通知を送らない', async () => {
+    // 申し込まなかった人に「キャンセルしました」を送るのはノイズ
+    mockConstructEventAsync.mockResolvedValue({
+      type: 'checkout.session.expired',
+      data: { object: MOCK_SESSION },
+    })
+    vi.mocked(eventsService.expireCheckoutBooking).mockResolvedValue(true)
+
+    await app.request('/api/stripe/webhook', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'stripe-signature': 't=123,v1=abc' },
+      body: JSON.stringify({}),
+    }, MOCK_ENV)
+
+    expect(mockPushMessage).not.toHaveBeenCalled()
+    expect(mockEnrollFollowup).not.toHaveBeenCalled()
+  })
+
+  it('checkout.session.expired：bookingId が無ければ何もせず 200', async () => {
+    mockConstructEventAsync.mockResolvedValue({
+      type: 'checkout.session.expired',
+      data: { object: { ...MOCK_SESSION, metadata: {} } },
+    })
+
+    const res = await app.request('/api/stripe/webhook', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'stripe-signature': 't=123,v1=abc' },
+      body: JSON.stringify({}),
+    }, MOCK_ENV)
+
+    expect(res.status).toBe(200)
+    expect(eventsService.expireCheckoutBooking).not.toHaveBeenCalled()
+  })
+
+  it('checkout.session.expired：既に確定済みで変化なしでも 200（冪等性）', async () => {
+    mockConstructEventAsync.mockResolvedValue({
+      type: 'checkout.session.expired',
+      data: { object: MOCK_SESSION },
+    })
+    vi.mocked(eventsService.expireCheckoutBooking).mockResolvedValue(false)
+
+    const res = await app.request('/api/stripe/webhook', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'stripe-signature': 't=123,v1=abc' },
+      body: JSON.stringify({}),
+    }, MOCK_ENV)
+
+    expect(res.status).toBe(200)
   })
 
   it('正常系：checkout.session.completed以外のイベント → 200（無視）', async () => {

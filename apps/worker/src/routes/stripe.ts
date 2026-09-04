@@ -11,6 +11,7 @@ import {
   getEventById,
   getEventBookingById,
   confirmEventBooking,
+  expireCheckoutBooking,
 } from '../services/events.js';
 import { enrollEventFollowupScenarios } from '../services/event-followup.js';
 import { notifyAdminEventBooking } from '../services/admin-notifier.js';
@@ -209,7 +210,22 @@ stripe.post('/api/stripe/webhook', async (c) => {
     return c.json({ success: false, error: 'Invalid signature' }, 400);
   }
 
-  // 3. checkout.session.completed のみ処理
+  // 3a. checkout.session.expired: 決済画面を閉じたまま戻ってこなかった申込を取り消す。
+  //     放置すると名前が空の pending が参加者一覧に溜まり続ける（Issue #56）。
+  //     離脱者への LINE 通知・アフターフォロー登録は行わない（申込意思が無いためノイズになる）。
+  if (event.type === 'checkout.session.expired') {
+    const expiredSession = event.data.object as Stripe.Checkout.Session;
+    const expiredBookingId = Number(expiredSession.metadata?.bookingId);
+    if (!Number.isFinite(expiredBookingId) || expiredBookingId <= 0) {
+      return c.json({ received: true });
+    }
+    // 条件付き UPDATE。Stripe のリトライや通知遅延で確定済みを巻き戻さない。
+    const expired = await expireCheckoutBooking(c.env.DB, expiredBookingId);
+    console.log(`[stripe webhook] checkout.session.expired booking=${expiredBookingId} expired=${expired}`);
+    return c.json({ received: true });
+  }
+
+  // 3b. 以降は checkout.session.completed のみ処理
   if (event.type !== 'checkout.session.completed') {
     return c.json({ received: true });
   }
