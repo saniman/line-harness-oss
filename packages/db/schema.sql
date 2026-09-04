@@ -190,6 +190,10 @@ CREATE TABLE IF NOT EXISTS auto_replies (
   response_type    TEXT NOT NULL DEFAULT 'text',
   response_content TEXT NOT NULL,
   line_account_id  TEXT DEFAULT NULL,
+  -- 0 = 保留（認可直後の既定）/ 1 = 有効。
+  -- /callback は公開エンドポイントなので、認可を完走した第三者の事業所が
+  -- ここに入りうる。新規接続は必ず 0 で作り、有効化は認証済みの管理画面から行う。
+  -- 再認可（90日ごと）では既存行のトークンだけ更新し is_active は触らない。
   is_active        INTEGER NOT NULL DEFAULT 1,
   created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );

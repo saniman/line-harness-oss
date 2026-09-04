@@ -84,5 +84,107 @@ export async function exchangeCodeForTokens(
     throw new Error(`freee token exchange failed (${res.status}): ${body}`);
   }
 
-  return res.json<FreeeTokens>();
+  const data = await res.json<Partial<FreeeTokens>>();
+
+  // 形を検証しないと後段で new Date(NaN).toISOString() の RangeError や
+  // D1 の bind(undefined) になり、「原因不明の500」に化ける。
+  // 認可コードは既に消費済みでリトライしても直らないため、原因を名指しで残す。
+  if (typeof data.access_token !== 'string' || data.access_token === '') {
+    throw new Error('freee token response: access_token がありません');
+  }
+  if (typeof data.refresh_token !== 'string' || data.refresh_token === '') {
+    throw new Error('freee token response: refresh_token がありません');
+  }
+  if (typeof data.expires_in !== 'number' || !Number.isFinite(data.expires_in)) {
+    throw new Error('freee token response: expires_in が数値ではありません');
+  }
+
+  return data as FreeeTokens;
+}
+
+// ── OAuth state（CSRF 対策）─────────────────────────────────────────────────
+
+/**
+ * state の有効期間。認可画面で事業所を選ぶ時間を見て10分。
+ */
+const STATE_TTL_MS = 10 * 60 * 1000;
+
+function base64UrlEncode(bytes: Uint8Array): string {
+  let binary = '';
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function encodePayload(payload: object): string {
+  return base64UrlEncode(new TextEncoder().encode(JSON.stringify(payload)));
+}
+
+function decodePayload(encoded: string): { n?: string; t?: number } | null {
+  try {
+    const b64 = encoded.replace(/-/g, '+').replace(/_/g, '/');
+    return JSON.parse(atob(b64)) as { n?: string; t?: number };
+  } catch {
+    return null;
+  }
+}
+
+async function sign(secret: string, payload: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(payload));
+  return base64UrlEncode(new Uint8Array(sig));
+}
+
+/** 長さに依存しない比較（署名の一致判定をタイミング差から守る） */
+function safeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+/**
+ * 署名付きの state を発行する。
+ *
+ * DB に保存しない（Workers で状態を持たずに済ませる）代わりに、
+ * client_secret を鍵にした HMAC で「我々が発行したものか」を検証できるようにする。
+ * 発行時刻を載せて有効期間を区切り、使い回しの窓を狭める。
+ */
+export async function createOAuthState(env: Env['Bindings']): Promise<string> {
+  const payload = encodePayload({ n: crypto.randomUUID(), t: Date.now() });
+  const signature = await sign(env.FREEE_CLIENT_SECRET, payload);
+  return `${payload}.${signature}`;
+}
+
+/**
+ * state が我々の発行したもので、かつ期限内かを検証する。
+ *
+ * ⚠️ これは「コールバックが我々の認可導線から来たか」しか保証しない。
+ *    認可導線自体は公開エンドポイントなので、第三者が自分の freee アカウントで
+ *    フローを完走することは防げない。そちらは「新規接続を is_active=0 で保留し、
+ *    有効化は認証済みの管理画面から行う」ことで無害化している（routes/freee.ts）。
+ */
+export async function verifyOAuthState(
+  env: Env['Bindings'],
+  state: string | undefined | null,
+): Promise<boolean> {
+  if (!state) return false;
+
+  const [payload, signature] = state.split('.');
+  if (!payload || !signature) return false;
+
+  const expected = await sign(env.FREEE_CLIENT_SECRET, payload);
+  if (!safeEqual(signature, expected)) return false;
+
+  const decoded = decodePayload(payload);
+  if (!decoded || typeof decoded.t !== 'number') return false;
+
+  const age = Date.now() - decoded.t;
+  // 過去10分以内のみ有効。負値（未来の時刻）も弾く。
+  return age >= 0 && age <= STATE_TTL_MS;
 }

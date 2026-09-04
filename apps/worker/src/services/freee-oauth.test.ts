@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-import { getFreeeAuthUrl, exchangeCodeForTokens } from './freee-oauth.js';
+import {
+  getFreeeAuthUrl,
+  exchangeCodeForTokens,
+  createOAuthState,
+  verifyOAuthState,
+} from './freee-oauth.js';
 
 const ENV = {
   FREEE_CLIENT_ID: 'client-abc',
@@ -139,6 +144,26 @@ describe('exchangeCodeForTokens', () => {
     await expect(exchangeCodeForTokens(ENV, 'bad-code')).rejects.toThrow(/invalid_grant/);
   });
 
+  it('access_token が欠けたレスポンスは例外にする', async () => {
+    // 形を検証しないと後段で new Date(NaN) や bind(undefined) になり、
+    // 「原因不明の500」に化ける（認可コードは消費済みなのでリトライしても直らない）
+    fetchMock.mockResolvedValue(okResponse({ refresh_token: 'rt-1', expires_in: 21600 }));
+    await expect(exchangeCodeForTokens(ENV, 'the-code')).rejects.toThrow(/access_token/);
+  });
+
+  it('refresh_token が欠けたレスポンスは例外にする', async () => {
+    fetchMock.mockResolvedValue(okResponse({ access_token: 'at-1', expires_in: 21600 }));
+    await expect(exchangeCodeForTokens(ENV, 'the-code')).rejects.toThrow(/refresh_token/);
+  });
+
+  it('expires_in が数値でないレスポンスは例外にする', async () => {
+    // new Date(NaN).toISOString() は RangeError になる
+    fetchMock.mockResolvedValue(okResponse({
+      access_token: 'at-1', refresh_token: 'rt-1', expires_in: 'six hours',
+    }));
+    await expect(exchangeCodeForTokens(ENV, 'the-code')).rejects.toThrow(/expires_in/);
+  });
+
   it('例外メッセージに client_secret を含めない', async () => {
     // エラーは Workers Logs に残る。secret が載ると閲覧権限だけで漏れる。
     fetchMock.mockResolvedValue({
@@ -152,5 +177,75 @@ describe('exchangeCodeForTokens', () => {
         message: expect.not.stringContaining('super-secret-value') as unknown as string,
       }),
     );
+  });
+});
+
+describe('OAuth state の署名と検証', () => {
+  it('署名付き state を発行できる', async () => {
+    const state = await createOAuthState(ENV);
+    expect(typeof state).toBe('string');
+    expect(state.length).toBeGreaterThan(0);
+  });
+
+  it('自分で発行した state は検証を通る', async () => {
+    const state = await createOAuthState(ENV);
+    expect(await verifyOAuthState(ENV, state)).toBe(true);
+  });
+
+  it('毎回ちがう state を発行する（使い回しを防ぐ）', async () => {
+    const a = await createOAuthState(ENV);
+    const b = await createOAuthState(ENV);
+    expect(a).not.toBe(b);
+  });
+
+  it('未署名の適当な文字列は拒否する', async () => {
+    expect(await verifyOAuthState(ENV, 'attacker-made-this')).toBe(false);
+  });
+
+  it('空文字・undefined は拒否する', async () => {
+    expect(await verifyOAuthState(ENV, '')).toBe(false);
+    expect(await verifyOAuthState(ENV, undefined)).toBe(false);
+  });
+
+  it('署名を改ざんした state は拒否する', async () => {
+    const state = await createOAuthState(ENV);
+    const [payload] = state.split('.');
+    const tampered = `${payload}.YWJjZGVm`;
+    expect(await verifyOAuthState(ENV, tampered)).toBe(false);
+  });
+
+  it('中身を差し替えた state は拒否する（署名が合わなくなる）', async () => {
+    const state = await createOAuthState(ENV);
+    const [, sig] = state.split('.');
+    const forgedPayload = btoa(JSON.stringify({ n: 'forged', t: Date.now() }))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    expect(await verifyOAuthState(ENV, `${forgedPayload}.${sig}`)).toBe(false);
+  });
+
+  it('別のシークレットで署名された state は拒否する', async () => {
+    const otherEnv = { ...ENV, FREEE_CLIENT_SECRET: 'someone-elses-secret' } as typeof ENV;
+    const state = await createOAuthState(otherEnv);
+    expect(await verifyOAuthState(ENV, state)).toBe(false);
+  });
+
+  it('発行から10分を超えた state は拒否する', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-09-04T10:00:00Z'));
+      const state = await createOAuthState(ENV);
+      expect(await verifyOAuthState(ENV, state)).toBe(true);
+
+      vi.setSystemTime(new Date('2026-09-04T10:10:01Z'));
+      expect(await verifyOAuthState(ENV, state)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('未来の時刻が入った state は拒否する（時計いじりへの保険）', async () => {
+    const forged = btoa(JSON.stringify({ n: 'x', t: Date.now() + 60 * 60_000 }))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    // 署名が無いので当然落ちるが、署名できたとしても時刻で弾く意図を明示する
+    expect(await verifyOAuthState(ENV, `${forged}.sig`)).toBe(false);
   });
 });
