@@ -327,6 +327,34 @@ CREATE TABLE IF NOT EXISTS google_calendar_connections (
   updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
+-- ============================================================
+-- freee 連携（OAuth2 トークン保管）
+-- ============================================================
+-- ⚠️ freee のリフレッシュトークンは「1回限り・有効期限90日」。
+--    リフレッシュのたびに新しい refresh_token が発行され、古い値は無効になる。
+--    更新時は必ず refresh_token も差し替えること（Google のように使い回せない）。
+CREATE TABLE IF NOT EXISTS freee_accounts (
+  id               TEXT PRIMARY KEY,
+  company_id       INTEGER,
+  company_name     TEXT,
+  access_token     TEXT,
+  refresh_token    TEXT,
+  token_expires_at TEXT,
+  -- 0 = 保留（認可直後の既定）/ 1 = 有効。
+  -- /callback は公開エンドポイントなので、認可を完走した第三者の事業所が
+  -- ここに入りうる。新規接続は必ず 0 で作り、有効化は認証済みの管理画面から行う。
+  -- 再認可（90日ごと）では既存行のトークンだけ更新し is_active は触らない。
+  is_active        INTEGER NOT NULL DEFAULT 0,
+  created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_freee_accounts_is_active ON freee_accounts (is_active);
+-- 同じ事業所の接続を1本に保つ。再認可の同時実行で行が重複するのを DB 側で防ぐ
+-- （UPSERT の ON CONFLICT ターゲットにもなる）。company_id 未取得の行は対象外。
+CREATE UNIQUE INDEX IF NOT EXISTS idx_freee_accounts_company_id
+  ON freee_accounts (company_id) WHERE company_id IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS calendar_bookings (
   id             TEXT PRIMARY KEY,
   connection_id  TEXT NOT NULL REFERENCES google_calendar_connections (id) ON DELETE CASCADE,

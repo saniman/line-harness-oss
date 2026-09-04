@@ -53,6 +53,12 @@ LIFF_BASE_URL = "https://liff.line.me/1661159603-5qlDj5wV"
 # STRIPE_SECRET_KEY        - Stripe ダッシュボード > APIキー
 # STRIPE_WEBHOOK_SECRET    - Stripe ダッシュボード > Webhook > エンドポイントの署名シークレット
 
+# freee シークレット（wrangler secret put で設定する）
+# 詳細な取得手順: docs/setup/freee-setup.md
+# FREEE_CLIENT_ID          - freee アプリストア > 開発者ページ > アプリ詳細
+# FREEE_CLIENT_SECRET      - 同上
+# FREEE_REDIRECT_URI       - 省略可。既定は https://api.walover-co.work/api/integrations/freee/callback
+
 # ═══════════════════════════════════════════════════════════════
 # 本番環境 (aiagent.mini@)
 # 使い方: npx wrangler deploy --env production --name your-worker-name
