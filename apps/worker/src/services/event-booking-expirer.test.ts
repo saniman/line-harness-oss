@@ -62,6 +62,18 @@ describe('runEventBookingExpirer', () => {
     expect(updates[0].sql).toContain('paid_at IS NULL');
   });
 
+  it('お金にまつわる守りを backfill と同じ強さにする', async () => {
+    // 恒常的に動く cron が、1 回きりのマイグレーションより緩いのはおかしい。
+    // paid_at は completed webhook でしか書かれず、当日現金の受領（cash_received_at）では
+    // 立たないため、paid_at だけを頼りにすると将来の経路変更で金銭事故になる
+    const { db, updates } = stubDB(0);
+
+    await runEventBookingExpirer(db, { now: NOW });
+
+    expect(updates[0].sql).toContain("payment_status = 'unpaid'");
+    expect(updates[0].sql).toContain('stripe_refund_id IS NULL');
+  });
+
   it('セッションを作れなかった行は理由を出し分ける', async () => {
     // session_id が NULL ＝ Stripe セッション作成に失敗した行。
     // 客の離脱と同じ理由にすると障害が折りたたみに隠れる

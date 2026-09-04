@@ -49,7 +49,11 @@ function toSqliteDatetime(d: Date): string {
  * - status='pending' … 確定済み・キャンセル済みを巻き込まない。
  *   pending になるのは checkout-session ルートだけで、無料・当日現金の申込は
  *   /join が confirmed として作るためここには入らない。
- * - paid_at IS NULL  … 入金済みを取り消さないための保険（ただし webhook 由来なので過信しない）
+ * - お金の守りは backfill（823 マイグレーション）と同じ 3 条件にする。
+ *   payment_status='unpaid' / paid_at IS NULL / stripe_refund_id IS NULL。
+ *   恒常的に動く cron が 1 回きりの backfill より緩いのはおかしい。paid_at は
+ *   completed webhook でしか書かれず、当日現金の受領（cash_received_at）では立たないため、
+ *   paid_at だけを頼りにすると経路が増えたときに金銭事故になる。
  *
  * 猶予は session_id の有無で変える。セッションを作れなかった行は Stripe に到達して
  * いないので短く、作れた行は「決済済みなのに webhook が届いていない」可能性があるため
@@ -81,7 +85,9 @@ export async function runEventBookingExpirer(
         WHERE id IN (
                 SELECT id FROM event_bookings
                  WHERE status = 'pending'
+                   AND payment_status = 'unpaid'
                    AND paid_at IS NULL
+                   AND stripe_refund_id IS NULL
                    AND (
                          (stripe_session_id IS NULL     AND created_at < ?)
                       OR (stripe_session_id IS NOT NULL AND created_at < ?)

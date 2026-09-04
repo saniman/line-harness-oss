@@ -339,7 +339,12 @@ export async function confirmEventBooking(
 ): Promise<void> {
   // cancel_reason も消す。cron スイープや期限切れ webhook が先に取り消した後で
   // 決済完了が届くケースがあり、理由が残ると確定行なのに参加者一覧から畳まれてしまう。
+  //
+  // ただし返金済み（stripe_refund_id あり）は復活させない。Stripe は webhook が
+  // 失敗すると最大3日リトライするため、「確定 → 本人がキャンセル＋返金 → リトライ到着」
+  // の順で届くことがある。無条件 UPDATE だと返金済みの申込が confirmed/paid に戻り、
+  // 定員まで食ってしまう。取り消し後に決済が完了したケース（返金なし）は従来どおり復旧する。
   await db.prepare(
-    "UPDATE event_bookings SET status = 'confirmed', payment_status = 'paid', paid_at = datetime('now'), amount = ?, name = COALESCE(?, name), email = COALESCE(?, email), cancel_reason = NULL, updated_at = datetime('now') WHERE id = ?",
+    "UPDATE event_bookings SET status = 'confirmed', payment_status = 'paid', paid_at = datetime('now'), amount = ?, name = COALESCE(?, name), email = COALESCE(?, email), cancel_reason = NULL, updated_at = datetime('now') WHERE id = ? AND stripe_refund_id IS NULL",
   ).bind(amountTotal, name ?? null, email ?? null, bookingId).run()
 }

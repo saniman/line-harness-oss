@@ -297,6 +297,15 @@ describe('confirmEventBooking', () => {
     expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining("status = 'confirmed'"))
   })
 
+  it('返金済みの申込は復活させない', async () => {
+    // notifyAdminEventBooking が try/catch されていないため LINE 障害で webhook が 500 になり、
+    // Stripe は最大3日リトライする。その間に本人がキャンセル＋返金していると、
+    // リトライで confirmed/paid に戻り定員まで食ってしまう
+    const db = makeDb(makeStmt(null))
+    await confirmEventBooking(db, 1, 3000)
+    expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining('stripe_refund_id IS NULL'))
+  })
+
   it('cancel_reason を消す（期限切れ扱いの後に決済が完了したケース）', async () => {
     // cron スイープ／期限切れ webhook が先に取り消した後で決済完了が届くことがある。
     // 理由が残ると確定行なのに参加者一覧から畳まれてしまう
