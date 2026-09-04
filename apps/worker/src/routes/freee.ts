@@ -102,6 +102,27 @@ freee.get('/api/integrations/freee/callback', async (c) => {
 
   try {
     const tokens = await exchangeCodeForTokens(c.env, code);
+
+    // ⚠️ company_id が無い接続は保存しない。
+    //    (1) 部分UNIQUE(company_id IS NOT NULL) の対象外になるため UPSERT が効かず、
+    //        再認可のたびに行が増え、古い行が死んだ refresh_token を抱えたまま残る。
+    //    (2) company_name も未取得なので、#44 の有効化画面で
+    //        「自分の接続」と「第三者の接続」を見分ける手がかりが無くなる。
+    //        保留にして目視確認させる、という防御そのものが成立しなくなる。
+    //    見分けのつかない行を作るくらいなら、原因を名指しして止める。
+    if (tokens.company_id == null) {
+      console.error('[freee callback] company_id が取得できないため保存を中止しました');
+      return c.html(
+        page(
+          'エラー',
+          `<p>freee から<strong>事業所ID</strong>が取得できなかったため、連携を保存しませんでした。</p>
+           <p>認可のときに<strong>事業所の選択</strong>が表示されたか確認し、もう一度お試しください。
+           繰り返し失敗する場合は、freee アプリのスコープ設定をご確認ください。</p>`,
+        ),
+        500,
+      );
+    }
+
     // ⚠️ 期限も JST(+09:00) で保存する。SQLite の日時比較は文字列比較なので、
     //    ここだけ UTC の Z にすると created_at 等との比較が9時間ずれる。
     const expiresAt = toJstString(new Date(Date.now() + tokens.expires_in * 1000));
@@ -125,7 +146,7 @@ freee.get('/api/integrations/freee/callback', async (c) => {
       RETURNING id, is_active
     `).bind(
       crypto.randomUUID(),
-      tokens.company_id ?? null,
+      tokens.company_id,
       tokens.access_token,
       tokens.refresh_token,
       expiresAt,

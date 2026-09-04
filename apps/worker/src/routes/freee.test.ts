@@ -84,6 +84,13 @@ describe('GET /api/integrations/freee/auth', () => {
     expect(mockGetFreeeAuthUrl.mock.calls[0][1]).toBe('signed-state')
   })
 
+  it('認可URLの組み立てが失敗したら 500 を返す（設定漏れ）', async () => {
+    mockGetFreeeAuthUrl.mockImplementation(() => { throw new Error('FREEE_CLIENT_ID が未設定です') })
+    const { app, env } = makeApp()
+    const res = await app.request('/api/integrations/freee/auth', {}, env)
+    expect(res.status).toBe(500)
+  })
+
   it('redirect=1 ならブラウザをリダイレクトする', async () => {
     const { app, env } = makeApp()
     const res = await app.request('/api/integrations/freee/auth?redirect=1', {}, env)
@@ -269,15 +276,26 @@ describe('GET /api/integrations/freee/callback', () => {
     expect(html).not.toContain('有効化')
   })
 
-  it('company_id が返らなくても保存できる', async () => {
+  it('company_id が返らなければ保存せずエラーにする', async () => {
+    // company_id が NULL だと部分UNIQUEの対象外になり UPSERT が効かず、
+    // 再認可のたびに行が増える。さらに company_name も空なので、
+    // #44 の有効化画面で自分の接続と第三者の接続を見分けられなくなる。
+    mockExchangeCodeForTokens.mockResolvedValue({ ...TOKENS, company_id: undefined })
+    const { app, env, db } = makeApp()
+
+    const res = await app.request('/api/integrations/freee/callback?code=the-code&state=signed-state', {}, env)
+
+    expect(res.status).toBe(500)
+    expect(db.prepare).not.toHaveBeenCalled()
+  })
+
+  it('company_id が無いときのエラー画面は原因を名指しする', async () => {
     mockExchangeCodeForTokens.mockResolvedValue({ ...TOKENS, company_id: undefined })
     const { app, env } = makeApp()
 
     const res = await app.request('/api/integrations/freee/callback?code=the-code&state=signed-state', {}, env)
-
-    expect(res.status).toBe(200)
-    expect(allSql()).toContain('INSERT INTO freee_accounts')
-    expect(allBound()).toContain(null)
+    const html = await res.text()
+    expect(html).toContain('事業所')
   })
 
   // ── JST（レビュー指摘④）────────────────────────────────────

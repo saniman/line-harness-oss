@@ -46,6 +46,12 @@ function redirectUri(env: Env['Bindings']): string {
  * `scope` は付けない（freee はアプリ登録側でスコープを決めるため。上部コメント参照）。
  */
 export function getFreeeAuthUrl(env: Env['Bindings'], state?: string): string {
+  // 未設定のまま組み立てると client_id=undefined で freee に飛び、
+  // freee 側の「原因の分からないエラー画面」に着地する。設定漏れだと分かる形で落とす。
+  if (!env.FREEE_CLIENT_ID) {
+    throw new Error('FREEE_CLIENT_ID が未設定です（wrangler secret put で設定してください）');
+  }
+
   const params = new URLSearchParams({
     response_type: 'code',
     client_id: env.FREEE_CLIENT_ID,

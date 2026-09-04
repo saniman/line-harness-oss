@@ -62,6 +62,18 @@ describe('getFreeeAuthUrl', () => {
     );
   });
 
+  it('FREEE_CLIENT_ID が未設定なら例外を投げる', () => {
+    // 未設定のまま組み立てると client_id=undefined で freee に飛び、
+    // 原因の分からないエラー画面になる。設定漏れだと分かる形で落とす。
+    const noId = { ...ENV, FREEE_CLIENT_ID: undefined } as unknown as typeof ENV;
+    expect(() => getFreeeAuthUrl(noId)).toThrow(/FREEE_CLIENT_ID/);
+  });
+
+  it('FREEE_CLIENT_ID が空文字でも例外を投げる', () => {
+    const emptyId = { ...ENV, FREEE_CLIENT_ID: '' } as unknown as typeof ENV;
+    expect(() => getFreeeAuthUrl(emptyId)).toThrow(/FREEE_CLIENT_ID/);
+  });
+
   it('client_secret を認可URLに載せない', () => {
     // 認可URLはブラウザのアドレスバーに出る。secret が載ったら漏洩。
     expect(getFreeeAuthUrl(ENV)).not.toContain('super-secret-value');
@@ -242,10 +254,19 @@ describe('OAuth state の署名と検証', () => {
     }
   });
 
-  it('未来の時刻が入った state は拒否する（時計いじりへの保険）', async () => {
-    const forged = btoa(JSON.stringify({ n: 'x', t: Date.now() + 60 * 60_000 }))
-      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-    // 署名が無いので当然落ちるが、署名できたとしても時刻で弾く意図を明示する
-    expect(await verifyOAuthState(ENV, `${forged}.sig`)).toBe(false);
+  it('未来の時刻で署名された state は拒否する（age >= 0 のガードを通す）', async () => {
+    // 「署名が無いので落ちる」テストでは age >= 0 のガードを通らず、
+    // ガードを消してもテストが緑のままになる（空振り）。
+    // 正しい署名を持つ未来日付の state を作って、時刻判定だけで落ちることを確かめる。
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-09-04T11:00:00Z'));
+      const futureState = await createOAuthState(ENV); // t = 11:00 で署名
+
+      vi.setSystemTime(new Date('2026-09-04T10:00:00Z')); // now = 10:00 → age = -1時間
+      expect(await verifyOAuthState(ENV, futureState)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
