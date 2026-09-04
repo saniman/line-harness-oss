@@ -20,7 +20,7 @@
  */
 
 import { Hono } from 'hono';
-import { jstNow } from '@line-crm/db';
+import { jstNow, toJstString } from '@line-crm/db';
 import {
   getFreeeAuthUrl,
   exchangeCodeForTokens,
@@ -79,8 +79,17 @@ freee.get('/api/integrations/freee/callback', async (c) => {
 
   // ⚠️ トークン交換より前に state を検証する。
   //    先に交換すると、他人が持ち込んだ認可コードを消費してしまう。
-  // state 自体が無いケースも明示的に弾く（検証関数の実装に依存させない）
-  if (!state || !(await verifyOAuthState(c.env, state))) {
+  // state 自体が無いケースも明示的に弾く（検証関数の実装に依存させない）。
+  // FREEE_CLIENT_SECRET 未設定だと HMAC の importKey が例外を投げるため、
+  // 例外も「検証に通らなかった」として扱い、素の 500 を出さない。
+  let stateOk = false;
+  try {
+    stateOk = !!state && (await verifyOAuthState(c.env, state));
+  } catch (err) {
+    console.error('[freee callback] state の検証でエラー（シークレット未設定の可能性）:', err);
+  }
+
+  if (!stateOk) {
     console.warn('[freee callback] state の検証に失敗したため中断しました');
     return c.html(
       page(
@@ -93,54 +102,44 @@ freee.get('/api/integrations/freee/callback', async (c) => {
 
   try {
     const tokens = await exchangeCodeForTokens(c.env, code);
-    const expiresAt = new Date(Date.now() + tokens.expires_in * 1000).toISOString();
+    // ⚠️ 期限も JST(+09:00) で保存する。SQLite の日時比較は文字列比較なので、
+    //    ここだけ UTC の Z にすると created_at 等との比較が9時間ずれる。
+    const expiresAt = toJstString(new Date(Date.now() + tokens.expires_in * 1000));
     const now = jstNow();
 
-    // 同じ事業所の接続が既にあれば UPDATE する。
-    // 再認可は90日ごとの正常な運用なので、INSERT し続けると
-    // 「死んだ refresh_token を持つ古い行」が is_active=1 のまま残ってしまう。
-    // is_active は触らない（稼働中の連携を再認可で止めないため）。
-    const existing = tokens.company_id
-      ? await c.env.DB
-          .prepare('SELECT id FROM freee_accounts WHERE company_id = ? LIMIT 1')
-          .bind(tokens.company_id)
-          .first<{ id: string }>()
-      : null;
+    // 1文の UPSERT で保存する。SELECT→INSERT に分けると、同じ事業所の再認可が
+    // 同時に走ったとき両方 INSERT され、「死んだ refresh_token を持つ行」が
+    // 残ってしまう（この処理が防ごうとしている状態そのもの）。
+    //
+    // ⚠️ is_active は INSERT 時のみ 0（保留）。ON CONFLICT 側では触らない。
+    //    再認可のたびに 0 へ戻すと、稼働中の連携が90日ごとに止まる。
+    const row = await c.env.DB.prepare(`
+      INSERT INTO freee_accounts
+        (id, company_id, access_token, refresh_token, token_expires_at, is_active, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+      ON CONFLICT(company_id) WHERE company_id IS NOT NULL DO UPDATE SET
+        access_token     = excluded.access_token,
+        refresh_token    = excluded.refresh_token,
+        token_expires_at = excluded.token_expires_at,
+        updated_at       = excluded.updated_at
+      RETURNING id, is_active
+    `).bind(
+      crypto.randomUUID(),
+      tokens.company_id ?? null,
+      tokens.access_token,
+      tokens.refresh_token,
+      expiresAt,
+      now,
+      now,
+    ).first<{ id: string; is_active: number }>();
 
-    let id: string;
-    let isNew: boolean;
-
-    if (existing) {
-      id = existing.id;
-      isNew = false;
-      await c.env.DB.prepare(`
-        UPDATE freee_accounts
-           SET access_token = ?, refresh_token = ?, token_expires_at = ?, updated_at = ?
-         WHERE id = ?
-      `).bind(tokens.access_token, tokens.refresh_token, expiresAt, now, id).run();
-    } else {
-      id = crypto.randomUUID();
-      isNew = true;
-      // ⚠️ is_active は立てない（保留）。公開エンドポイントなので自動有効化しない。
-      await c.env.DB.prepare(`
-        INSERT INTO freee_accounts
-          (id, company_id, access_token, refresh_token, token_expires_at, is_active, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, 0, ?, ?)
-      `).bind(
-        id,
-        tokens.company_id ?? null,
-        tokens.access_token,
-        tokens.refresh_token,
-        expiresAt,
-        now,
-        now,
-      ).run();
-    }
+    const id = row?.id ?? '(不明)';
+    const isPending = !row || row.is_active === 0;
 
     // トークンはログに出さない。追跡は接続IDで行う。
-    console.log(`[freee callback] 連携を${isNew ? '作成（保留）' : '更新'}:`, id);
+    console.log(`[freee callback] 連携を保存${isPending ? '（保留）' : '（有効）'}:`, id);
 
-    const note = isNew
+    const note = isPending
       ? '<p>この接続はまだ<strong>保留</strong>です。管理画面から<strong>有効化</strong>してください。</p>'
       : '<p>既存の接続のトークンを更新しました。そのままご利用いただけます。</p>';
 

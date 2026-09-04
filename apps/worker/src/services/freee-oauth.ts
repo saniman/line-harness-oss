@@ -164,10 +164,14 @@ export async function createOAuthState(env: Env['Bindings']): Promise<string> {
 /**
  * state が我々の発行したもので、かつ期限内かを検証する。
  *
- * ⚠️ これは「コールバックが我々の認可導線から来たか」しか保証しない。
- *    認可導線自体は公開エンドポイントなので、第三者が自分の freee アカウントで
- *    フローを完走することは防げない。そちらは「新規接続を is_active=0 で保留し、
- *    有効化は認証済みの管理画面から行う」ことで無害化している（routes/freee.ts）。
+ * ⚠️ **これは第三者の登録を防ぐものではない。**
+ *    state を配る /auth 自体が無認証の公開エンドポイントなので、攻撃者はそれを叩いて
+ *    正規の state を取得し、自分の freee 事業所で認可を完走できる（署名検証は通る）。
+ *    さらに state は DB に記録していないため、10分の有効期間内は再利用できる。
+ *
+ *    ここで防げるのは「偽造・改ざん・期限切れの state を持つコールバック」だけ。
+ *    第三者の登録を無害化しているのは routes/freee.ts 側の
+ *    「新規接続は is_active=0 で保留し、有効化は認証済みの管理画面から行う」方。
  */
 export async function verifyOAuthState(
   env: Env['Bindings'],

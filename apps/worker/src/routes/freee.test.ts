@@ -27,15 +27,14 @@ function makeStmt(firstResult: unknown = null) {
 let stmts: ReturnType<typeof makeStmt>[]
 let sqls: string[]
 
-/** @param existingRow 同じ company_id の既存接続（再認可のテスト用） */
-function makeApp(existingRow: unknown = null) {
+/** @param upsertResult UPSERT の RETURNING が返す行（既存接続の再認可を模す） */
+function makeApp(upsertResult: unknown = { id: 'conn-new', is_active: 0 }) {
   stmts = []
   sqls = []
   const db = {
     prepare: vi.fn().mockImplementation((sql: string) => {
       sqls.push(sql)
-      // 最初の prepare は既存接続の検索（SELECT）
-      const s = makeStmt(sqls.length === 1 ? existingRow : null)
+      const s = makeStmt(upsertResult)
       stmts.push(s)
       return s
     }),
@@ -234,35 +233,51 @@ describe('GET /api/integrations/freee/callback', () => {
   // 再認可は90日ごとの正常運用。INSERT し続けると死んだ refresh_token を持つ
   // 古い行が残り、is_active=1 の検索がそれを拾ってしまう。
 
-  it('同じ company_id の接続が既にあれば UPDATE してトークンを差し替える', async () => {
+  it('SELECT してから INSERT せず、1文の UPSERT で保存する（同時実行で行が重複しないため）', async () => {
+    mockExchangeCodeForTokens.mockResolvedValue(TOKENS)
+    const { app, env, db } = makeApp()
+
+    await app.request('/api/integrations/freee/callback?code=the-code&state=signed-state', {}, env)
+
+    // SELECT→INSERT の2文だと、同時に再認可が走ったとき両方 INSERT されうる
+    expect(db.prepare).toHaveBeenCalledTimes(1)
+    expect(allSql()).toContain('INSERT INTO freee_accounts')
+    expect(allSql()).toContain('ON CONFLICT')
+    expect(allSql()).not.toContain('SELECT ')
+  })
+
+  it('再認可では is_active を上書きしない（稼働中の連携を止めない）', async () => {
     mockExchangeCodeForTokens.mockResolvedValue(TOKENS)
     const { app, env } = makeApp({ id: 'existing-1', is_active: 1 })
 
     await app.request('/api/integrations/freee/callback?code=the-code&state=signed-state', {}, env)
 
-    expect(allSql()).toContain('UPDATE freee_accounts')
-    expect(allSql()).not.toContain('INSERT INTO freee_accounts')
-    expect(allBound()).toContain('existing-1')
-    expect(allBound()).toContain('rt-1')
+    // DO UPDATE SET 節（RETURNING より前）に is_active を含めない
+    const setClause = (allSql().split('DO UPDATE SET')[1] ?? '').split('RETURNING')[0]
+    expect(setClause).not.toContain('is_active')
+    // トークンは差し替える
+    expect(setClause).toContain('access_token')
+    expect(setClause).toContain('refresh_token')
   })
 
-  it('再認可で既存接続の is_active を 0 に戻さない（稼働中の連携を止めない）', async () => {
+  it('既に有効な接続の再認可なら「保留」と案内しない', async () => {
     mockExchangeCodeForTokens.mockResolvedValue(TOKENS)
     const { app, env } = makeApp({ id: 'existing-1', is_active: 1 })
 
-    await app.request('/api/integrations/freee/callback?code=the-code&state=signed-state', {}, env)
-
-    expect(allSql()).not.toMatch(/UPDATE freee_accounts[\s\S]*is_active/)
+    const res = await app.request('/api/integrations/freee/callback?code=the-code&state=signed-state', {}, env)
+    const html = await res.text()
+    expect(html).not.toContain('有効化')
   })
 
-  it('company_id が返らない場合は既存検索をせず新規保存する', async () => {
+  it('company_id が返らなくても保存できる', async () => {
     mockExchangeCodeForTokens.mockResolvedValue({ ...TOKENS, company_id: undefined })
     const { app, env } = makeApp()
 
-    await app.request('/api/integrations/freee/callback?code=the-code&state=signed-state', {}, env)
+    const res = await app.request('/api/integrations/freee/callback?code=the-code&state=signed-state', {}, env)
 
+    expect(res.status).toBe(200)
     expect(allSql()).toContain('INSERT INTO freee_accounts')
-    expect(allSql()).not.toContain('SELECT')
+    expect(allBound()).toContain(null)
   })
 
   // ── JST（レビュー指摘④）────────────────────────────────────
@@ -279,6 +294,30 @@ describe('GET /api/integrations/freee/callback', () => {
       (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}\+09:00$/.test(v),
     )
     expect(jstValues.length).toBeGreaterThan(0)
+  })
+
+  it('token_expires_at も JST(+09:00) で保存する（UTCのZだと文字列比較で9時間ずれる）', async () => {
+    // SQLite の日時比較は文字列比較。created_at が +09:00 なのに
+    // token_expires_at だけ Z だと、WHERE token_expires_at <= jstNow() が常に真になる。
+    mockExchangeCodeForTokens.mockResolvedValue(TOKENS)
+    const { app, env } = makeApp()
+
+    await app.request('/api/integrations/freee/callback?code=the-code&state=signed-state', {}, env)
+
+    const utcValues = allBound().filter((v) => typeof v === 'string' && /Z$/.test(v))
+    expect(utcValues).toEqual([])
+  })
+
+  it('state 検証が例外を投げても 500 ではなく 400 で案内する', async () => {
+    // FREEE_CLIENT_SECRET 未設定だと HMAC の importKey が DataError を投げる。
+    // 素の 500 ではなく、やり直しを案内する画面にする。
+    mockVerifyOAuthState.mockRejectedValue(new Error('DataError'))
+    const { app, env } = makeApp()
+
+    const res = await app.request('/api/integrations/freee/callback?code=the-code&state=x', {}, env)
+
+    expect(res.status).toBe(400)
+    expect(mockExchangeCodeForTokens).not.toHaveBeenCalled()
   })
 
   // ── 失敗時の案内（レビュー指摘⑤）───────────────────────────

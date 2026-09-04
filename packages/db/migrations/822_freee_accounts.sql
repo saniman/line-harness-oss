@@ -27,9 +27,15 @@ CREATE TABLE IF NOT EXISTS freee_accounts (
   -- /callback は公開エンドポイントなので、認可を完走した第三者の事業所が
   -- ここに入りうる。新規接続は必ず 0 で作り、有効化は認証済みの管理画面から行う。
   -- 再認可（90日ごと）では既存行のトークンだけ更新し is_active は触らない。
-  is_active        INTEGER NOT NULL DEFAULT 1,
+  is_active        INTEGER NOT NULL DEFAULT 0,
   created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_freee_accounts_is_active ON freee_accounts (is_active);
+
+-- 同じ事業所の接続を1本に保つ。再認可が同時に走っても行が重複しないよう DB 側で担保し、
+-- routes/freee.ts の UPSERT（ON CONFLICT(company_id)）のターゲットにもなる。
+-- company_id が未取得（NULL）の行は対象外にするため部分インデックスにする。
+CREATE UNIQUE INDEX IF NOT EXISTS idx_freee_accounts_company_id
+  ON freee_accounts (company_id) WHERE company_id IS NOT NULL;
