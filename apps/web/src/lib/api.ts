@@ -906,6 +906,11 @@ export type EventBookingItem = {
   friend_display_name: string | null
   /** 紐づく友だちのフォロー状態（未連携なら null。0 = 未フォロー） */
   friend_is_following: number | null
+  /**
+   * キャンセルの理由。null = 本人都合のキャンセル。
+   * 'checkout_abandoned' = Stripe 決済画面から戻った / 'checkout_expired' = セッション期限切れ
+   */
+  cancel_reason: string | null
 }
 
 export type BackfillFriendsResult = {

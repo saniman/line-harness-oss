@@ -30,6 +30,8 @@ vi.mock('../services/events.js', () => ({
   createEventBooking: vi.fn(),
   createPendingBooking: vi.fn(),
   updateBookingStripeSessionId: vi.fn(),
+  expireCheckoutBooking: vi.fn(),
+  failCheckoutBooking: vi.fn(),
   getEventBookingById: vi.fn(),
   confirmEventBooking: vi.fn(),
   cancelEventBooking: vi.fn(),
@@ -100,6 +102,7 @@ const BOOKING1 = {
   payment_status: 'unpaid', stripe_session_id: null, paid_at: null, amount: null,
   stripe_refund_id: null, refund_status: null,
   cash_received_at: null, receipt_url: null, receipt_issued_at: null,
+  cancel_reason: null,
   created_at: '', updated_at: '',
 }
 const PENDING_BOOKING = {
@@ -108,6 +111,7 @@ const PENDING_BOOKING = {
   stripe_session_id: null, paid_at: null, amount: null,
   stripe_refund_id: null, refund_status: null,
   cash_received_at: null, receipt_url: null, receipt_issued_at: null,
+  cancel_reason: null,
   created_at: '', updated_at: '',
 }
 
@@ -691,6 +695,38 @@ describe('POST /api/events/:id/checkout-session', () => {
       method: 'POST',
       headers: LIFF_HEADERS,
     }, MOCK_ENV)
+    expect(res.status).toBe(500)
+  })
+
+  it('Stripe APIエラー時は作りかけの pending を取り消す', async () => {
+    // セッション作成前に pending 行を作っているため、ここで放置すると
+    // stripe_session_id が NULL のゴミ行になる。webhook は metadata が無いので届かない
+    vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 2 })
+    vi.mocked(eventsService.createPendingBooking).mockResolvedValue(PENDING_BOOKING)
+    vi.mocked(eventsService.failCheckoutBooking).mockResolvedValue(true)
+    mockCheckoutSessionCreate.mockRejectedValue(new Error('Stripe API error'))
+
+    await app.request('/api/events/1/checkout-session', {
+      method: 'POST',
+      headers: LIFF_HEADERS,
+    }, MOCK_ENV)
+
+    // 期限切れ（客の離脱）ではなく「決済の開始に失敗」として記録する
+    expect(eventsService.failCheckoutBooking).toHaveBeenCalledWith(MOCK_ENV.DB, PENDING_BOOKING.id)
+    expect(eventsService.expireCheckoutBooking).not.toHaveBeenCalled()
+  })
+
+  it('取り消しに失敗しても 500 を返す（掃除は cron に任せる）', async () => {
+    vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 2 })
+    vi.mocked(eventsService.createPendingBooking).mockResolvedValue(PENDING_BOOKING)
+    vi.mocked(eventsService.failCheckoutBooking).mockRejectedValue(new Error('D1 down'))
+    mockCheckoutSessionCreate.mockRejectedValue(new Error('Stripe API error'))
+
+    const res = await app.request('/api/events/1/checkout-session', {
+      method: 'POST',
+      headers: LIFF_HEADERS,
+    }, MOCK_ENV)
+
     expect(res.status).toBe(500)
   })
 })

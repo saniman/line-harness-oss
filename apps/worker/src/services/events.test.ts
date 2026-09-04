@@ -33,6 +33,7 @@ interface EventBookingRow {
   cash_received_at: string | null
   receipt_url: string | null
   receipt_issued_at: string | null
+  cancel_reason: string | null
   created_at: string
   updated_at: string
 }
@@ -70,6 +71,8 @@ import {
   getEventBookingById,
   confirmEventBooking,
   cancelEventBooking,
+  expireCheckoutBooking,
+  failCheckoutBooking,
 } from './events.js'
 
 const mockSwitchToCancelled = vi.mocked(switchToCancelledFollowup)
@@ -87,6 +90,7 @@ const BOOKING1: EventBookingRow = {
   payment_status: 'unpaid', stripe_session_id: null, paid_at: null, amount: null,
   stripe_refund_id: null, refund_status: null,
   cash_received_at: null, receipt_url: null, receipt_issued_at: null,
+  cancel_reason: null,
   created_at: '', updated_at: '',
 }
 
@@ -292,6 +296,23 @@ describe('confirmEventBooking', () => {
     await confirmEventBooking(db, 1, 3000)
     expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining("status = 'confirmed'"))
   })
+
+  it('返金済みの申込は復活させない', async () => {
+    // notifyAdminEventBooking が try/catch されていないため LINE 障害で webhook が 500 になり、
+    // Stripe は最大3日リトライする。その間に本人がキャンセル＋返金していると、
+    // リトライで confirmed/paid に戻り定員まで食ってしまう
+    const db = makeDb(makeStmt(null))
+    await confirmEventBooking(db, 1, 3000)
+    expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining('stripe_refund_id IS NULL'))
+  })
+
+  it('cancel_reason を消す（期限切れ扱いの後に決済が完了したケース）', async () => {
+    // cron スイープ／期限切れ webhook が先に取り消した後で決済完了が届くことがある。
+    // 理由が残ると確定行なのに参加者一覧から畳まれてしまう
+    const db = makeDb(makeStmt(null))
+    await confirmEventBooking(db, 1, 3000)
+    expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining('cancel_reason = NULL'))
+  })
 })
 
 function makeStripe(overrides?: { sessionPaymentIntent?: string | null; refundId?: string; refundStatus?: string; throwRefund?: boolean }) {
@@ -417,5 +438,106 @@ describe('cancelEventBooking', () => {
     mockSwitchToCancelled.mockRejectedValueOnce(new Error('boom'))
     const result = await cancelEventBooking(db, 1, 'f1', stripe)
     expect(result.success).toBe(true)
+  })
+
+  it('pending からのキャンセルは cancel_reason に checkout_abandoned を記録する', async () => {
+    // Stripe 決済画面で「戻る」を押すと cancel_url 経由で LIFF がこの API を叩く。
+    // 本人都合のキャンセルと区別できないと参加者一覧のゴミ行と混ざる（Issue #56）
+    const pending: EventBookingRow = { ...BOOKING1, friend_id: 'f1', status: 'pending' }
+    const stmts = [makeStmt(pending), makeStmt(null)]
+    const db = makeDb(...stmts)
+    const stripe = makeStripe()
+
+    await cancelEventBooking(db, 1, 'f1', stripe)
+
+    expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining('cancel_reason'))
+    expect(stmts[1].bind).toHaveBeenCalledWith('checkout_abandoned', 1)
+  })
+
+  it('confirmed からのキャンセルは cancel_reason を NULL のままにする', async () => {
+    // 本人都合のキャンセル。返金対象になり得るため離脱と混同してはいけない
+    const confirmed: EventBookingRow = { ...BOOKING1, friend_id: 'f1', status: 'confirmed' }
+    const stmts = [makeStmt(confirmed), makeStmt(null), makeStmt({ start_at: '2026-06-01T10:00:00+09:00' })]
+    const db = makeDb(...stmts)
+    const stripe = makeStripe()
+
+    await cancelEventBooking(db, 1, 'f1', stripe)
+
+    expect(stmts[1].bind).toHaveBeenCalledWith(null, 1)
+  })
+})
+
+describe('expireCheckoutBooking', () => {
+  function makeRunStmt(changes: number | undefined) {
+    return {
+      bind: vi.fn().mockReturnThis(),
+      run: vi.fn().mockResolvedValue(changes === undefined ? {} : { meta: { changes } }),
+      first: vi.fn().mockResolvedValue(null),
+      all: vi.fn().mockResolvedValue({ results: [] }),
+    }
+  }
+
+  it('pending を cancelled + checkout_expired にして true を返す', async () => {
+    const stmt = makeRunStmt(1)
+    const db = { prepare: vi.fn().mockReturnValue(stmt) } as unknown as D1Database
+
+    const result = await expireCheckoutBooking(db, 42)
+
+    expect(result).toBe(true)
+    const sql = (db.prepare as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
+    expect(sql).toContain("status = 'cancelled'")
+    // 理由は SQL に埋め込まず bind する（値に ' が入っても壊れないように）
+    expect(sql).toContain('cancel_reason = ?')
+    expect(stmt.bind).toHaveBeenCalledWith('checkout_expired', 42)
+  })
+
+  it('pending 以外は書き換えない（条件付き UPDATE）', async () => {
+    // Stripe は webhook をリトライする。期限切れ通知が遅れて届いたときに
+    // 確定済みの申込を巻き戻すと「支払ったのに参加できない」事故になる
+    const stmt = makeRunStmt(0)
+    const db = { prepare: vi.fn().mockReturnValue(stmt) } as unknown as D1Database
+
+    const result = await expireCheckoutBooking(db, 42)
+
+    expect(result).toBe(false)
+    const sql = (db.prepare as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
+    expect(sql).toContain("status = 'pending'")
+  })
+
+  it('meta.changes が返らない D1 でも false として扱う', async () => {
+    const stmt = makeRunStmt(undefined)
+    const db = { prepare: vi.fn().mockReturnValue(stmt) } as unknown as D1Database
+
+    expect(await expireCheckoutBooking(db, 42)).toBe(false)
+  })
+})
+
+describe('failCheckoutBooking', () => {
+  function makeRunStmt(changes: number) {
+    return {
+      bind: vi.fn().mockReturnThis(),
+      run: vi.fn().mockResolvedValue({ meta: { changes } }),
+      first: vi.fn().mockResolvedValue(null),
+      all: vi.fn().mockResolvedValue({ results: [] }),
+    }
+  }
+
+  it('離脱ではなく checkout_create_failed として記録する', async () => {
+    // Stripe の鍵ミス・API 障害を「客が離脱しただけ」と混ぜると、
+    // 折りたたみに隠れて障害に気づけなくなる
+    const stmt = makeRunStmt(1)
+    const db = { prepare: vi.fn().mockReturnValue(stmt) } as unknown as D1Database
+
+    expect(await failCheckoutBooking(db, 7)).toBe(true)
+    expect(stmt.bind).toHaveBeenCalledWith('checkout_create_failed', 7)
+  })
+
+  it('pending 以外は書き換えない', async () => {
+    const stmt = makeRunStmt(0)
+    const db = { prepare: vi.fn().mockReturnValue(stmt) } as unknown as D1Database
+
+    expect(await failCheckoutBooking(db, 7)).toBe(false)
+    const sql = (db.prepare as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
+    expect(sql).toContain("status = 'pending'")
   })
 })

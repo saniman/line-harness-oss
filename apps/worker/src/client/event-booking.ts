@@ -276,7 +276,8 @@ export async function initEventBooking(options: {
     const urlParams = new URLSearchParams(window.location.search)
     const bookingId = urlParams.get('bookingId')
 
-    // Stripe checkout abandonment（bookingId なし）は表示のみ
+    // bookingId が無いのは、決済セッションを作らずにキャンセル画面へ来たケース。
+    // 取り消す対象が無いので表示だけして戻る。
     if (!bookingId) {
       app.innerHTML = `
         <div class="cancel-card panel">
@@ -290,7 +291,10 @@ export async function initEventBooking(options: {
       return
     }
 
-    // 確定済み予約のキャンセル: バックエンドに実際にキャンセルを送信
+    // ここに来るのは主に「Stripe 決済画面で戻るを押した」ケース。
+    // checkout-session が cancel_url に bookingId を載せているため、離脱でも bookingId が付く。
+    // サーバ側は pending からの遷移を cancel_reason='checkout_abandoned' として記録し、
+    // 本人都合のキャンセルと区別する（Issue #56）。
     app.innerHTML = '<p class="loading">キャンセル処理中...</p>'
     try {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }

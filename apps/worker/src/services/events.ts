@@ -47,9 +47,21 @@ export interface EventBookingRow {
   receipt_url: string | null
   /** 領収書を発行した日時。null = 未発行 */
   receipt_issued_at: string | null
+  /**
+   * キャンセルの理由。null = 本人都合のキャンセル（返金対象になり得る）。
+   * 'checkout_abandoned' = Stripe 決済画面から戻った / 'checkout_expired' = セッション期限切れ。
+   * 決済に至らなかった申込を参加者一覧から畳むための判別に使う（Issue #56）。
+   */
+  cancel_reason: string | null
   created_at: string
   updated_at: string
 }
+
+/** 決済に至らなかった申込に付く cancel_reason。null（本人都合のキャンセル）と区別する。 */
+export const CHECKOUT_ABANDONED = 'checkout_abandoned'
+export const CHECKOUT_EXPIRED = 'checkout_expired'
+/** Stripe セッションを作れなかった＝申込者の離脱ではなく、こちら側の障害。 */
+export const CHECKOUT_CREATE_FAILED = 'checkout_create_failed'
 
 const PARTICIPANT_COUNT_SQL = `(SELECT COUNT(*) FROM event_bookings WHERE event_id = e.id AND status = 'confirmed') AS participant_count`
 
@@ -245,9 +257,14 @@ export async function cancelEventBooking(
     }
   }
 
+  // pending からのキャンセル＝Stripe 決済画面から戻ってきたケース（cancel_url 経由）。
+  // 本人都合のキャンセル（confirmed からの遷移）と区別できないと、
+  // 名前が空のゴミ行として参加者一覧に混ざる（Issue #56）。
+  const cancelReason = booking.status === 'pending' ? CHECKOUT_ABANDONED : null
+
   await db.prepare(
-    "UPDATE event_bookings SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?",
-  ).bind(bookingId).run()
+    "UPDATE event_bookings SET status = 'cancelled', cancel_reason = ?, updated_at = datetime('now') WHERE id = ?",
+  ).bind(cancelReason, bookingId).run()
 
   // 参加確定後のキャンセルだけ、お礼シナリオを止めてキャンセル者向けへ切り替える（ベストエフォート）。
   // pending（決済せず取り消しただけ）は申込意思が薄いため対象外。
@@ -265,6 +282,54 @@ export async function cancelEventBooking(
   return { success: true, refunded, refundId, eventId: booking.event_id }
 }
 
+/**
+ * 決済に至らなかった pending 申込を、理由付きで取り消す。
+ *
+ * 条件付き UPDATE（status='pending' のときだけ書き換える）にしているのは、
+ * Stripe が webhook をリトライするうえ、期限切れ通知が遅れて届く場合があるため。
+ * 無条件に上書きすると確定済みの申込を巻き戻して「支払ったのに参加できない」事故になる。
+ *
+ * @returns 実際に取り消したら true（＝この呼び出しが状態を変えた）
+ */
+async function cancelPendingCheckout(
+  db: D1Database,
+  bookingId: number,
+  reason: string,
+): Promise<boolean> {
+  const result = await db.prepare(
+    `UPDATE event_bookings
+        SET status = 'cancelled',
+            cancel_reason = ?,
+            updated_at = datetime('now')
+      WHERE id = ? AND status = 'pending'`,
+  ).bind(reason, bookingId).run()
+  const changes = (result as { meta?: { changes?: number } }).meta?.changes ?? 0
+  return changes > 0
+}
+
+/** Stripe Checkout セッションが期限切れになった pending 申込を取り消す。 */
+export async function expireCheckoutBooking(
+  db: D1Database,
+  bookingId: number,
+): Promise<boolean> {
+  return cancelPendingCheckout(db, bookingId, CHECKOUT_EXPIRED)
+}
+
+/**
+ * Stripe セッションを作れなかった pending 申込を取り消す。
+ *
+ * 期限切れ（＝申込者が離脱した）と分けて記録する。鍵の設定ミスや Stripe 障害では
+ * 申込者全員がこの経路に落ちるため、離脱と同じ理由にすると
+ * 参加者一覧の折りたたみの中で「今日は誰も申し込まなかった」と見分けがつかなくなり、
+ * 運営者が障害に気づく手がかりが消える。
+ */
+export async function failCheckoutBooking(
+  db: D1Database,
+  bookingId: number,
+): Promise<boolean> {
+  return cancelPendingCheckout(db, bookingId, CHECKOUT_CREATE_FAILED)
+}
+
 export async function confirmEventBooking(
   db: D1Database,
   bookingId: number,
@@ -272,7 +337,14 @@ export async function confirmEventBooking(
   name?: string | null,
   email?: string | null,
 ): Promise<void> {
+  // cancel_reason も消す。cron スイープや期限切れ webhook が先に取り消した後で
+  // 決済完了が届くケースがあり、理由が残ると確定行なのに参加者一覧から畳まれてしまう。
+  //
+  // ただし返金済み（stripe_refund_id あり）は復活させない。Stripe は webhook が
+  // 失敗すると最大3日リトライするため、「確定 → 本人がキャンセル＋返金 → リトライ到着」
+  // の順で届くことがある。無条件 UPDATE だと返金済みの申込が confirmed/paid に戻り、
+  // 定員まで食ってしまう。取り消し後に決済が完了したケース（返金なし）は従来どおり復旧する。
   await db.prepare(
-    "UPDATE event_bookings SET status = 'confirmed', payment_status = 'paid', paid_at = datetime('now'), amount = ?, name = COALESCE(?, name), email = COALESCE(?, email), updated_at = datetime('now') WHERE id = ?",
+    "UPDATE event_bookings SET status = 'confirmed', payment_status = 'paid', paid_at = datetime('now'), amount = ?, name = COALESCE(?, name), email = COALESCE(?, email), cancel_reason = NULL, updated_at = datetime('now') WHERE id = ? AND stripe_refund_id IS NULL",
   ).bind(amountTotal, name ?? null, email ?? null, bookingId).run()
 }

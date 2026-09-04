@@ -10,6 +10,7 @@ import { refreshLineAccessTokens } from './services/token-refresh.js';
 import { processInsightFetch } from './services/insight-fetcher.js';
 import { processDueReminders } from './services/booking-reminders.js';
 import { runExpirer } from './services/booking-expirer.js';
+import { runEventBookingExpirer } from './services/event-booking-expirer.js';
 import { sendBookingNotification } from './services/booking-notifier.js';
 import { DEFAULT_ACCOUNT_SETTINGS } from './services/booking-types.js';
 import { forwardAdParams } from './lib/ad-params.js';
@@ -473,6 +474,18 @@ async function scheduled(
       );
     } catch (e) {
       console.error('booking-expirer error:', e);
+    }
+
+    // イベント申込の掃除ネット（Issue #56）。
+    // 本来は checkout.session.expired webhook が即座に片付けるが、webhook は
+    // Stripe ダッシュボードで送信イベントを有効化しないと飛んでこない。
+    // 設定漏れに気づく手立てが無いため、届かなくても最終的に片付くようにする。
+    // サロン予約の expirer とは独立して失敗させる（片方が落ちても他方は動かす）。
+    try {
+      const evResult = await runEventBookingExpirer(env.DB, { now: new Date() });
+      console.log(`[event-booking-expirer] expired=${evResult.expired}`);
+    } catch (e) {
+      console.error('event-booking-expirer error:', e);
     }
   }
 }
