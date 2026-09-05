@@ -14,11 +14,14 @@ export type PaymentBadge = {
  * - 'cash'   … 当日現金（LIFF の「当日現金の方はこちら」→ /join に paymentMethod: 'cash'）
  * - 'unpaid' … 無料イベント参加（確定済み）／ Stripe 決済の途中離脱（pending）
  *
+ * 現金は「申し込んだ」と「実際に受け取った」が別なので、payment_status だけでは足りない。
+ * 受領は cash_received_at の有無で表す（#42 の設計。payment_status は書き換えない）。
+ *
  * キャンセルを最優先で判定する。返金済みキャンセルは payment_status が 'paid' のまま残るため、
  * 決済状態を先に見ると「決済済」と表示されてしまう。
  */
 export function getPaymentBadge(
-  booking: { status: string; payment_status: string },
+  booking: { status: string; payment_status: string; cash_received_at?: string | null },
 ): PaymentBadge {
   if (booking.status === 'cancelled') {
     return { label: '❌ キャンセル', cls: 'bg-gray-100 text-gray-500' }
@@ -27,8 +30,12 @@ export function getPaymentBadge(
     return { label: '💳 決済済', cls: 'bg-green-100 text-green-700' }
   }
   if (booking.payment_status === 'cash') {
+    // 受領済みは入金済みなので緑。ただしカード決済と経理上は区別が要るので 💴 のまま
+    if (booking.cash_received_at) {
+      return { label: '💴 受領済', cls: 'bg-green-100 text-green-700' }
+    }
     // 未収（当日その場で受け取る）。決済済みと取り違えないよう緑を使わない
-    return { label: '💴 当日現金', cls: 'bg-amber-100 text-amber-700' }
+    return { label: '💴 当日現金（未受領）', cls: 'bg-amber-100 text-amber-700' }
   }
   if (booking.payment_status === 'unpaid') {
     return booking.status === 'pending'

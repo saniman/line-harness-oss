@@ -69,6 +69,20 @@ function getApiKey(): string {
   return ''
 }
 
+/**
+ * API が非 2xx を返したときの例外。
+ *
+ * `fetchApi` は非 2xx で throw するため、呼び出し側の `if (!res.success)` は到達しない。
+ * ステータスを見て案内を出し分けられるよう、値を持たせておく
+ * （message は従来と同じなので既存の呼び出し側に影響しない）。
+ */
+export class ApiError extends Error {
+  constructor(readonly status: number) {
+    super(`API error: ${status}`)
+    this.name = 'ApiError'
+  }
+}
+
 export async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
     ...options,
@@ -78,7 +92,7 @@ export async function fetchApi<T>(path: string, options?: RequestInit): Promise<
       ...options?.headers,
     },
   })
-  if (!res.ok) throw new Error(`API error: ${res.status}`)
+  if (!res.ok) throw new ApiError(res.status)
   return res.json() as Promise<T>
 }
 
@@ -608,6 +622,14 @@ export const api = {
     delete: (id: string) =>
       fetchApi<ApiResponse<null>>(`/api/integrations/google-calendar/${id}`, { method: 'DELETE' }),
   },
+  eventBookings: {
+    /** 当日現金の受領を記録する（成功すると領収書の発行につながる） */
+    markCashReceived: (eventId: number, bookingId: number) =>
+      fetchApi<ApiResponse<{ alreadyReceived: boolean; cashReceivedAt: string | null }>>(
+        `/api/events/${eventId}/bookings/${bookingId}/cash-received`,
+        { method: 'POST' },
+      ),
+  },
   freee: {
     list: () =>
       fetchApi<ApiResponse<FreeeConnection[]>>('/api/integrations/freee'),
@@ -932,6 +954,10 @@ export type EventBookingItem = {
    * 'checkout_abandoned' = Stripe 決済画面から戻った / 'checkout_expired' = セッション期限切れ
    */
   cancel_reason: string | null
+  /** 当日現金を受け取った日時。null = 未受領（payment_status='cash' と併せて判定する） */
+  cash_received_at: string | null
+  /** freee が発行した領収書のURL。null = 未発行 */
+  receipt_url: string | null
 }
 
 export type BackfillFriendsResult = {

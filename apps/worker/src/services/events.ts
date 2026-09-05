@@ -348,3 +348,111 @@ export async function confirmEventBooking(
     "UPDATE event_bookings SET status = 'confirmed', payment_status = 'paid', paid_at = datetime('now'), amount = ?, name = COALESCE(?, name), email = COALESCE(?, email), cancel_reason = NULL, updated_at = datetime('now') WHERE id = ? AND stripe_refund_id IS NULL",
   ).bind(amountTotal, name ?? null, email ?? null, bookingId).run()
 }
+
+/**
+ * 当日現金の受領を記録する。
+ *
+ * 現金は「申し込んだ」と「実際に受け取った」が別物で、受け取りはデジタルな信号が無いため
+ * 人間が管理画面で押す。押した事実を `cash_received_at` に残し、
+ * これを起点に領収書を発行する（#46）。
+ *
+ * ⚠️ payment_status は書き換えない。'cash' のまま据え置くことで、
+ *    一覧で現金とカードを最後まで区別できる（#42 の設計）。
+ *
+ * 冪等にしてある。ボタン連打や再試行で受領日時が上書きされると、経理の突合がずれる。
+ */
+export type CashReceiptFailure =
+  | 'not_found'
+  | 'event_mismatch'
+  | 'cancelled'
+  | 'not_confirmed'
+  | 'not_cash'
+  /** SELECT からUPDATEの間に状態が変わり、記録できなかった */
+  | 'state_changed'
+
+export interface MarkCashReceivedResult {
+  success: boolean
+  alreadyReceived: boolean
+  /** 失敗理由。文言ではなくこれで分岐する（文言を直しても壊れないように） */
+  code?: CashReceiptFailure
+  error?: string
+  booking?: EventBookingRow
+}
+
+export async function markCashReceived(
+  db: D1Database,
+  eventId: number,
+  bookingId: number,
+): Promise<MarkCashReceivedResult> {
+  const booking = await getEventBookingById(db, bookingId)
+  if (!booking) {
+    return { success: false, alreadyReceived: false, code: 'not_found', error: '予約が見つかりませんでした。' }
+  }
+
+  // 別イベントの予約に記録できてしまうと、成功が返るのに一覧は変わらず、
+  // 間違えたことに気づけない（古いタブから押した場合など）
+  if (booking.event_id !== eventId) {
+    return { success: false, alreadyReceived: false, code: 'event_mismatch', error: 'イベントが一致しません。' }
+  }
+  if (booking.status === 'cancelled') {
+    // キャンセルした人から現金は受け取らない。通すと領収書まで発行されてしまう
+    return { success: false, alreadyReceived: false, code: 'cancelled', error: 'キャンセル済みの予約です。' }
+  }
+  if (booking.status !== 'confirmed') {
+    return { success: false, alreadyReceived: false, code: 'not_confirmed', error: '確定していない予約です。' }
+  }
+  if (booking.payment_status !== 'cash') {
+    return { success: false, alreadyReceived: false, code: 'not_cash', error: '当日現金の予約ではありません。' }
+  }
+
+  // 既に受領済みなら何もしない（日時を上書きしない）
+  if (booking.cash_received_at) {
+    return { success: true, alreadyReceived: true, booking }
+  }
+
+  // 未受領のときだけ通す。SELECT からここまでの間に状態が変わっていても押印しないよう、
+  // status / payment_status も WHERE で守る。
+  //
+  // ⚠️ 日時は datetime('now')（UTC）。paid_at / created_at / updated_at と同じ規約。
+  //    ここだけ JST(+09:00) にすると、SQLite の文字列比較で 9 時間ずれる。
+  //
+  // amount は受領時に確定させる。Stripe の webhook でしか入らないため現金申込は常に null で、
+  // 領収書（#46）が載せる金額を読み出せない。値はサーバー側で events.price から引く
+  // （クライアントから受け取ると、領収書の金額を改ざんできてしまう）。
+  const updated = await db.prepare(
+    `UPDATE event_bookings
+        SET cash_received_at = datetime('now'),
+            amount = COALESCE(amount, (SELECT price FROM events WHERE id = ?)),
+            updated_at = datetime('now')
+      WHERE id = ?
+        AND cash_received_at IS NULL
+        AND status = 'confirmed'
+        AND payment_status = 'cash'
+    RETURNING cash_received_at, amount`,
+  ).bind(eventId, bookingId).first<{ cash_received_at: string; amount: number | null }>()
+
+  if (updated) {
+    return {
+      success: true,
+      alreadyReceived: false,
+      booking: { ...booking, cash_received_at: updated.cash_received_at, amount: updated.amount },
+    }
+  }
+
+  // 0行更新には2つの意味がある。読み直して見分ける。
+  //   ① 別のリクエストが一瞬先に記録した → 受領済みとして成功で返す
+  //   ② 間にキャンセル等で状態が変わった → 記録できていないので失敗を返す
+  // ②を成功と答えると、現物の現金を受け取ったのに記録が残らず、画面にもエラーが出ない。
+  const fresh = await getEventBookingById(db, bookingId)
+  if (fresh?.cash_received_at) {
+    return { success: true, alreadyReceived: true, booking: fresh }
+  }
+
+  return {
+    success: false,
+    alreadyReceived: false,
+    code: 'state_changed',
+    error: '受領を記録できませんでした。予約の状態が変わった可能性があります。',
+    booking: fresh ?? booking,
+  }
+}

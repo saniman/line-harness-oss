@@ -5,6 +5,7 @@ import {
   isCheckoutDropout,
   partitionBookings,
   getDropoutReasonLabel,
+  resolveBookingAmount,
 } from '../lib/booking-display'
 
 type Row = Parameters<typeof partitionBookings>[0][number]
@@ -154,5 +155,30 @@ describe('参加者一覧の仕分け', () => {
   it('元の並び順を保つ', () => {
     const { active } = partitionBookings(bookings)
     expect(active.map((b) => b.name)).toEqual(['あきひさ', 'まみ', '黒部', ''])
+  })
+})
+
+describe('現金受領ダイアログに出す金額（#45）', () => {
+  it('申込に金額があればそれを使う', () => {
+    expect(resolveBookingAmount({ amount: 3000 }, 5000)).toBe(3000)
+  })
+
+  it('【重要】申込の金額が無ければイベントの価格で補う', () => {
+    // event_bookings.amount は Stripe の webhook でしか入らない。
+    // 現金申込は必ず null なので、補わないと確認ダイアログが
+    // 100% の確率で「金額未設定」になり、押し間違い防止として機能しない。
+    expect(resolveBookingAmount({ amount: null }, 5000)).toBe(5000)
+  })
+
+  it('どちらも無ければ null（金額不明として扱う）', () => {
+    expect(resolveBookingAmount({ amount: null }, null)).toBeNull()
+  })
+
+  it('金額 0 は「無料」として尊重する（null に丸めない）', () => {
+    expect(resolveBookingAmount({ amount: 0 }, 5000)).toBe(0)
+  })
+
+  it('イベント価格が 0 でも尊重する', () => {
+    expect(resolveBookingAmount({ amount: null }, 0)).toBe(0)
   })
 })

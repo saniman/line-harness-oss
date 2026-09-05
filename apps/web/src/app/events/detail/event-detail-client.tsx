@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
-import { api } from '@/lib/api'
+import { api, ApiError } from '@/lib/api'
 import type { EventItem, EventBookingItem, FriendWithTags } from '@/lib/api'
 import { getPaymentBadge } from '@/lib/payment-badge'
 import {
@@ -10,6 +10,7 @@ import {
   participantDisplayName,
   partitionBookings,
   getDropoutReasonLabel,
+  resolveBookingAmount,
 } from '@/lib/booking-display'
 import { formatJST, toJstDatetimeLocal, jstDatetimeLocalToIso } from '@/lib/format-jst'
 import Header from '@/components/layout/header'
@@ -51,6 +52,10 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
   const [backfilling, setBackfilling] = useState(false)
   const [backfillResult, setBackfillResult] = useState('')
   // 手動紐付け（Stripe セッションを持たない無料/現金の申込用）
+  // 現金受領。エラーはページ全体の error とは別に持つ
+  // （load() が先頭で setError('') するため、そこへ入れると表示前に消える）
+  const [cashBusyId, setCashBusyId] = useState<number | null>(null)
+  const [cashError, setCashError] = useState('')
   const [linkingBookingId, setLinkingBookingId] = useState<number | null>(null)
   const [friendQuery, setFriendQuery] = useState('')
   const [friendCandidates, setFriendCandidates] = useState<FriendWithTags[]>([])
@@ -130,6 +135,46 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
     } finally {
       setBackfilling(false)
     }
+  }
+
+  /**
+   * 当日現金の受領を記録する。
+   *
+   * 受け取ったというデジタルな信号が無いので、運営者が受付で押す。
+   * これを起点に領収書が発行される（#46）ので、押し間違いを防ぐため金額を確認させる。
+   */
+  const handleCashReceived = async (b: EventBookingItem) => {
+    // ⚠️ event_bookings.amount は Stripe の webhook でしか入らない。現金申込は常に null なので、
+    //    イベント価格で補わないと確認ダイアログが毎回「金額未設定」になり、
+    //    押し間違い防止として一度も機能しない。
+    const resolved = resolveBookingAmount(b, event?.price ?? null)
+    const amount = resolved != null ? `¥${resolved.toLocaleString()}` : '（金額未設定）'
+    if (!confirm(
+      `${participantDisplayName(b)} さんから ${amount} を受け取りましたか？\n\n` +
+      `記録すると領収書が発行されます。取り消しはできません。`
+    )) return
+
+    setCashBusyId(b.id)
+    setCashError('')
+    try {
+      await api.eventBookings.markCashReceived(eventId, b.id)
+    } catch (err) {
+      // fetchApi は非2xxで throw する。ステータスで案内を分けないと、
+      // 「押しても永久に成功しない」ケースまで通信エラー扱いになり、運営者が押し続ける。
+      const status = err instanceof ApiError ? err.status : 0
+      if (status === 404) {
+        setCashError('この申込は見つかりませんでした。ほかの端末で取り消された可能性があります。')
+      } else if (status === 409) {
+        setCashError('記録できませんでした。操作の途中で申込の状態が変わったようです。最新の状態を読み込みました。')
+      } else if (status === 400) {
+        setCashError('この申込は受領できません（キャンセル済み・現金以外など）。最新の状態を読み込みました。')
+      } else {
+        setCashError('受領を記録できませんでした。通信状態を確認して、もう一度お試しください。')
+      }
+    }
+    // 成否にかかわらずサーバーの状態に合わせ直す（エラーは消さない）
+    await load()
+    setCashBusyId(null)
   }
 
   const handleSearchFriends = async (q: string) => {
@@ -285,6 +330,13 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
               </span>
             </div>
 
+            {/* ⚠️ エラーは分岐の外に出す。「他の端末で取り消された」ケースでは
+                再読込後に active が空になることがあり、else 側に置くと
+                まさにエラーを出したい場面で表示が消える */}
+            {cashError && (
+              <div className="mx-4 mt-3 p-3 rounded-lg bg-red-50 text-red-700 text-sm">{cashError}</div>
+            )}
+
             {/* 表に出すのは active。判定を bookings.length にすると、
                 離脱行しか無いイベントで見出しだけ出て中身ゼロになる */}
             {active.length === 0 ? (
@@ -346,9 +398,27 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
                       <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium w-fit self-center ${statusBadge.cls}`}>
                         {statusBadge.label}
                       </span>
-                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium w-fit self-center ${paymentBadge.cls}`}>
-                        {paymentBadge.label}
-                      </span>
+                      <div className="self-center">
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium w-fit ${paymentBadge.cls}`}>
+                          {paymentBadge.label}
+                        </span>
+                        {/* 当日現金で、まだ受け取っていない確定者にだけ出す。
+                            押すと領収書の発行につながるので、キャンセル・未確定には出さない */}
+                        {b.status === 'confirmed'
+                          && b.payment_status === 'cash'
+                          && !b.cash_received_at && (
+                          <button
+                            onClick={() => handleCashReceived(b)}
+                            /* 処理中は全行を止める。単一の cashBusyId では、別の行を押すと
+                               前の行の「記録中...」が解除され、同時に走った load() が
+                               互いの結果を上書きする */
+                            disabled={cashBusyId !== null}
+                            className="mt-1 block px-2 py-0.5 rounded text-xs text-white bg-amber-600 disabled:opacity-50"
+                          >
+                            {cashBusyId === b.id ? '記録中...' : '現金受領'}
+                          </button>
+                        )}
+                      </div>
                       <p className="text-sm text-gray-700 self-center">
                         {b.amount != null ? `¥${b.amount.toLocaleString()}` : '—'}
                       </p>

@@ -18,6 +18,8 @@ vi.mock('@line-crm/line-sdk', () => ({
   })),
 }))
 
+const mockMarkCashReceived = vi.hoisted(() => vi.fn())
+
 vi.mock('../services/events.js', () => ({
   createEvent: vi.fn(),
   getEvents: vi.fn(),
@@ -36,6 +38,7 @@ vi.mock('../services/events.js', () => ({
   confirmEventBooking: vi.fn(),
   cancelEventBooking: vi.fn(),
   linkBookingToFriend: vi.fn(),
+  markCashReceived: mockMarkCashReceived,
 }))
 
 vi.mock('../services/event-followup.js', () => ({
@@ -1008,5 +1011,92 @@ describe('POST /api/events/:id/join の運営者 LINE 通知', () => {
     const res = await join(ADMIN_ENV)
     expect(res.status).toBe(201)
     consoleSpy.mockRestore()
+  })
+})
+
+describe('POST /api/events/:id/bookings/:bookingId/cash-received', () => {
+  const PATH = '/api/events/1/bookings/5/cash-received'
+
+  beforeEach(() => {
+    mockMarkCashReceived.mockReset()
+  })
+
+  it('受領を記録して成功を返す', async () => {
+    mockMarkCashReceived.mockResolvedValue({ success: true, alreadyReceived: false })
+    const res = await app.request(PATH, { method: 'POST' }, { DB: mockDb })
+    expect(res.status).toBe(200)
+    expect(mockMarkCashReceived).toHaveBeenCalledWith(expect.anything(), 1, 5)
+  })
+
+  it('既に受領済みでも成功として返す（冪等）', async () => {
+    // ボタン連打・再試行でエラー表示になると、運営者が何度も押してしまう
+    mockMarkCashReceived.mockResolvedValue({ success: true, alreadyReceived: true })
+    const res = await app.request(PATH, { method: 'POST' }, { DB: mockDb })
+    expect(res.status).toBe(200)
+    const body = await res.json() as { data: { alreadyReceived: boolean } }
+    expect(body.data.alreadyReceived).toBe(true)
+  })
+
+  it('存在しない予約なら 404', async () => {
+    mockMarkCashReceived.mockResolvedValue({
+      success: false, alreadyReceived: false, code: 'not_found', error: '予約が見つかりませんでした。',
+    })
+    const res = await app.request(PATH, { method: 'POST' }, { DB: mockDb })
+    expect(res.status).toBe(404)
+  })
+
+  it('現金以外・キャンセル済みなどは 400 で理由を返す', async () => {
+    mockMarkCashReceived.mockResolvedValue({
+      success: false, alreadyReceived: false, code: 'cancelled', error: 'キャンセル済みの予約です。',
+    })
+    const res = await app.request(PATH, { method: 'POST' }, { DB: mockDb })
+    expect(res.status).toBe(400)
+    const body = await res.json() as { error: string }
+    expect(body.error).toContain('キャンセル')
+  })
+
+  it('イベントIDが数値でなければ 400（DBに触らない）', async () => {
+    const res = await app.request('/api/events/abc/bookings/5/cash-received', { method: 'POST' }, { DB: mockDb })
+    expect(res.status).toBe(400)
+    expect(mockMarkCashReceived).not.toHaveBeenCalled()
+  })
+
+  it('404 判定は日本語の文言ではなく code で行う', async () => {
+    // 文言を直したらステータスが変わる、という壊れ方を防ぐ
+    mockMarkCashReceived.mockResolvedValue({
+      success: false, alreadyReceived: false, code: 'not_found', error: '（文言を変えても404のまま）',
+    })
+    const res = await app.request(PATH, { method: 'POST' }, { DB: mockDb })
+    expect(res.status).toBe(404)
+  })
+
+  it('状態が変わって記録できなかった場合は 409 で返す', async () => {
+    // 「押しても成功しない」を運営者に伝える。通信エラーと混ぜない
+    mockMarkCashReceived.mockResolvedValue({
+      success: false, alreadyReceived: false, code: 'state_changed',
+      error: '受領を記録できませんでした。予約の状態が変わった可能性があります。',
+    })
+    const res = await app.request(PATH, { method: 'POST' }, { DB: mockDb })
+    expect(res.status).toBe(409)
+  })
+
+  it('bookingId が数値でなければ 400（DBに触らない）', async () => {
+    const res = await app.request('/api/events/1/bookings/abc/cash-received', { method: 'POST' }, { DB: mockDb })
+    expect(res.status).toBe(400)
+    expect(mockMarkCashReceived).not.toHaveBeenCalled()
+  })
+
+  it('認証スキップ対象にしない（管理者専用の操作）', async () => {
+    // 公開されると、第三者が勝手に受領済みにして領収書を発行させられる。
+    // Authorization ヘッダ無しで 401 になることを、実際のミドルウェアで確かめる。
+    const { authMiddleware } = await import('../middleware/auth.js')
+    const guarded = new Hono()
+    guarded.use('*', authMiddleware as never)
+    guarded.route('/', events)
+
+    const res = await guarded.request(PATH, { method: 'POST' }, { DB: mockDb })
+
+    expect(res.status).toBe(401)
+    expect(mockMarkCashReceived).not.toHaveBeenCalled()
   })
 })

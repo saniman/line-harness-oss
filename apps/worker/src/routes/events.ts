@@ -15,6 +15,7 @@ import {
   failCheckoutBooking,
   cancelEventBooking,
   linkBookingToFriend,
+  markCashReceived,
 } from '../services/events.js';
 import { enrollEventFollowupScenarios, enrollEventParticipants } from '../services/event-followup.js';
 import { resolveEventApplicant } from '../services/event-friend.js';
@@ -559,6 +560,48 @@ events.post('/api/events/bookings/:id/link-friend', async (c) => {
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('POST /api/events/bookings/:id/link-friend error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * 当日現金の受領を記録する（管理画面の「現金受領」ボタン）。
+ *
+ * 現金は受け取ったというデジタルな信号が無いので、人間が押す。
+ * ここで記録した cash_received_at を起点に領収書を発行する（#46）。
+ *
+ * ⚠️ 認証必須。公開すると第三者が勝手に受領済みにして領収書を発行させられる。
+ *    ロールは絞らない（受付での現金受領はスタッフの通常業務のため）。
+ */
+events.post('/api/events/:id/bookings/:bookingId/cash-received', async (c) => {
+  try {
+    const eventId = Number(c.req.param('id'));
+    const bookingId = Number(c.req.param('bookingId'));
+    if (!Number.isInteger(eventId) || !Number.isInteger(bookingId)) {
+      return c.json({ success: false, error: 'Invalid id' }, 400);
+    }
+
+    const result = await markCashReceived(c.env.DB, eventId, bookingId);
+
+    if (!result.success) {
+      // ⚠️ 日本語の文言で分岐しない。文言を直した瞬間にステータスが変わってしまう。
+      //    404 = そもそも無い / 409 = 状態が変わって記録できない / 400 = 対象外
+      const status = result.code === 'not_found' ? 404
+        : result.code === 'state_changed' ? 409
+        : 400;
+      return c.json({ success: false, error: result.error, code: result.code }, status);
+    }
+
+    console.log('[events] 現金受領を記録:', bookingId, result.alreadyReceived ? '(既に受領済み)' : '');
+    return c.json({
+      success: true,
+      data: {
+        alreadyReceived: result.alreadyReceived,
+        cashReceivedAt: result.booking?.cash_received_at ?? null,
+      },
+    });
+  } catch (err) {
+    console.error('POST /api/events/:id/bookings/:bookingId/cash-received error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
