@@ -17,7 +17,7 @@
  */
 
 import type { Message } from '@line-crm/line-sdk'
-import { formatJST } from '../utils/format-jst.js'
+import { formatJST, parseDbDatetime } from '../utils/format-jst.js'
 import { addJitter, sleep } from './stealth.js'
 
 /**
@@ -52,7 +52,12 @@ function jstDayIndex(ms: number): number {
  * 「本日」を決め打ちにすると、運営者が前日に送る設定にしたときに嘘になる。
  */
 function leadLabel(startAt: string, nowMs: number): '本日' | '明日' | null {
-  const diff = jstDayIndex(Date.parse(startAt)) - jstDayIndex(nowMs)
+  // 表示（formatJST）と同じパーサを通す。Date.parse を直接使うと、オフセット表記の
+  // 無い値で 9 時間ズレて「明日」と書きながら当日の時刻を出す、という自己矛盾した
+  // メッセージになる（#67 のレビュー指摘）
+  const startMs = parseDbDatetime(startAt)
+  if (Number.isNaN(startMs)) return null
+  const diff = jstDayIndex(startMs) - jstDayIndex(nowMs)
   if (diff === 0) return '本日'
   if (diff === 1) return '明日'
   return null
@@ -139,8 +144,10 @@ const DUE_SQL = `
 /**
  * 配信時刻を過ぎたイベントのリマインドを確定参加者へ送る。
  *
- * 日時の比較は **文字列ではなく epoch** で行う。`start_at` / `end_at` は実データで
- * `...+09:00` 形式と `...Z` 形式が混在しており、文字列比較だと壊れるため
+ * 日時の比較は **文字列ではなく epoch** で行い、epoch への変換は必ず
+ * `parseDbDatetime()` を通す。`start_at` / `end_at` は実データで `...Z` `...+09:00`
+ * のほか、オフセット表記の無い 2 系統（Issue #58）も混在しうる。`Date.parse()` を
+ * 直接使うとそれらをローカル時刻として読み、UTC の本番で 9 時間ズレる。
  * （events テーブルは小さいので、候補を取ってから JS で絞るコストは無視できる）。
  */
 export async function processEventReminders(
@@ -151,8 +158,8 @@ export async function processEventReminders(
   const result = await db.prepare(DUE_SQL).all<EventReminderDueRow>()
 
   const due = (result.results ?? []).filter((row) => {
-    const remindAtMs = Date.parse(row.reminder_at)
-    const endAtMs = Date.parse(row.end_at)
+    const remindAtMs = parseDbDatetime(row.reminder_at)
+    const endAtMs = parseDbDatetime(row.end_at)
     if (Number.isNaN(remindAtMs) || Number.isNaN(endAtMs)) return false
     // 配信時刻を過ぎている & まだ終わっていない
     return remindAtMs <= nowMs && endAtMs > nowMs

@@ -89,6 +89,47 @@ describe('renderEventReminderText', () => {
     expect(text.trim().endsWith('19:00')).toBe(true)
   })
 
+  // ↓ オフセット表記の無い2系統（Issue #58）。素の Date.parse だと 9 時間ズレる。
+  //   JST の開発機と UTC の本番で壊れ方が違うため、両方の書式で固定する
+  //   （SQLite 形式は JST 環境で、オフセット無し ISO は UTC 環境で旧実装が落ちる）。
+
+  it("datetime('now') 形式（UTC・スペース区切り）の開催日時でも見出しが正しい", () => {
+    // '2026-09-13 20:00:00' = 20:00 UTC = JST 9/14 05:00。送信は JST 9/14 00:30
+    const text = renderEventReminderText({
+      eventTitle: 'セミナー',
+      startAt: '2026-09-13 20:00:00',
+      extra: null,
+      nowMs: jst('2026-09-14T00:30:00'),
+    })
+    expect(text).toContain('本日')
+    expect(text).toContain('05:00')
+  })
+
+  it('オフセットの無い ISO（JST 保存）の開催日時でも見出しが正しい', () => {
+    // '2026-09-13T19:00:00' = JST 9/13 19:00。送信は同じ日の朝
+    const text = renderEventReminderText({
+      eventTitle: 'セミナー',
+      startAt: '2026-09-13T19:00:00',
+      extra: null,
+      nowMs: jst('2026-09-13T09:00:00'),
+    })
+    expect(text).toContain('本日')
+    expect(text).toContain('19:00')
+    expect(text).not.toContain('明日')
+  })
+
+  it('読めない開催日時でも落ちず、見出しを断定しない', () => {
+    const text = renderEventReminderText({
+      eventTitle: 'セミナー',
+      startAt: 'not-a-date',
+      extra: null,
+      nowMs: jst('2026-09-13T09:00:00'),
+    })
+    expect(text).not.toContain('本日')
+    expect(text).not.toContain('明日')
+    expect(text).toContain('セミナー')
+  })
+
   it('自由文の前後の余分な空白で本文が崩れない', () => {
     const text = renderEventReminderText({
       eventTitle: 'セミナー',
@@ -212,6 +253,37 @@ describe('processEventReminders', () => {
     // 1通しか送らないが、両方の申込を送信済みにする（次の tick で再送しないため）
     const marked = updates.find((u) => u.sql.includes('reminder_sent_at'))
     expect(marked?.bound).toEqual(expect.arrayContaining([1, 2]))
+  })
+
+  it("終了判定は datetime('now') 形式（UTC）でも正しい（早すぎる打ち切りを防ぐ）", async () => {
+    // '2026-09-13 09:00:00' = 09:00 UTC。NOW は 01:00 UTC なのでまだ終わっていない。
+    // 素の Date.parse だと JST 環境でこれを JST 09:00(=00:00 UTC) と読み、
+    // 「終了済み」と誤判定して配信を止めてしまう
+    const pushMessage = vi.fn().mockResolvedValue({})
+    const { db } = stubDb([makeRow({ end_at: '2026-09-13 09:00:00' })])
+
+    const result = await processEventReminders(db, {
+      defaultClient: { pushMessage },
+      createClient: () => ({ pushMessage }),
+      nowMs: NOW,
+    })
+
+    expect(result.sent).toBe(1)
+  })
+
+  it('終了判定はオフセット無し ISO（JST 保存）でも正しい（送りすぎを防ぐ）', async () => {
+    // '2026-09-13T09:30:00' = JST 09:30 = 00:30 UTC。NOW(01:00 UTC) より前なので終了済み。
+    // 素の Date.parse だと UTC 環境でこれを 09:30 UTC と読み、終了後も送り続ける
+    const pushMessage = vi.fn()
+    const { db } = stubDb([makeRow({ end_at: '2026-09-13T09:30:00' })])
+
+    const result = await processEventReminders(db, {
+      defaultClient: { pushMessage },
+      nowMs: NOW,
+    })
+
+    expect(result.sent).toBe(0)
+    expect(pushMessage).not.toHaveBeenCalled()
   })
 
   it('別の友だちには別々に送る', async () => {
