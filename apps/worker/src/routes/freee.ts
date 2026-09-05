@@ -21,11 +21,13 @@
 
 import { Hono } from 'hono';
 import { jstNow, toJstString } from '@line-crm/db';
+import { requireRole } from '../middleware/role-guard.js';
 import {
   getFreeeAuthUrl,
   exchangeCodeForTokens,
   createOAuthState,
   verifyOAuthState,
+  fetchFreeeCompanyName,
 } from '../services/freee-oauth.js';
 import type { Env } from '../index.js';
 
@@ -53,10 +55,8 @@ freee.get('/api/integrations/freee/auth', async (c) => {
   try {
     const state = await createOAuthState(c.env);
     const url = getFreeeAuthUrl(c.env, state);
-    // redirect=1 ならブラウザで直接開ける（管理画面の「接続する」ボタン用）
-    if (c.req.query('redirect') === '1') {
-      return c.redirect(url);
-    }
+    // 認証必須（管理画面から叩く）。URL を返し、遷移はブラウザ側で行う。
+    // ブラウザから直接開ける redirect=1 は廃止した（state オラクルになるため）。
     return c.json({ success: true, data: { url } });
   } catch (err) {
     console.error('GET /api/integrations/freee/auth error:', err);
@@ -123,6 +123,10 @@ freee.get('/api/integrations/freee/callback', async (c) => {
       );
     }
 
+    // 事業所名はベストエフォート（取れなくても連携は成立させる）。
+    // 管理画面で「自分の事業所」を見分けるための表示用。
+    const companyName = await fetchFreeeCompanyName(tokens.access_token, tokens.company_id);
+
     // ⚠️ 期限も JST(+09:00) で保存する。SQLite の日時比較は文字列比較なので、
     //    ここだけ UTC の Z にすると created_at 等との比較が9時間ずれる。
     const expiresAt = toJstString(new Date(Date.now() + tokens.expires_in * 1000));
@@ -136,9 +140,10 @@ freee.get('/api/integrations/freee/callback', async (c) => {
     //    再認可のたびに 0 へ戻すと、稼働中の連携が90日ごとに止まる。
     const row = await c.env.DB.prepare(`
       INSERT INTO freee_accounts
-        (id, company_id, access_token, refresh_token, token_expires_at, is_active, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+        (id, company_id, company_name, access_token, refresh_token, token_expires_at, is_active, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
       ON CONFLICT(company_id) WHERE company_id IS NOT NULL DO UPDATE SET
+        company_name     = COALESCE(excluded.company_name, freee_accounts.company_name),
         access_token     = excluded.access_token,
         refresh_token    = excluded.refresh_token,
         token_expires_at = excluded.token_expires_at,
@@ -147,6 +152,7 @@ freee.get('/api/integrations/freee/callback', async (c) => {
     `).bind(
       crypto.randomUUID(),
       tokens.company_id,
+      companyName,
       tokens.access_token,
       tokens.refresh_token,
       expiresAt,
@@ -179,6 +185,123 @@ freee.get('/api/integrations/freee/callback', async (c) => {
       ),
       500,
     );
+  }
+});
+
+// ========== 接続管理（管理画面から・要認証）==========
+
+/**
+ * 接続一覧。
+ *
+ * ⚠️ トークン列は絶対に返さない。管理画面に出す＝ブラウザに渡るため、
+ *    漏れると連携を乗っ取られる。列追加で事故らないよう `SELECT *` を使わず明示する。
+ */
+// 操作（有効化・削除）が owner 限定なので、閲覧も揃える。
+// 事業所名/IDは「どの会社と連携しているか」という経営情報でもある。
+freee.get('/api/integrations/freee', requireRole('owner'), async (c) => {
+  try {
+    const rows = await c.env.DB.prepare(
+      `SELECT id, company_id, company_name, is_active, token_expires_at, created_at, updated_at
+         FROM freee_accounts
+        ORDER BY is_active DESC, created_at DESC`,
+    ).all<{
+      id: string;
+      company_id: number;
+      company_name: string | null;
+      is_active: number;
+      token_expires_at: string | null;
+      created_at: string;
+      updated_at: string;
+    }>();
+
+    return c.json({
+      success: true,
+      data: rows.results.map((r) => ({
+        id: r.id,
+        companyId: r.company_id,
+        companyName: r.company_name,
+        isActive: Boolean(r.is_active),
+        tokenExpiresAt: r.token_expires_at,
+        createdAt: r.created_at,
+        updatedAt: r.updated_at,
+      })),
+    });
+  } catch (err) {
+    console.error('GET /api/integrations/freee error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * 接続を有効化する。
+ *
+ * 有効な接続は常に1本に保つ。複数あると getValidAccessTokenFreee が
+ * どれを拾うか実質不定になり、領収書の発行先が揺れる。
+ */
+// ⚠️ owner 限定。この機能の防御は「認証済みの管理者が事業所を目視して有効化する」ことに
+//    依存している。staff の API キーで有効化できると、公開コールバックで登録した
+//    自分の事業所へ領収書の発行先を差し替えられてしまう。
+//    LINE アカウント管理・スタッフ管理と同じ扱いにする。
+freee.post('/api/integrations/freee/:id/activate', requireRole('owner'), async (c) => {
+  try {
+    const id = c.req.param('id');
+    const now = jstNow();
+
+    // ⚠️ 2文を別々に実行すると、2文目が失敗したときに「有効な接続が2本」という
+    //    この処理が防ごうとしている状態そのものを作ってしまう。
+    //    D1 の batch はトランザクションなので、まとめて成否が決まる。
+    //
+    //    無効化側には EXISTS のガードを付ける。batch は両方走るため、
+    //    ガードが無いと「存在しないIDを投げるだけで全接続を止められる」ことになる。
+    //    `is_active = 1` の条件は、無関係な行の updated_at を動かさないため
+    //    （管理画面の「最終更新」が嘘になるのを防ぐ）。
+    const [activated] = await c.env.DB.batch([
+      c.env.DB
+        .prepare('UPDATE freee_accounts SET is_active = 1, updated_at = ? WHERE id = ?')
+        .bind(now, id),
+      c.env.DB
+        .prepare(
+          `UPDATE freee_accounts
+              SET is_active = 0, updated_at = ?
+            WHERE id != ?
+              AND is_active = 1
+              AND EXISTS (SELECT 1 FROM freee_accounts WHERE id = ?)`,
+        )
+        .bind(now, id, id),
+    ]);
+
+    if (!activated.meta.changes) {
+      return c.json({ success: false, error: 'Connection not found' }, 404);
+    }
+
+    console.log('[freee] 接続を有効化:', id);
+    return c.json({ success: true, data: null });
+  } catch (err) {
+    console.error('POST /api/integrations/freee/:id/activate error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/** 接続を削除する（身に覚えのない接続の始末用）。有効化と同じく owner 限定。 */
+freee.delete('/api/integrations/freee/:id', requireRole('owner'), async (c) => {
+  try {
+    const id = c.req.param('id');
+    const deleted = await c.env.DB
+      .prepare('DELETE FROM freee_accounts WHERE id = ?')
+      .bind(id)
+      .run();
+
+    // 存在しないIDに success を返すと、古いタブから消えた接続を消したときに
+    // 「削除できた」と嘘の表示になる。有効化の 404 と挙動を揃える。
+    if (!deleted.meta.changes) {
+      return c.json({ success: false, error: 'Connection not found' }, 404);
+    }
+
+    console.log('[freee] 接続を削除:', id);
+    return c.json({ success: true, data: null });
+  } catch (err) {
+    console.error('DELETE /api/integrations/freee/:id error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
 

@@ -608,6 +608,16 @@ export const api = {
     delete: (id: string) =>
       fetchApi<ApiResponse<null>>(`/api/integrations/google-calendar/${id}`, { method: 'DELETE' }),
   },
+  freee: {
+    list: () =>
+      fetchApi<ApiResponse<FreeeConnection[]>>('/api/integrations/freee'),
+    getAuthUrl: () =>
+      fetchApi<ApiResponse<{ url: string }>>('/api/integrations/freee/auth'),
+    activate: (id: string) =>
+      fetchApi<ApiResponse<null>>(`/api/integrations/freee/${id}/activate`, { method: 'POST' }),
+    delete: (id: string) =>
+      fetchApi<ApiResponse<null>>(`/api/integrations/freee/${id}`, { method: 'DELETE' }),
+  },
   events: {
     list: () =>
       fetchApi<ApiResponse<EventItem[]>>('/api/events'),
@@ -846,6 +856,17 @@ export const bookingApi = {
   pendingCount: (accountId: string) =>
     fetchApi<{ count: number }>(withAccount('/api/booking/admin/pending-count', accountId)),
 };
+
+/** freee 連携の接続。トークンは含まない（API 側で返していない） */
+export type FreeeConnection = {
+  id: string
+  companyId: number
+  companyName: string | null
+  isActive: boolean
+  tokenExpiresAt: string | null
+  createdAt: string
+  updatedAt: string
+}
 
 export type CalendarConnection = {
   id: string

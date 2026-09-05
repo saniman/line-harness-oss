@@ -5,6 +5,8 @@ import {
   exchangeCodeForTokens,
   createOAuthState,
   verifyOAuthState,
+  getValidAccessTokenFreee,
+  fetchFreeeCompanyName,
 } from './freee-oauth.js';
 
 const ENV = {
@@ -268,5 +270,430 @@ describe('OAuth state の署名と検証', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// ── トークン自動リフレッシュ ────────────────────────────────────────────────
+
+function makeStmt(firstResult: unknown = null) {
+  return {
+    bind: vi.fn().mockReturnThis(),
+    run: vi.fn().mockResolvedValue({ meta: { changes: 1 } }),
+    first: vi.fn().mockResolvedValue(firstResult),
+    all: vi.fn().mockResolvedValue({ results: [] }),
+  };
+}
+
+function makeDb(...stmts: ReturnType<typeof makeStmt>[]) {
+  let i = 0;
+  const sqls: string[] = [];
+  const used: ReturnType<typeof makeStmt>[] = [];
+  const db = {
+    prepare: vi.fn().mockImplementation((sql: string) => {
+      sqls.push(sql);
+      const s = stmts[i++] ?? makeStmt();
+      used.push(s);
+      return s;
+    }),
+  } as unknown as D1Database;
+  return { db, sqls, used };
+}
+
+/** 有効な接続行（期限は十分先） */
+function activeConn(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'conn-1',
+    company_id: 1234567,
+    access_token: 'at-old',
+    refresh_token: 'rt-old',
+    token_expires_at: '2099-01-01T00:00:00.000+09:00',
+    is_active: 1,
+    ...overrides,
+  };
+}
+
+describe('getValidAccessTokenFreee', () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', fetchMock);
+    fetchMock.mockReset();
+  });
+
+  afterEach(() => { vi.unstubAllGlobals() });
+
+  function tokenResponse(body: unknown) {
+    return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) };
+  }
+
+  it('有効な接続が無ければ FREEE_NOT_CONNECTED を投げる', async () => {
+    const { db } = makeDb(makeStmt(null));
+    await expect(getValidAccessTokenFreee(ENV, db)).rejects.toThrow('FREEE_NOT_CONNECTED');
+  });
+
+  it('保留（is_active=0）の接続は対象にしない', async () => {
+    const { db, sqls } = makeDb(makeStmt(null));
+    await expect(getValidAccessTokenFreee(ENV, db)).rejects.toThrow('FREEE_NOT_CONNECTED');
+    expect(sqls[0]).toContain('is_active = 1');
+  });
+
+  it('期限に余裕があればリフレッシュせず既存トークンを返す', async () => {
+    const { db } = makeDb(makeStmt(activeConn()));
+    const result = await getValidAccessTokenFreee(ENV, db);
+    expect(result.accessToken).toBe('at-old');
+    expect(result.companyId).toBe(1234567);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('期限が近いのに refresh_token が無ければ REAUTH_REQUIRED を投げる', async () => {
+    const { db } = makeDb(makeStmt(activeConn({
+      refresh_token: null, token_expires_at: '2020-01-01T00:00:00.000+09:00',
+    })));
+    await expect(getValidAccessTokenFreee(ENV, db)).rejects.toThrow('REAUTH_REQUIRED');
+  });
+
+  it('refresh_token が無くても期限に余裕があれば既存トークンを使う', async () => {
+    // まだ使えるトークンをわざわざ失敗させない
+    const { db } = makeDb(makeStmt(activeConn({ refresh_token: null })));
+    const result = await getValidAccessTokenFreee(ENV, db);
+    expect(result.accessToken).toBe('at-old');
+  });
+
+  it('期限切れ間近ならリフレッシュして新しいトークンを返す', async () => {
+    fetchMock.mockResolvedValue(tokenResponse({
+      access_token: 'at-new', refresh_token: 'rt-new', expires_in: 21600,
+    }));
+    const { db } = makeDb(makeStmt(activeConn({ token_expires_at: '2020-01-01T00:00:00.000+09:00' })));
+
+    const result = await getValidAccessTokenFreee(ENV, db);
+
+    expect(result.accessToken).toBe('at-new');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('【最重要】リフレッシュ時に新しい refresh_token を保存する', async () => {
+    // freee の refresh_token は1回限り。保存し忘れると次回のリフレッシュが必ず失敗し、
+    // 連携が死ぬ。Google 版の getValidAccessToken は refresh_token を更新しない。
+    fetchMock.mockResolvedValue(tokenResponse({
+      access_token: 'at-new', refresh_token: 'rt-new', expires_in: 21600,
+    }));
+    const updateStmt = makeStmt();
+    const { db } = makeDb(makeStmt(activeConn({ token_expires_at: '2020-01-01T00:00:00.000+09:00' })), updateStmt);
+
+    await getValidAccessTokenFreee(ENV, db);
+
+    const bound = (updateStmt.bind as ReturnType<typeof vi.fn>).mock.calls.flat();
+    expect(bound).toContain('rt-new');
+  });
+
+  it('リフレッシュの UPDATE 文が refresh_token を含む', async () => {
+    fetchMock.mockResolvedValue(tokenResponse({
+      access_token: 'at-new', refresh_token: 'rt-new', expires_in: 21600,
+    }));
+    const { db, sqls } = makeDb(makeStmt(activeConn({ token_expires_at: '2020-01-01T00:00:00.000+09:00' })));
+
+    await getValidAccessTokenFreee(ENV, db);
+
+    const updateSql = sqls.find((q) => q.includes('UPDATE freee_accounts')) ?? '';
+    expect(updateSql).toContain('refresh_token');
+    expect(updateSql).toContain('access_token');
+    expect(updateSql).toContain('token_expires_at');
+  });
+
+  it('空文字のトークンが返ったら例外にする（有効な値を空で上書きしない）', async () => {
+    // CAS UPDATE が通ってしまうと、有効な refresh_token が空になり
+    // 再認可以外に復旧手段が無くなる。exchangeCodeForTokens と挙動を揃える。
+    fetchMock.mockResolvedValue(tokenResponse({
+      access_token: '', refresh_token: 'rt-new', expires_in: 21600,
+    }));
+    const { db, sqls } = makeDb(makeStmt(activeConn({ token_expires_at: '2020-01-01T00:00:00.000+09:00' })));
+
+    await expect(getValidAccessTokenFreee(ENV, db)).rejects.toThrow();
+    expect(sqls.some((q) => q.includes('UPDATE freee_accounts'))).toBe(false);
+  });
+
+  it('空文字の refresh_token も弾く', async () => {
+    fetchMock.mockResolvedValue(tokenResponse({
+      access_token: 'at-new', refresh_token: '', expires_in: 21600,
+    }));
+    const { db, sqls } = makeDb(makeStmt(activeConn({ token_expires_at: '2020-01-01T00:00:00.000+09:00' })));
+
+    await expect(getValidAccessTokenFreee(ENV, db)).rejects.toThrow();
+    expect(sqls.some((q) => q.includes('UPDATE freee_accounts'))).toBe(false);
+  });
+
+  it('保存する期限は JST(+09:00) にする（文字列比較でずれないため）', async () => {
+    fetchMock.mockResolvedValue(tokenResponse({
+      access_token: 'at-new', refresh_token: 'rt-new', expires_in: 21600,
+    }));
+    const updateStmt = makeStmt();
+    const { db } = makeDb(makeStmt(activeConn({ token_expires_at: '2020-01-01T00:00:00.000+09:00' })), updateStmt);
+
+    await getValidAccessTokenFreee(ENV, db);
+
+    const bound = (updateStmt.bind as ReturnType<typeof vi.fn>).mock.calls.flat();
+    expect(bound.some((v) => typeof v === 'string' && v.endsWith('+09:00'))).toBe(true);
+    expect(bound.some((v) => typeof v === 'string' && /Z$/.test(v))).toBe(false);
+  });
+
+  it('【設計】リフレッシュ成功時に is_active を書き換えない', async () => {
+    // is_active は「管理者の意思」を表す列で、書き手は管理画面だけ。
+    // ここで書くと、飛行中のリフレッシュが管理者の切り替えを巻き戻す
+    // （A のリフレッシュ中に B へ切り替える → A が復活して有効が2本になる）。
+    fetchMock.mockResolvedValue(tokenResponse({
+      access_token: 'at-new', refresh_token: 'rt-new', expires_in: 21600,
+    }));
+    const { db, sqls } = makeDb(makeStmt(activeConn({ token_expires_at: '2020-01-01T00:00:00.000+09:00' })));
+
+    await getValidAccessTokenFreee(ENV, db);
+
+    const updateSql = sqls.find((q) => q.includes('UPDATE freee_accounts')) ?? '';
+    expect(updateSql).not.toContain('is_active');
+  });
+
+  it('古い refresh_token を条件にした UPDATE にする（同時リフレッシュ対策）', async () => {
+    // 同時に2本走ると片方の refresh_token が無効化される。
+    // 「読んだときの値」を条件に更新し、負けた側が上書きしないようにする。
+    fetchMock.mockResolvedValue(tokenResponse({
+      access_token: 'at-new', refresh_token: 'rt-new', expires_in: 21600,
+    }));
+    const { db, sqls } = makeDb(makeStmt(activeConn({ token_expires_at: '2020-01-01T00:00:00.000+09:00' })));
+
+    await getValidAccessTokenFreee(ENV, db);
+
+    const updateSql = sqls.find((q) => q.includes('UPDATE freee_accounts')) ?? '';
+    expect(updateSql).toMatch(/WHERE[\s\S]*refresh_token = \?/);
+  });
+
+  it('CAS 敗北後の読み直しでも、保留の接続は使わない', async () => {
+    // 「有効化された接続だけを使う」という前提を、この経路でも守る
+    fetchMock.mockResolvedValue(tokenResponse({
+      access_token: 'at-mine', refresh_token: 'rt-mine', expires_in: 21600,
+    }));
+    const lostUpdate = makeStmt();
+    lostUpdate.run.mockResolvedValue({ meta: { changes: 0 } });
+    const { db } = makeDb(
+      makeStmt(activeConn({ token_expires_at: '2020-01-01T00:00:00.000+09:00' })),
+      lostUpdate,
+      makeStmt(activeConn({ access_token: 'at-winner', is_active: 0 })), // 保留に落ちている
+    );
+
+    await expect(getValidAccessTokenFreee(ENV, db)).rejects.toThrow('REAUTH_REQUIRED');
+  });
+
+  it('同時リフレッシュに負けたら、勝った側のトークンを読み直して返す', async () => {
+    fetchMock.mockResolvedValue(tokenResponse({
+      access_token: 'at-mine', refresh_token: 'rt-mine', expires_in: 21600,
+    }));
+    const lostUpdate = makeStmt();
+    lostUpdate.run.mockResolvedValue({ meta: { changes: 0 } }); // 誰かが先に更新した
+    const { db } = makeDb(
+      makeStmt(activeConn({ token_expires_at: '2020-01-01T00:00:00.000+09:00' })),
+      lostUpdate,
+      makeStmt(activeConn({ access_token: 'at-winner' })), // 読み直し
+    );
+
+    const result = await getValidAccessTokenFreee(ENV, db);
+
+    expect(result.accessToken).toBe('at-winner');
+  });
+
+  it('失効（invalid_grant）でも is_active は書き換えず REAUTH_REQUIRED を投げる', async () => {
+    // 自動で保留に落とすと、同時リフレッシュの敗者が勝者を巻き添えにする。
+    // 失効の可視化は token_expires_at が過去であることで行う（管理画面が ⚠️ を出す）。
+    fetchMock.mockResolvedValue({
+      ok: false, status: 401,
+      text: async () => '{"error":"invalid_grant"}',
+      json: async () => ({ error: 'invalid_grant' }),
+    });
+    const { db, sqls } = makeDb(makeStmt(activeConn({ token_expires_at: '2020-01-01T00:00:00.000+09:00' })));
+
+    await expect(getValidAccessTokenFreee(ENV, db)).rejects.toThrow('REAUTH_REQUIRED');
+
+    // 読み取り（WHERE is_active = 1）は当然あるので、書き込み文だけを見る
+    const writes = sqls.filter((q) => q.includes('UPDATE') || q.includes('INSERT'));
+    expect(writes.some((q) => q.includes('is_active'))).toBe(false);
+  });
+
+  // ── 一時的な失敗で接続を落とさない（レビュー②）─────────────────────────
+
+  it('freee の 5xx では接続を保留に戻さない（一時障害）', async () => {
+    // 障害のたびに保留に落ちると、人間が有効化し直すまで領収書が止まる
+    fetchMock.mockResolvedValue({
+      ok: false, status: 503, text: async () => 'service unavailable',
+    });
+    const { db, sqls } = makeDb(makeStmt(activeConn({ token_expires_at: '2020-01-01T00:00:00.000+09:00' })));
+
+    await expect(getValidAccessTokenFreee(ENV, db)).rejects.toThrow('FREEE_TEMPORARILY_UNAVAILABLE');
+
+    expect(sqls.some((q) => q.includes('is_active = 0'))).toBe(false);
+  });
+
+  it('レート制限（429）でも接続を保留に戻さない', async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 429, text: async () => 'too many requests' });
+    const { db, sqls } = makeDb(makeStmt(activeConn({ token_expires_at: '2020-01-01T00:00:00.000+09:00' })));
+
+    await expect(getValidAccessTokenFreee(ENV, db)).rejects.toThrow('FREEE_TEMPORARILY_UNAVAILABLE');
+    expect(sqls.some((q) => q.includes('is_active = 0'))).toBe(false);
+  });
+
+  it('通信自体が落ちても接続を保留に戻さない', async () => {
+    fetchMock.mockRejectedValue(new Error('network down'));
+    const { db, sqls } = makeDb(makeStmt(activeConn({ token_expires_at: '2020-01-01T00:00:00.000+09:00' })));
+
+    await expect(getValidAccessTokenFreee(ENV, db)).rejects.toThrow('FREEE_TEMPORARILY_UNAVAILABLE');
+    expect(sqls.some((q) => q.includes('is_active = 0'))).toBe(false);
+  });
+
+  it('【MEDIUM】401 でも invalid_client なら失効扱いにしない（シークレット設定ミス）', async () => {
+    // RFC 6749 §5.2 は invalid_client に 401 を許す。ステータスだけで判断すると
+    // wrangler secret put の打ち間違いで全接続が保留に落ち、
+    // シークレットを直しても人間が有効化し直すまで復旧しなくなる。
+    // .claude/rules/api-coding.md「OAuth APIのエラーコードはドメインエラーに変換する」
+    fetchMock.mockResolvedValue({
+      ok: false, status: 401, text: async () => '{"error":"invalid_client"}',
+    });
+    const { db, sqls } = makeDb(makeStmt(activeConn({ token_expires_at: '2020-01-01T00:00:00.000+09:00' })));
+
+    await expect(getValidAccessTokenFreee(ENV, db)).rejects.toThrow('FREEE_TEMPORARILY_UNAVAILABLE');
+    expect(sqls.some((q) => q.includes('is_active = 0'))).toBe(false);
+  });
+
+  it('400 invalid_grant は REAUTH_REQUIRED（一時障害と区別する）', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false, status: 400, text: async () => '{"error":"invalid_grant"}',
+    });
+    const { db, sqls } = makeDb(makeStmt(activeConn({ token_expires_at: '2020-01-01T00:00:00.000+09:00' })));
+
+    await expect(getValidAccessTokenFreee(ENV, db)).rejects.toThrow('REAUTH_REQUIRED');
+
+    // 失効と判定しても is_active は書き換えない（可視化は token_expires_at で行う）
+    const writes = sqls.filter((q) => q.includes('UPDATE') || q.includes('INSERT'));
+    expect(writes.some((q) => q.includes('is_active'))).toBe(false);
+  });
+
+  it('JSON として読めないエラー本文は失効扱いにしない（判断がつかないなら壊さない）', async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 400, text: async () => '<html>error</html>' });
+    const { db, sqls } = makeDb(makeStmt(activeConn({ token_expires_at: '2020-01-01T00:00:00.000+09:00' })));
+
+    await expect(getValidAccessTokenFreee(ENV, db)).rejects.toThrow('FREEE_TEMPORARILY_UNAVAILABLE');
+    expect(sqls.some((q) => q.includes('is_active = 0'))).toBe(false);
+  });
+
+  // ── 壊れた期限は「期限切れ」として扱う（レビュー⑤）───────────────────────
+
+  it('token_expires_at が解釈できない値なら期限切れ扱いにする', async () => {
+    // NaN 比較は false になるため、放置すると二度とリフレッシュされず
+    // freee が 401 を返し続ける状態から自力で復帰できない
+    fetchMock.mockResolvedValue(tokenResponse({
+      access_token: 'at-new', refresh_token: 'rt-new', expires_in: 21600,
+    }));
+    const { db } = makeDb(makeStmt(activeConn({ token_expires_at: 'こわれた値' })));
+
+    const result = await getValidAccessTokenFreee(ENV, db);
+
+    expect(result.accessToken).toBe('at-new');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  // ── 同時リフレッシュで道連れにしない（レビュー①・HIGH）──────────────────
+
+  it('同時リフレッシュに負けただけなら、勝った側のトークンを使う', async () => {
+    // freee は refresh_token を回すので、負けた側は必ず invalid_grant になる。
+    // ここで諦めると、同時アクセス2本だけで領収書の発行が失敗する。
+    // refresh_token が読んだ値から変わっていれば「誰かが先に回した」と分かる。
+    fetchMock.mockResolvedValue({
+      ok: false, status: 401, text: async () => '{"error":"invalid_grant"}',
+    });
+    const { db } = makeDb(
+      makeStmt(activeConn({ token_expires_at: '2020-01-01T00:00:00.000+09:00' })),
+      makeStmt(activeConn({ access_token: 'at-winner', refresh_token: 'rt-winner', is_active: 1 })),
+    );
+
+    const result = await getValidAccessTokenFreee(ENV, db);
+
+    expect(result.accessToken).toBe('at-winner');
+  });
+
+  it('refresh_token が変わっていなければ（本当に失効）REAUTH_REQUIRED', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false, status: 401, text: async () => '{"error":"invalid_grant"}',
+    });
+    const { db } = makeDb(
+      makeStmt(activeConn({ token_expires_at: '2020-01-01T00:00:00.000+09:00' })),
+      makeStmt(activeConn()), // refresh_token は rt-old のまま
+    );
+
+    await expect(getValidAccessTokenFreee(ENV, db)).rejects.toThrow('REAUTH_REQUIRED');
+  });
+
+  it('勝者の行が保留なら、そのトークンは使わない', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false, status: 401, text: async () => '{"error":"invalid_grant"}',
+    });
+    const { db } = makeDb(
+      makeStmt(activeConn({ token_expires_at: '2020-01-01T00:00:00.000+09:00' })),
+      makeStmt(activeConn({ access_token: 'at-x', refresh_token: 'rt-other', is_active: 0 })),
+    );
+
+    await expect(getValidAccessTokenFreee(ENV, db)).rejects.toThrow('REAUTH_REQUIRED');
+  });
+});
+
+describe('fetchFreeeCompanyName', () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', fetchMock);
+    fetchMock.mockReset();
+  });
+
+  afterEach(() => { vi.unstubAllGlobals() });
+
+  function ok(body: unknown) {
+    return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) };
+  }
+
+  it('company_id に一致する事業所の display_name を返す', async () => {
+    fetchMock.mockResolvedValue(ok({ companies: [
+      { id: 111, name: 'ほか', display_name: 'ほか事業所' },
+      { id: 1234567, name: 'walover', display_name: 'WALOVER合同会社' },
+    ] }));
+    expect(await fetchFreeeCompanyName('at-1', 1234567)).toBe('WALOVER合同会社');
+  });
+
+  it('display_name が無ければ name を使う', async () => {
+    fetchMock.mockResolvedValue(ok({ companies: [{ id: 1234567, name: 'walover' }] }));
+    expect(await fetchFreeeCompanyName('at-1', 1234567)).toBe('walover');
+  });
+
+  it('一致する事業所が無ければ null', async () => {
+    fetchMock.mockResolvedValue(ok({ companies: [{ id: 111, display_name: 'ほか' }] }));
+    expect(await fetchFreeeCompanyName('at-1', 1234567)).toBeNull();
+  });
+
+  it('APIが失敗しても例外を投げず null を返す（連携自体は成功させる）', async () => {
+    // アプリのスコープが会計APIを含まない場合など。名前が無くても company_id で見分けられる。
+    fetchMock.mockResolvedValue({ ok: false, status: 403, text: async () => 'forbidden' });
+    expect(await fetchFreeeCompanyName('at-1', 1234567)).toBeNull();
+  });
+
+  it('通信自体が失敗しても null を返す', async () => {
+    fetchMock.mockRejectedValue(new Error('network'));
+    expect(await fetchFreeeCompanyName('at-1', 1234567)).toBeNull();
+  });
+
+  it('タイムアウトを設定する（ハングでコールバック全体を巻き込まないため）', async () => {
+    // ベストエフォートのはずが、freee が応答しないと認可コードを消費したまま
+    // 1件も保存されずに終わってしまう。
+    fetchMock.mockResolvedValue(ok({ companies: [] }));
+    await fetchFreeeCompanyName('at-1', 1234567);
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(init.signal).toBeDefined();
+  });
+
+  it('レスポンスの形が想定外でも null を返す', async () => {
+    fetchMock.mockResolvedValue(ok({ unexpected: true }));
+    expect(await fetchFreeeCompanyName('at-1', 1234567)).toBeNull();
   });
 });
