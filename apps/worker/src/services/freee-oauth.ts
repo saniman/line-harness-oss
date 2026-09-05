@@ -320,6 +320,14 @@ function expiringSoon(expiresAt: string | null): boolean {
 export async function getValidAccessTokenFreee(
   env: Env['Bindings'],
   db: D1Database,
+  /**
+   * 期限が残っていてもリフレッシュし直す。
+   *
+   * freee 側でアプリ連携を解除されると、**期限内のトークンでも 401 になる**。
+   * その状態はキャッシュを見ても分からないので、401 を受けた呼び出し元が
+   * 一度だけこれを立てて取り直す（services/freee-receipt.ts 参照）。
+   */
+  forceRefresh = false,
 ): Promise<{ accessToken: string; companyId: number; connectionId: string }> {
   const conn = await db
     .prepare('SELECT * FROM freee_accounts WHERE is_active = 1 ORDER BY updated_at DESC LIMIT 1')
@@ -327,7 +335,7 @@ export async function getValidAccessTokenFreee(
 
   if (!conn) throw new Error('FREEE_NOT_CONNECTED');
 
-  if (!expiringSoon(conn.token_expires_at) && conn.access_token) {
+  if (!forceRefresh && !expiringSoon(conn.token_expires_at) && conn.access_token) {
     return { accessToken: conn.access_token, companyId: conn.company_id, connectionId: conn.id };
   }
 

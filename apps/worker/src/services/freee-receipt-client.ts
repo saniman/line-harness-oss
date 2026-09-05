@@ -23,6 +23,24 @@ const TAX_RATE = 10;
 /** freee 呼び出しのタイムアウト。現金受領ボタンの応答を待たせすぎない。 */
 const TIMEOUT_MS = 10_000;
 
+/**
+ * subject / 明細の摘要の上限（OAS3 の maxLength）。
+ *
+ * events.title は長さ無制限の TEXT で、API 側にも検証が無い。超えるとイベント単位で
+ * 全員の発行が 400 になるので、送る直前にここで切る。
+ */
+const MAX_TEXT_LENGTH = 255;
+
+/**
+ * コードポイント単位で切り詰める。
+ * slice は UTF-16 コードユニット単位なので、絵文字や補助漢字の途中で切ると
+ * サロゲートが片割れだけ残って壊れ字になる。
+ */
+function truncate(value: string, max: number): string {
+  const chars = Array.from(value);
+  return chars.length <= max ? value : chars.slice(0, max).join('');
+}
+
 export interface FreeeReceiptParams {
   accessToken: string;
   companyId: number;
@@ -85,20 +103,53 @@ export function resolvePartnerTitle(payeeName: string): '御中' | '様' {
   return isOrg ? '御中' : '様';
 }
 
+/**
+ * freee が返したエラー。HTTP ステータスを保持する。
+ *
+ * 401（トークン失効）と 5xx（一時障害）では運営者にすべき案内が違うため、
+ * 呼び出し側がステータスで分岐できるようにする。
+ */
+export class FreeeReceiptApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = 'FreeeReceiptApiError';
+  }
+}
+
 /** freee のエラーレスポンス（OAS3 の badRequest 等） */
 interface FreeeErrorBody {
   status_code?: number;
   errors?: { type?: string; messages?: string[] }[];
 }
 
-/** エラー本文から人が読めるメッセージを組み立てる（トークンは含めない） */
-function describeError(status: number, body: unknown): string {
+/**
+ * エラー本文から人が読めるメッセージを組み立てる。
+ *
+ * ⚠️ freee のバリデーションエラーは**送った値をそのまま echo することがある**
+ *    （例:「partner_display_name「山田太郎」は不正です」）。この文字列は呼び出し側の
+ *    console.error に流れるため、素通しすると参加者の氏名が Cloudflare のログに残る。
+ *    宛名だけは必ず伏せてから返す。
+ *
+ * メッセージ自体は落とさない。「取引先を指定してください」のように、
+ * 設定ミスの原因がそのまま書かれていることが多く、消すと運営者が原因に辿り着けない。
+ */
+function describeError(status: number, body: unknown, payeeName: string): string {
   const errors = (body as FreeeErrorBody | null)?.errors;
   if (Array.isArray(errors) && errors.length > 0) {
     const messages = errors.flatMap((e) => e.messages ?? []).filter(Boolean);
-    if (messages.length > 0) return `freee ${status}: ${messages.join(' / ')}`;
+    if (messages.length > 0) {
+      return `freee ${status}: ${redactPayee(messages.join(' / '), payeeName)}`;
+    }
+    const types = errors.map((e) => e.type).filter(Boolean);
+    if (types.length > 0) return `freee ${status}: ${types.join(' / ')}`;
   }
   return `freee ${status}`;
+}
+
+/** メッセージ中の宛名を伏せる。空文字で splitAll しないようガードする */
+function redactPayee(message: string, payeeName: string): string {
+  if (!payeeName) return message;
+  return message.split(payeeName).join('（宛名）');
 }
 
 /**
@@ -124,11 +175,11 @@ export const freeeReceiptIssuer: FreeeReceiptIssuer = {
       withholding_tax_entry_method: 'out',
       partner_title: resolvePartnerTitle(params.payeeName),
       partner_display_name: params.payeeName,
-      subject: params.subject,
+      subject: truncate(params.subject, MAX_TEXT_LENGTH),
       lines: [
         {
           type: 'item',
-          description: params.description,
+          description: truncate(params.description, MAX_TEXT_LENGTH),
           quantity: 1,
           // unit_price は数値ではなく文字列（OAS3 の pattern が文字列前提）
           unit_price: String(params.amount),
@@ -155,7 +206,10 @@ export const freeeReceiptIssuer: FreeeReceiptIssuer = {
     if (!res.ok) {
       // ⚠️ ここで body（宛名を含む）やトークンをログに出さない。
       //    宛名は参加者の氏名＝個人情報なので、エラー種別と HTTP ステータスだけ残す。
-      throw new Error(describeError(res.status, parsed));
+      throw new FreeeReceiptApiError(
+        describeError(res.status, parsed, params.payeeName),
+        res.status,
+      );
     }
 
     const receipt = (parsed as { receipt?: { id?: number; report_url?: string } } | null)?.receipt;

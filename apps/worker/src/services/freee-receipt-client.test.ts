@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { freeeReceiptIssuer, resolvePartnerTitle } from './freee-receipt-client.js';
+import {
+  freeeReceiptIssuer,
+  resolvePartnerTitle,
+  FreeeReceiptApiError,
+} from './freee-receipt-client.js';
 
 const BASE_PARAMS = {
   accessToken: 'at-secret-1',
@@ -238,5 +242,84 @@ describe('freeeReceiptIssuer.createReceipt（エラー）', () => {
     );
 
     expect(err.message).not.toContain('山田太郎');
+  });
+});
+
+describe('freeeReceiptIssuer.createReceipt（長さの上限）', () => {
+  it('【重要】長いイベント名でも 255 文字を超えて送らない', async () => {
+    // events.title は長さ無制限の TEXT で API 側の検証も無い。
+    // 超えると freee が 400 を返し、そのイベントの参加者全員が毎回失敗する
+    const long = 'あ'.repeat(300);
+
+    await freeeReceiptIssuer.createReceipt({
+      ...BASE_PARAMS,
+      subject: long,
+      description: `${long} 参加費として`,
+    });
+
+    expect(sentBody().subject.length).toBe(255);
+    expect(sentBody().lines[0].description.length).toBe(255);
+  });
+
+  it('上限内ならそのまま送る（勝手に切らない）', async () => {
+    await freeeReceiptIssuer.createReceipt(BASE_PARAMS);
+
+    expect(sentBody().subject).toBe('無料セミナー');
+  });
+
+  it('絵文字の途中で切って壊れ字にしない', async () => {
+    // slice は UTF-16 コードユニット単位なので、サロゲートペアの途中で切ると U+FFFD になる
+    const emoji = '🎉'.repeat(300);
+
+    await freeeReceiptIssuer.createReceipt({ ...BASE_PARAMS, subject: emoji });
+
+    const sent = sentBody().subject as string;
+    expect(sent).not.toContain('\uFFFD');
+    expect(Array.from(sent).length).toBe(255);
+  });
+});
+
+describe('freeeReceiptIssuer.createReceipt（HTTP ステータス）', () => {
+  function errorResponse(status: number, messages: string[]) {
+    return new Response(
+      JSON.stringify({ status_code: status, errors: [{ type: 'x', messages }] }),
+      { status },
+    );
+  }
+
+  it('例外に HTTP ステータスを載せる', async () => {
+    fetchMock.mockResolvedValue(errorResponse(401, ['アクセストークンが無効です。']));
+
+    const err = await captureError(freeeReceiptIssuer.createReceipt(BASE_PARAMS));
+
+    expect(err).toBeInstanceOf(FreeeReceiptApiError);
+    expect((err as FreeeReceiptApiError).status).toBe(401);
+  });
+
+  it('【重要】freee が宛名を echo してきても伏せる', async () => {
+    // freee のバリデーションエラーは送った値をそのまま返すことがある。
+    // 素通しすると呼び出し側の console.error で参加者の氏名がログに残る
+    fetchMock.mockResolvedValue(
+      errorResponse(400, ['partner_display_name「山田太郎」は不正な値です。']),
+    );
+
+    const err = await captureError(
+      freeeReceiptIssuer.createReceipt({ ...BASE_PARAMS, payeeName: '山田太郎' }),
+    );
+
+    expect(err.message).not.toContain('山田太郎');
+    expect(err.message).toContain('（宛名）');
+    // 原因の手がかりは残す（消すと設定ミスに辿り着けない）
+    expect(err.message).toContain('不正な値');
+  });
+
+  it('メッセージが無ければ errors[].type を出す', async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ errors: [{ type: 'bad_request' }] }), { status: 400 }),
+    );
+
+    const err = await captureError(freeeReceiptIssuer.createReceipt(BASE_PARAMS));
+
+    expect(err.message).toContain('bad_request');
   });
 });
