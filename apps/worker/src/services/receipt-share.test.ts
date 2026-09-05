@@ -6,7 +6,7 @@ vi.mock('./receipt-share-verify.js', () => ({
 }));
 
 import { verifyShareUrl } from './receipt-share-verify.js';
-import { saveReceiptShareUrl, SHARE_EXPIRY_DAYS } from './receipt-share.js';
+import { saveReceiptShareUrl, revokeReceiptShare, SHARE_EXPIRY_DAYS } from './receipt-share.js';
 
 const mockVerify = vi.mocked(verifyShareUrl);
 
@@ -37,6 +37,11 @@ interface DbOptions {
   conflict?: boolean;
   /** 既にその URL を持っている予約（重複時に名前を出すため） */
   owner?: { id: number; name: string } | null;
+}
+
+/** SQL の空白を潰す。改行やインデントの違いで照合が壊れないようにする */
+function norm(sql: string): string {
+  return sql.replace(/\s+/g, ' ');
 }
 
 function makeDb(opts: DbOptions = {}) {
@@ -219,5 +224,77 @@ describe('saveReceiptShareUrl（取り違え対策）', () => {
     const res = await saveReceiptShareUrl(db, 1, 5, SHARE);
 
     expect(res.ok).toBe(true);
+  });
+});
+
+describe('無効化と、事故からの復旧（#47 第2層）', () => {
+  it('無効化すると receipt_share_url を空にする', async () => {
+    // ⚠️ 残したままだと全体一意の制約に阻まれ、**同じリンクを正しい予約に
+    //    登録し直せない**。復旧が最も必要な場面で詰む
+    const { db, sqls } = makeDb();
+
+    const res = await revokeReceiptShare(db, 1, 5);
+
+    expect(res.ok).toBe(true);
+    const sql = sqls.find((q) => q.includes('receipt_share_revoked_at = ')) ?? '';
+    expect(sql).toContain('receipt_share_url = NULL');
+  });
+
+  it('無効化してもトークンは残す（410 を出すため）', async () => {
+    // 消すと 404「見つかりません」になり、参加者に何が起きたか伝わらない
+    const { db, sqls } = makeDb();
+
+    await revokeReceiptShare(db, 1, 5);
+
+    const sql = sqls.find((q) => q.includes('receipt_share_revoked_at = ')) ?? '';
+    expect(sql).not.toContain('receipt_share_token = NULL');
+  });
+
+  it('イベントIDが一致しなければ無効化しない', async () => {
+    const { db, bound } = makeDb();
+
+    await revokeReceiptShare(db, 1, 5);
+
+    expect(bound.flat()).toEqual(expect.arrayContaining([5, 1]));
+  });
+
+  it('【重要】無効化後に貼り直すとトークンを作り直す（漏洩URLを復活させない）', async () => {
+    // 使い回すと、誤って渡ってしまった URL が生き返り、
+    // しかも今度は正しい領収書を相手に見せてしまう
+    const { db, sqls } = makeDb();
+
+    await saveReceiptShareUrl(db, 1, 5, SHARE);
+
+    // ⚠️ SQL 全体を toContain で見ると、他の CASE 句の文字列に一致して素通りする。
+    //    トークンの CASE 句そのものを、空白を正規化して厳密に照合する
+    const sql = norm(sqls.find((q) => q.includes('receipt_share_token = ')) ?? '');
+    expect(sql).toContain(
+      'receipt_share_token = CASE'
+      + ' WHEN receipt_share_revoked_at IS NULL THEN COALESCE(receipt_share_token, ?)'
+      + ' ELSE ? END',
+    );
+  });
+
+  it('【重要】無効化後に貼り直すと送信済みを解除する（送り直せる）', async () => {
+    const { db, sqls } = makeDb();
+
+    await saveReceiptShareUrl(db, 1, 5, SHARE);
+
+    const sql = norm(sqls.find((q) => q.includes('receipt_sent_at = ')) ?? '');
+    expect(sql).toContain(
+      'receipt_sent_at = CASE'
+      + ' WHEN receipt_share_revoked_at IS NULL THEN receipt_sent_at'
+      + ' ELSE NULL END',
+    );
+  });
+
+  it('無効化されていなければトークンを使い回す（送信済みURLを殺さない）', async () => {
+    // 貼り間違いを直したとき、既に送った URL がそのまま正しい領収書を指すようにする
+    const { db, sqls } = makeDb();
+
+    await saveReceiptShareUrl(db, 1, 5, SHARE);
+
+    const sql = norm(sqls.find((q) => q.includes('receipt_share_token = ')) ?? '');
+    expect(sql).toContain('WHEN receipt_share_revoked_at IS NULL THEN COALESCE(receipt_share_token, ?)');
   });
 });

@@ -84,8 +84,13 @@ function booking(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/** 送信権を取ったときに立つ印の時刻 */
+const CLAIMED_AT = '2026-09-06 05:00:00';
+
 interface DbOptions {
   booking?: Record<string, unknown> | null;
+  /** 送信権（CAS）を取れるか。false = 別のリクエストが先に取った */
+  claimTaken?: boolean;
   /** friends テーブルから引ける line_user_id */
   lineUserId?: string | null;
   event?: { title: string } | null;
@@ -108,7 +113,10 @@ function makeDb(opts: DbOptions = {}) {
             : opts.lineUserId === null ? null : { line_user_id: opts.lineUserId };
         }
         if (sql.includes('FROM events')) return opts.event === undefined ? { title: 'もくもく会' } : opts.event;
-        if (sql.includes('UPDATE')) return { id: 5 };
+        if (sql.includes('UPDATE')) {
+          // 送信権の取得（CAS）は receipt_sent_at を返す
+          return opts.claimTaken === false ? null : { id: 5, receipt_sent_at: CLAIMED_AT };
+        }
         return row;
       });
       stmt.run = vi.fn().mockResolvedValue({ meta: { changes: 1 } });
@@ -233,7 +241,7 @@ describe('sendReceiptToParticipant（送信）', () => {
     expect(sqls.some((q) => q.includes('UPDATE') && q.includes('receipt_sent_at = '))).toBe(true);
   });
 
-  it('【重要】LINE 送信が失敗しても共有リンクは残す（再送できる）', async () => {
+  it('【重要】LINE 送信が失敗したら送信権を返す（再送できる）', async () => {
     const { db, sqls } = makeDb();
     const line = { pushMessage: vi.fn().mockRejectedValue(new Error('LINE 500')) };
 
@@ -241,8 +249,8 @@ describe('sendReceiptToParticipant（送信）', () => {
 
     expect(res.ok).toBe(false);
     expect(res.code).toBe('send_failed');
-    // 送信済みにしない＝再送できる
-    expect(sqls.some((q) => q.includes('UPDATE') && q.includes('receipt_sent_at = '))).toBe(false);
+    // 送信権を返さないと二度と送れなくなる
+    expect(sqls.some((q) => q.includes('receipt_sent_at = NULL'))).toBe(true);
   });
 
   it('【重要】共有 URL とトークンをログに出さない', async () => {
@@ -255,5 +263,49 @@ describe('sendReceiptToParticipant（送信）', () => {
     expect(logged).not.toContain(SHARE_TOKEN);
     expect(logged).not.toContain('invoice.secure.freee.co.jp');
     spy.mockRestore();
+  });
+});
+
+describe('sendReceiptToParticipant（同時押しと状態変化）', () => {
+  it('【重要】送る前に送信権を取る（2台で同時に押しても1通）', async () => {
+    // 上の receipt_sent_at チェックは SELECT を見た「読んでから書く」判定なので、
+    // これが無いと2台の端末で両方すり抜けて2通届く。LINE の送信は取り消せない
+    const { db, sqls } = makeDb();
+
+    await sendReceiptToParticipant(db, makeLine(), WORKER_URL, 1, 5);
+
+    const claim = sqls.find((q) => q.includes('UPDATE') && q.includes('receipt_sent_at = ')) ?? '';
+    expect(claim).toContain('receipt_sent_at IS NULL');
+  });
+
+  it('【重要】送信権を取れなければ送らない', async () => {
+    const { db, claimTaken } = { ...makeDb({ claimTaken: false }), claimTaken: false };
+    const line = makeLine();
+
+    const res = await sendReceiptToParticipant(db, line, WORKER_URL, 1, 5);
+
+    expect(res.code).toBe('already_sent');
+    expect(line.pushMessage).not.toHaveBeenCalled();
+  });
+
+  it('送信権を返すときは自分が立てた印だけ消す', async () => {
+    // 条件を id だけにすると、別の送信が立てた印まで消してしまう
+    const { db, bound } = makeDb();
+    const line = { pushMessage: vi.fn().mockRejectedValue(new Error('LINE 500')) };
+
+    await sendReceiptToParticipant(db, line, WORKER_URL, 1, 5);
+
+    expect(bound.flat()).toContain(CLAIMED_AT);
+  });
+
+  it('【重要】保存後にキャンセルされた予約には送らない', async () => {
+    // 返金済みの予約に領収書を送ると、経理も参加者も混乱する
+    const { db } = makeDb({ booking: booking({ status: 'cancelled' }) });
+    const line = makeLine();
+
+    const res = await sendReceiptToParticipant(db, line, WORKER_URL, 1, 5);
+
+    expect(res.code).toBe('cancelled');
+    expect(line.pushMessage).not.toHaveBeenCalled();
   });
 });

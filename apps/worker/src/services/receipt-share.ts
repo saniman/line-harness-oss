@@ -131,23 +131,41 @@ export async function saveReceiptShareUrl(
   }
   const verified = verification.result === 'match';
 
-  // 既存のトークンがあれば使い回す（貼り直しで参加者に送った URL が死なないように）
   const token = crypto.randomUUID();
 
   try {
+    // ⚠️ トークンの扱いは「無効化されていたか」で変える。
+    //
+    //   無効化されていない … 使い回す。貼り間違いを直したとき、既に送った URL が
+    //                        そのまま正しい領収書を指すようになる（送り直さなくて済む）
+    //   無効化されていた   … **必ず作り直す**。使い回すと、誤って渡ってしまった URL が
+    //                        生き返り、しかも今度は正しい領収書を相手に見せてしまう。
+    //                        無効化は取り消せない操作でなければ意味がない。
+    //                        併せて receipt_sent_at も解除し、送り直せるようにする。
     const saved = await db
       .prepare(
         `UPDATE event_bookings
             SET receipt_share_url = ?,
                 receipt_share_expires_at = datetime('now', ?),
                 receipt_share_verified_at = ${verified ? "datetime('now')" : 'NULL'},
-                receipt_share_token = COALESCE(receipt_share_token, ?),
+                receipt_share_token = CASE
+                  WHEN receipt_share_revoked_at IS NULL THEN COALESCE(receipt_share_token, ?)
+                  ELSE ?
+                END,
+                receipt_sent_at = CASE
+                  WHEN receipt_share_revoked_at IS NULL THEN receipt_sent_at
+                  ELSE NULL
+                END,
+                receipt_share_opened_at = CASE
+                  WHEN receipt_share_revoked_at IS NULL THEN receipt_share_opened_at
+                  ELSE NULL
+                END,
                 receipt_share_revoked_at = NULL,
                 updated_at = datetime('now')
           WHERE id = ?
         RETURNING id, receipt_share_token`,
       )
-      .bind(parsed.url, `+${SHARE_EXPIRY_DAYS} days`, token, bookingId)
+      .bind(parsed.url, `+${SHARE_EXPIRY_DAYS} days`, token, token, bookingId)
       .first<{ id: number; receipt_share_token: string }>();
 
     if (!saved) return { ok: false, code: 'save_failed', error: '保存できませんでした。' };
@@ -174,4 +192,43 @@ export async function saveReceiptShareUrl(
         + 'freee で該当の領収書を開き、リンクをコピーし直してください。',
     };
   }
+}
+
+
+export interface RevokeShareResult {
+  ok: boolean;
+  error?: string;
+}
+
+/**
+ * 誤配に気づいたときに共有リンクを無効化する（#47 第2層）。
+ *
+ * ⚠️ **`receipt_share_url` も空にする。** 残したままだと、全体で一意という制約に阻まれて
+ *    **同じリンクを正しい予約に登録し直せない**。事故の復旧が最も必要な場面で詰む。
+ *
+ * トークンは残す。残しておけば、既に送った URL を開いたときに 404 ではなく
+ * 410「無効になりました」を出せる（参加者に何が起きたか伝わる）。
+ */
+export async function revokeReceiptShare(
+  db: D1Database,
+  eventId: number,
+  bookingId: number,
+): Promise<RevokeShareResult> {
+  const revoked = await db
+    .prepare(
+      `UPDATE event_bookings
+          SET receipt_share_revoked_at = datetime('now'),
+              receipt_share_url = NULL,
+              receipt_share_verified_at = NULL,
+              updated_at = datetime('now')
+        WHERE id = ? AND event_id = ? AND receipt_share_token IS NOT NULL
+      RETURNING id`,
+    )
+    .bind(bookingId, eventId)
+    .first<{ id: number }>();
+
+  if (!revoked) return { ok: false, error: '対象が見つかりませんでした。' };
+
+  console.warn('[receipt] 共有リンクを無効化しました:', bookingId);
+  return { ok: true };
 }

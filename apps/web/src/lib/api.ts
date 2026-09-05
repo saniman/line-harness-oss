@@ -77,8 +77,18 @@ function getApiKey(): string {
  * （message は従来と同じなので既存の呼び出し側に影響しない）。
  */
 export class ApiError extends Error {
-  constructor(readonly status: number) {
-    super(`API error: ${status}`)
+  constructor(
+    readonly status: number,
+    /** サーバーが返した理由。無ければ undefined */
+    readonly detail?: string,
+    /** 文言ではなく分岐に使うためのコード */
+    readonly code?: string,
+  ) {
+    // ⚠️ サーバーの文言を message に載せる。以前はステータスしか持っておらず、
+    //    「このリンクは既に◯◯さんに登録されています」のような
+    //    **原因を特定できる唯一の情報が画面に届いていなかった**（#47 レビュー）。
+    //    無ければ従来どおりの文言にするので、既存の表示箇所は壊れない。
+    super(detail ?? `API error: ${status}`)
     this.name = 'ApiError'
   }
 }
@@ -92,7 +102,17 @@ export async function fetchApi<T>(path: string, options?: RequestInit): Promise<
       ...options?.headers,
     },
   })
-  if (!res.ok) throw new ApiError(res.status)
+  if (!res.ok) {
+    // ⚠️ ボディを読んでから投げる。読まないとサーバーが用意した理由が全部消える。
+    //    JSON でない（502 の HTML など）ケースがあるので必ず握る
+    const body = (await res.json().catch(() => null)) as
+      { error?: unknown; code?: unknown } | null
+    throw new ApiError(
+      res.status,
+      typeof body?.error === 'string' ? body.error : undefined,
+      typeof body?.code === 'string' ? body.code : undefined,
+    )
+  }
   return res.json() as Promise<T>
 }
 

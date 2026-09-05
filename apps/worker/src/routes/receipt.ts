@@ -79,10 +79,12 @@ receipt.get('/receipt/:token', async (c) => {
       .first<ShareRow>();
 
     // ⚠️ 存在しないトークンは一律 404。存在の有無を漏らさない
-    if (!row?.receipt_share_url) {
+    if (!row) {
       return c.html(notice('見つかりません', 'このリンクは無効です。'), 404, protect());
     }
 
+    // ⚠️ 無効化の判定を URL より先に置く。無効化すると receipt_share_url は空になるので、
+    //    URL を先に見ると 404「見つかりません」になり、参加者に何が起きたか伝わらない
     if (row.receipt_share_revoked_at) {
       return c.html(
         notice(
@@ -92,6 +94,10 @@ receipt.get('/receipt/:token', async (c) => {
         410,
         protect(),
       );
+    }
+
+    if (!row.receipt_share_url) {
+      return c.html(notice('見つかりません', 'このリンクは無効です。'), 404, protect());
     }
 
     if (isExpired(row.receipt_share_expires_at)) {

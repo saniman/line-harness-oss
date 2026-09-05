@@ -73,6 +73,7 @@ export function buildReceiptMessage(params: ReceiptMessageParams): string {
 export type SendReceiptCode =
   | 'not_found'
   | 'event_mismatch'
+  | 'cancelled'
   | 'no_share_url'
   | 'expired'
   | 'revoked'
@@ -134,6 +135,11 @@ export async function sendReceiptToParticipant(
   if (booking.event_id !== eventId) {
     return { ok: false, code: 'event_mismatch', error: 'イベントが一致しません。' };
   }
+  // ⚠️ 保存時にキャンセルを弾いていても、保存後にキャンセルされる。
+  //    返金済みの予約に領収書を送ると、経理も参加者も混乱する
+  if (booking.status === 'cancelled') {
+    return { ok: false, code: 'cancelled', error: 'キャンセル済みの予約です。' };
+  }
   if (!booking.receipt_share_url || !booking.receipt_share_token) {
     return { ok: false, code: 'no_share_url', error: '共有リンクがまだ登録されていません。' };
   }
@@ -191,22 +197,37 @@ export async function sendReceiptToParticipant(
     expiresAt: booking.receipt_share_expires_at,
   });
 
-  try {
-    await line.pushMessage(friend.line_user_id, [{ type: 'text', text }]);
-  } catch (err) {
-    // ⚠️ 送信済みにしない。共有リンクも消さない（再送できる状態を保つ）
-    console.error('[receipt] LINE 送信に失敗しました:', bookingId, err);
-    return { ok: false, code: 'send_failed', error: '送信できませんでした。時間をおいて再度お試しください。' };
-  }
-
-  await db
+  // ⚠️ **送る前に送信権を取る**。上の receipt_sent_at チェックは SELECT を見た
+  //    「読んでから書く」判定なので、2台の端末で同時に押すと両方すり抜けて2通届く。
+  //    LINE の送信は取り消せないので、先に印を立てて、取れた1本だけが送る。
+  const claimed = await db
     .prepare(
       `UPDATE event_bookings
           SET receipt_sent_at = datetime('now'), updated_at = datetime('now')
-        WHERE id = ?`,
+        WHERE id = ? AND receipt_sent_at IS NULL
+      RETURNING receipt_sent_at`,
     )
     .bind(bookingId)
-    .run();
+    .first<{ receipt_sent_at: string }>();
+
+  if (!claimed) return { ok: false, code: 'already_sent', error: '既に送信済みです。' };
+
+  try {
+    await line.pushMessage(friend.line_user_id, [{ type: 'text', text }]);
+  } catch (err) {
+    // 送れなかったので送信権を返す。返さないと二度と送れなくなる。
+    // ⚠️ 自分が立てた印のときだけ消す（別の送信が入っていたらそれを消さない）
+    await db
+      .prepare(
+        `UPDATE event_bookings
+            SET receipt_sent_at = NULL, updated_at = datetime('now')
+          WHERE id = ? AND receipt_sent_at = ?`,
+      )
+      .bind(bookingId, claimed.receipt_sent_at)
+      .run();
+    console.error('[receipt] LINE 送信に失敗しました:', bookingId, err);
+    return { ok: false, code: 'send_failed', error: '送信できませんでした。時間をおいて再度お試しください。' };
+  }
 
   // ⚠️ 共有 URL・トークンをログに出さない（Workers Logs の閲覧権限だけで領収書が開ける）
   console.log('[receipt] 領収書を送信しました:', bookingId);

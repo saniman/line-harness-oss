@@ -1331,6 +1331,19 @@ describe('領収書の共有リンク（#47）', () => {
     expect((await put(SHARE)).status).toBe(404)
   })
 
+  it('【重要】WORKER_URL が未設定でもリクエストの origin にフォールバックする', async () => {
+    // 本番で WORKER_URL は未設定だった。無いと undefined.replace で 500 になり、
+    // 運営者には原因不明のエラーしか出ない（送信機能が丸ごと動かない）
+    const noUrl = { DB: mockDb, LINE_CHANNEL_ACCESS_TOKEN: 't' }
+
+    const res = await app.request(SEND_PATH, { method: 'POST' }, noUrl)
+
+    expect(res.status).toBe(200)
+    const passedUrl = mockSendReceipt.mock.calls[0][2] as string
+    expect(passedUrl).toMatch(/^https?:\/\/[^/]+$/)
+    expect(passedUrl).not.toContain('undefined')
+  })
+
   it('LINE で送信できる', async () => {
     const res = await app.request(SEND_PATH, { method: 'POST' }, ENV)
 

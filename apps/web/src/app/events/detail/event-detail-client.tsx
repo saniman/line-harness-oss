@@ -330,7 +330,11 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
   // 領収書が発行済み（＝送るべき）件数と、送信済み件数。
   // 手作業が挟まるので「貼り忘れた人」が必ず出る。一覧でひと目で分かるようにする（#47）
   const receiptIssuedCount = bookings.filter((b) => b.receipt_url && b.status !== 'cancelled').length
-  const receiptSentCount = bookings.filter((b) => b.receipt_sent_at).length
+  // ⚠️ 分母と同じ条件で数える。片方だけキャンセルを除くと「3/2 送信」になり、
+  //    未送信の人が残っているのに緑（完了）に見える
+  const receiptSentCount = bookings.filter(
+    (b) => b.receipt_sent_at && b.receipt_url && b.status !== 'cancelled',
+  ).length
 
   return (
     <div>

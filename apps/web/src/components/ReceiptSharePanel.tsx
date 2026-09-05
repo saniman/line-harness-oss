@@ -115,7 +115,12 @@ export default function ReceiptSharePanel({ eventId, booking, displayName, onDon
         <button
           onClick={async () => {
             const ok = await run(() => api.eventBookings.saveReceiptShare(eventId, booking.id, url))
-            if (ok) setUrl('')
+            if (ok) {
+              setUrl('')
+              // ⚠️ 必ずチェックを外す。外さないと、2本目の未照合リンクを貼っても
+              //    「確認済み」のまま送れてしまう。**取り違えが起きるのはまさに貼り直しの瞬間**
+              setConfirmed(false)
+            }
           }}
           disabled={busy || !url.trim()}
           className="px-3 py-1 rounded text-xs text-white bg-gray-700 disabled:opacity-50 whitespace-nowrap"

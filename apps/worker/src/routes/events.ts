@@ -19,7 +19,7 @@ import {
 } from '../services/events.js';
 import { enrollEventFollowupScenarios, enrollEventParticipants } from '../services/event-followup.js';
 import { issueReceiptForBooking } from '../services/freee-receipt.js';
-import { saveReceiptShareUrl } from '../services/receipt-share.js';
+import { saveReceiptShareUrl, revokeReceiptShare } from '../services/receipt-share.js';
 import { sendReceiptToParticipant } from '../services/receipt-notify.js';
 import type { IssueReceiptResult } from '../services/freee-receipt.js';
 import { resolveEventApplicant } from '../services/event-friend.js';
@@ -571,15 +571,6 @@ events.post('/api/events/bookings/:id/link-friend', async (c) => {
 });
 
 /**
- * 当日現金の受領を記録する（管理画面の「現金受領」ボタン）。
- *
- * 現金は受け取ったというデジタルな信号が無いので、人間が押す。
- * ここで記録した cash_received_at を起点に領収書を発行する（#46）。
- *
- * ⚠️ 認証必須。公開すると第三者が勝手に受領済みにして領収書を発行させられる。
- *    ロールは絞らない（受付での現金受領はスタッフの通常業務のため）。
- */
-/**
  * 領収書の共有リンクを登録する（Issue #47）。
  *
  * ⚠️ **認証必須**。スキップリストに入れてはいけない。
@@ -631,7 +622,14 @@ events.post('/api/events/:id/bookings/:bookingId/send-receipt', async (c) => {
 
     const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
     const result = await sendReceiptToParticipant(
-      c.env.DB, lineClient, c.env.WORKER_URL, eventId, bookingId,
+      c.env.DB,
+      lineClient,
+      // ⚠️ WORKER_URL は本番で未設定。無いと undefined.replace で 500 になり、
+      //    運営者には原因不明のエラーしか出ない。repo の既存パターンに合わせて
+      //    リクエストの origin にフォールバックする（tracked-links.ts と同じ）
+      c.env.WORKER_URL || new URL(c.req.url).origin,
+      eventId,
+      bookingId,
     );
 
     if (!result.ok) {
@@ -662,18 +660,9 @@ events.post('/api/events/:id/bookings/:bookingId/revoke-receipt', async (c) => {
       return c.json({ success: false, error: 'Invalid id' }, 400);
     }
 
-    const revoked = await c.env.DB.prepare(
-      `UPDATE event_bookings
-          SET receipt_share_revoked_at = datetime('now'), updated_at = datetime('now')
-        WHERE id = ? AND event_id = ? AND receipt_share_token IS NOT NULL
-      RETURNING id`,
-    ).bind(bookingId, eventId).first<{ id: number }>();
+    const result = await revokeReceiptShare(c.env.DB, eventId, bookingId);
+    if (!result.ok) return c.json({ success: false, error: result.error }, 404);
 
-    if (!revoked) {
-      return c.json({ success: false, error: '対象が見つかりませんでした。' }, 404);
-    }
-
-    console.warn('[receipt] 共有リンクを無効化しました:', bookingId);
     return c.json({ success: true });
   } catch (err) {
     console.error('POST /api/events/:id/bookings/:bookingId/revoke-receipt error:', err);
@@ -681,6 +670,15 @@ events.post('/api/events/:id/bookings/:bookingId/revoke-receipt', async (c) => {
   }
 });
 
+/**
+ * 当日現金の受領を記録する（管理画面の「現金受領」ボタン）。
+ *
+ * 現金は受け取ったというデジタルな信号が無いので、人間が押す。
+ * ここで記録した cash_received_at を起点に領収書を発行する（#46）。
+ *
+ * ⚠️ 認証必須。公開すると第三者が勝手に受領済みにして領収書を発行させられる。
+ *    ロールは絞らない（受付での現金受領はスタッフの通常業務のため）。
+ */
 events.post('/api/events/:id/bookings/:bookingId/cash-received', async (c) => {
   try {
     const eventId = Number(c.req.param('id'));
