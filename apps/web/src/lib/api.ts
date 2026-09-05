@@ -69,6 +69,20 @@ function getApiKey(): string {
   return ''
 }
 
+/**
+ * API が非 2xx を返したときの例外。
+ *
+ * `fetchApi` は非 2xx で throw するため、呼び出し側の `if (!res.success)` は到達しない。
+ * ステータスを見て案内を出し分けられるよう、値を持たせておく
+ * （message は従来と同じなので既存の呼び出し側に影響しない）。
+ */
+export class ApiError extends Error {
+  constructor(readonly status: number) {
+    super(`API error: ${status}`)
+    this.name = 'ApiError'
+  }
+}
+
 export async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
     ...options,
@@ -78,7 +92,7 @@ export async function fetchApi<T>(path: string, options?: RequestInit): Promise<
       ...options?.headers,
     },
   })
-  if (!res.ok) throw new Error(`API error: ${res.status}`)
+  if (!res.ok) throw new ApiError(res.status)
   return res.json() as Promise<T>
 }
 

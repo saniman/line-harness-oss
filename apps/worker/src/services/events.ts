@@ -364,11 +364,18 @@ export async function confirmEventBooking(
  */
 export async function markCashReceived(
   db: D1Database,
+  eventId: number,
   bookingId: number,
 ): Promise<{ success: boolean; alreadyReceived: boolean; error?: string; booking?: EventBookingRow }> {
   const booking = await getEventBookingById(db, bookingId)
   if (!booking) {
     return { success: false, alreadyReceived: false, error: '予約が見つかりませんでした。' }
+  }
+
+  // 別イベントの予約に記録できてしまうと、成功が返るのに一覧は変わらず、
+  // 間違えたことに気づけない（古いタブから押した場合など）
+  if (booking.event_id !== eventId) {
+    return { success: false, alreadyReceived: false, error: 'イベントが一致しません。' }
   }
 
   if (booking.status === 'cancelled') {
@@ -387,15 +394,31 @@ export async function markCashReceived(
     return { success: true, alreadyReceived: true, booking }
   }
 
-  const now = jstNow()
-  // 未受領のときだけ通す。同時に押されても受領日時は最初の1回で確定する
-  await db.prepare(
-    "UPDATE event_bookings SET cash_received_at = ?, updated_at = datetime('now') WHERE id = ? AND cash_received_at IS NULL",
-  ).bind(now, bookingId).run()
+  // 未受領のときだけ通す。SELECT からここまでの間に状態が変わっていても押印しないよう、
+  // status / payment_status も WHERE で守る。
+  //
+  // ⚠️ 日時は datetime('now')（UTC）にする。paid_at / created_at / updated_at と同じ規約。
+  //    ここだけ JST(+09:00) にすると、SQLite の文字列比較で 9 時間ずれる。
+  const updated = await db.prepare(
+    `UPDATE event_bookings
+        SET cash_received_at = datetime('now'), updated_at = datetime('now')
+      WHERE id = ?
+        AND cash_received_at IS NULL
+        AND status = 'confirmed'
+        AND payment_status = 'cash'
+    RETURNING cash_received_at`,
+  ).bind(bookingId).first<{ cash_received_at: string }>()
+
+  if (!updated) {
+    // 0行更新＝別のリクエストが一瞬先に記録した（または直前に状態が変わった）。
+    // 保存されていない日時を「今記録した」と返さない。実際の値を読み直す。
+    const fresh = await getEventBookingById(db, bookingId)
+    return { success: true, alreadyReceived: true, booking: fresh ?? booking }
+  }
 
   return {
     success: true,
     alreadyReceived: false,
-    booking: { ...booking, cash_received_at: now },
+    booking: { ...booking, cash_received_at: updated.cash_received_at },
   }
 }

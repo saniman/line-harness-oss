@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
-import { api } from '@/lib/api'
+import { api, ApiError } from '@/lib/api'
 import type { EventItem, EventBookingItem, FriendWithTags } from '@/lib/api'
 import { getPaymentBadge } from '@/lib/payment-badge'
 import {
@@ -10,6 +10,7 @@ import {
   participantDisplayName,
   partitionBookings,
   getDropoutReasonLabel,
+  resolveBookingAmount,
 } from '@/lib/booking-display'
 import { formatJST, toJstDatetimeLocal, jstDatetimeLocalToIso } from '@/lib/format-jst'
 import Header from '@/components/layout/header'
@@ -143,7 +144,11 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
    * これを起点に領収書が発行される（#46）ので、押し間違いを防ぐため金額を確認させる。
    */
   const handleCashReceived = async (b: EventBookingItem) => {
-    const amount = b.amount != null ? `¥${b.amount.toLocaleString()}` : '（金額未設定）'
+    // ⚠️ event_bookings.amount は Stripe の webhook でしか入らない。現金申込は常に null なので、
+    //    イベント価格で補わないと確認ダイアログが毎回「金額未設定」になり、
+    //    押し間違い防止として一度も機能しない。
+    const resolved = resolveBookingAmount(b, event?.price ?? null)
+    const amount = resolved != null ? `¥${resolved.toLocaleString()}` : '（金額未設定）'
     if (!confirm(
       `${participantDisplayName(b)} さんから ${amount} を受け取りましたか？\n\n` +
       `記録すると領収書が発行されます。取り消しはできません。`
@@ -152,10 +157,18 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
     setCashBusyId(b.id)
     setCashError('')
     try {
-      const res = await api.eventBookings.markCashReceived(eventId, b.id)
-      if (!res.success) setCashError('受領を記録できませんでした。')
-    } catch {
-      setCashError('受領を記録できませんでした。通信状態を確認して、もう一度お試しください。')
+      await api.eventBookings.markCashReceived(eventId, b.id)
+    } catch (err) {
+      // fetchApi は非2xxで throw する。ステータスで案内を分けないと、
+      // 「押しても永久に成功しない」ケースまで通信エラー扱いになり、運営者が押し続ける。
+      const status = err instanceof ApiError ? err.status : 0
+      if (status === 404) {
+        setCashError('この申込は見つかりませんでした。ほかの端末で取り消された可能性があります。')
+      } else if (status === 400) {
+        setCashError('この申込は受領できません（キャンセル済み・現金以外など）。最新の状態を読み込みました。')
+      } else {
+        setCashError('受領を記録できませんでした。通信状態を確認して、もう一度お試しください。')
+      }
     }
     // 成否にかかわらずサーバーの状態に合わせ直す（エラーは消さない）
     await load()

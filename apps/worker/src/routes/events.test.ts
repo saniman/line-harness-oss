@@ -1025,7 +1025,7 @@ describe('POST /api/events/:id/bookings/:bookingId/cash-received', () => {
     mockMarkCashReceived.mockResolvedValue({ success: true, alreadyReceived: false })
     const res = await app.request(PATH, { method: 'POST' }, { DB: mockDb })
     expect(res.status).toBe(200)
-    expect(mockMarkCashReceived).toHaveBeenCalledWith(expect.anything(), 5)
+    expect(mockMarkCashReceived).toHaveBeenCalledWith(expect.anything(), 1, 5)
   })
 
   it('既に受領済みでも成功として返す（冪等）', async () => {
@@ -1053,6 +1053,12 @@ describe('POST /api/events/:id/bookings/:bookingId/cash-received', () => {
     expect(res.status).toBe(400)
     const body = await res.json() as { error: string }
     expect(body.error).toContain('キャンセル')
+  })
+
+  it('イベントIDが数値でなければ 400（DBに触らない）', async () => {
+    const res = await app.request('/api/events/abc/bookings/5/cash-received', { method: 'POST' }, { DB: mockDb })
+    expect(res.status).toBe(400)
+    expect(mockMarkCashReceived).not.toHaveBeenCalled()
   })
 
   it('bookingId が数値でなければ 400（DBに触らない）', async () => {

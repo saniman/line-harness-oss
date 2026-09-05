@@ -575,12 +575,13 @@ events.post('/api/events/bookings/:id/link-friend', async (c) => {
  */
 events.post('/api/events/:id/bookings/:bookingId/cash-received', async (c) => {
   try {
+    const eventId = Number(c.req.param('id'));
     const bookingId = Number(c.req.param('bookingId'));
-    if (!Number.isInteger(bookingId)) {
-      return c.json({ success: false, error: 'Invalid booking id' }, 400);
+    if (!Number.isInteger(eventId) || !Number.isInteger(bookingId)) {
+      return c.json({ success: false, error: 'Invalid id' }, 400);
     }
 
-    const result = await markCashReceived(c.env.DB, bookingId);
+    const result = await markCashReceived(c.env.DB, eventId, bookingId);
 
     if (!result.success) {
       // 見つからない/対象外を区別する（UI が「消えた」と「押せない」を出し分けられる）

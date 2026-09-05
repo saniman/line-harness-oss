@@ -549,24 +549,22 @@ describe('markCashReceived', () => {
   }
 
   it('現金の未受領を受領済みにする', async () => {
-    const db = makeDb(makeStmt(CASH), makeStmt(null))
-    const res = await markCashReceived(db, 1)
+    const db = makeDb(makeStmt(CASH), makeStmt({ cash_received_at: '2026-09-05 09:00:00' }))
+    const res = await markCashReceived(db, 1, 1)
     expect(res.success).toBe(true)
     expect(res.alreadyReceived).toBe(false)
-    expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining('cash_received_at'))
+    expect(res.booking?.cash_received_at).toBe('2026-09-05 09:00:00')
   })
 
-  it('受領日時は JST(+09:00) で記録する', async () => {
-    const stmt = makeStmt(null)
-    const db = makeDb(makeStmt(CASH), stmt)
-    await markCashReceived(db, 1)
-    const bound = (stmt.bind as ReturnType<typeof vi.fn>).mock.calls.flat()
-    expect(bound.some((v) => typeof v === 'string' && v.endsWith('+09:00'))).toBe(true)
+  it('記録した実際の値を返す（保存されていない値を作って返さない）', async () => {
+    const db = makeDb(makeStmt(CASH), makeStmt({ cash_received_at: '2026-09-05 09:00:00' }))
+    const res = await markCashReceived(db, 1, 1)
+    expect(res.booking?.cash_received_at).toBe('2026-09-05 09:00:00')
   })
 
   it('存在しない予約なら success:false', async () => {
     const db = makeDb(makeStmt(null))
-    const res = await markCashReceived(db, 999)
+    const res = await markCashReceived(db, 1, 999)
     expect(res.success).toBe(false)
     expect(res.error).toContain('見つかりません')
   })
@@ -577,7 +575,7 @@ describe('markCashReceived', () => {
       ...CASH, cash_received_at: '2026-09-05T18:00:00.000+09:00',
     }
     const db = makeDb(makeStmt(received))
-    const res = await markCashReceived(db, 1)
+    const res = await markCashReceived(db, 1, 1)
     expect(res.success).toBe(true)
     expect(res.alreadyReceived).toBe(true)
     expect(db.prepare).not.toHaveBeenCalledWith(expect.stringContaining('UPDATE'))
@@ -586,7 +584,7 @@ describe('markCashReceived', () => {
   it('現金以外（Stripe決済）は受領対象にしない', async () => {
     const paid: EventBookingRow = { ...CASH, payment_status: 'paid' }
     const db = makeDb(makeStmt(paid))
-    const res = await markCashReceived(db, 1)
+    const res = await markCashReceived(db, 1, 1)
     expect(res.success).toBe(false)
     expect(res.error).toContain('現金')
   })
@@ -595,7 +593,7 @@ describe('markCashReceived', () => {
     // キャンセルした人から現金を受け取ることはない。押せてしまうと領収書まで飛ぶ
     const cancelled: EventBookingRow = { ...CASH, status: 'cancelled' }
     const db = makeDb(makeStmt(cancelled))
-    const res = await markCashReceived(db, 1)
+    const res = await markCashReceived(db, 1, 1)
     expect(res.success).toBe(false)
     expect(res.error).toContain('キャンセル')
   })
@@ -603,16 +601,70 @@ describe('markCashReceived', () => {
   it('決済待ち（pending）の予約は受領できない', async () => {
     const pending: EventBookingRow = { ...CASH, status: 'pending' }
     const db = makeDb(makeStmt(pending))
-    const res = await markCashReceived(db, 1)
+    const res = await markCashReceived(db, 1, 1)
     expect(res.success).toBe(false)
   })
 
   it('更新は未受領のときだけ通す（同時押しで二重更新しない）', async () => {
-    const stmt = makeStmt(null)
-    const db = makeDb(makeStmt(CASH), stmt)
-    await markCashReceived(db, 1)
+    const db = makeDb(makeStmt(CASH), makeStmt({ cash_received_at: 'x' }))
+    await markCashReceived(db, 1, 1)
     const sql = (db.prepare as ReturnType<typeof vi.fn>).mock.calls
       .map((c) => c[0] as string).find((q) => q.includes('UPDATE')) ?? ''
     expect(sql).toContain('cash_received_at IS NULL')
+  })
+
+  // ── 更新結果を見る（レビュー③）────────────────────────────
+
+  it('【重要】0行更新なら成功と偽らず alreadyReceived として返す', async () => {
+    // 別のスタッフが一瞬先に押した場合。更新結果を見ないと、
+    // 保存されていない日時を「今記録した」と返してしまう。
+    const stored: EventBookingRow = { ...CASH, cash_received_at: '2026-09-05T09:00:00' }
+    const db = makeDb(
+      makeStmt(CASH),      // SELECT: このとき未受領に見えた
+      makeStmt(null),      // UPDATE: 0行（競合に負けた）
+      makeStmt(stored),    // 読み直し
+    )
+
+    const res = await markCashReceived(db, 1, 1)
+
+    expect(res.success).toBe(true)
+    expect(res.alreadyReceived).toBe(true)
+    expect(res.booking?.cash_received_at).toBe('2026-09-05T09:00:00')
+  })
+
+  it('UPDATE の WHERE で status と payment_status も守る', async () => {
+    // SELECT と UPDATE の間にキャンセルされても押印しない
+    const db = makeDb(makeStmt(CASH), makeStmt({ cash_received_at: 'x' }))
+    await markCashReceived(db, 1, 1)
+    const sql = (db.prepare as ReturnType<typeof vi.fn>).mock.calls
+      .map((c) => c[0] as string).find((q) => q.includes('UPDATE')) ?? ''
+    expect(sql).toContain("status = 'confirmed'")
+    expect(sql).toContain("payment_status = 'cash'")
+  })
+
+  // ── 日時規約（レビュー④）──────────────────────────────────
+
+  it('受領日時は event_bookings の他の列と同じ UTC 表記で記録する', async () => {
+    // paid_at / created_at / updated_at はすべて datetime('now')。
+    // ここだけ JST(+09:00) にすると、SQLite の文字列比較で 9 時間ずれる。
+    const db = makeDb(makeStmt(CASH), makeStmt({ cash_received_at: 'x' }))
+    await markCashReceived(db, 1, 1)
+    const sql = (db.prepare as ReturnType<typeof vi.fn>).mock.calls
+      .map((c) => c[0] as string).find((q) => q.includes('UPDATE')) ?? ''
+    expect(sql).toContain("cash_received_at = datetime('now')")
+  })
+
+  // ── イベントIDの突き合わせ（レビュー⑤）────────────────────
+
+  it('パスのイベントIDと予約のイベントIDが違えば拒否する', async () => {
+    // 別イベントの予約に受領を記録できてしまうと、
+    // 成功が返るのに一覧に変化が無く、間違いに気づけない
+    const otherEvent: EventBookingRow = { ...CASH, event_id: 99 }
+    const db = makeDb(makeStmt(otherEvent))
+
+    const res = await markCashReceived(db, 1, 1)
+
+    expect(res.success).toBe(false)
+    expect(res.error).toContain('イベント')
   })
 })

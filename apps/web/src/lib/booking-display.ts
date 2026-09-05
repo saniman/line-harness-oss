@@ -105,3 +105,21 @@ export function partitionBookings<T extends BookingDisplayRow>(
     confirmedCount: bookings.filter((b) => b.status === 'confirmed').length,
   }
 }
+
+/**
+ * 参加者に確認する金額を決める。
+ *
+ * `event_bookings.amount` は Stripe の webhook（confirmEventBooking）でしか入らない。
+ * 当日現金の申込は `createEventBooking` が amount を INSERT しないため**常に null**で、
+ * 補わないと「現金受領」の確認ダイアログが毎回「金額未設定」になり、
+ * 押し間違い防止として一度も機能しない。イベントの価格で補う。
+ *
+ * 0 は「無料」という意味のある値なので null に丸めない。
+ */
+export function resolveBookingAmount(
+  booking: { amount: number | null },
+  eventPrice: number | null | undefined,
+): number | null {
+  if (booking.amount != null) return booking.amount
+  return eventPrice ?? null
+}
