@@ -1030,6 +1030,12 @@ export type EventBookingItem = {
   receipt_share_opened_at: string | null
   /** LINE で送信した日時。null = 未送信 */
   receipt_sent_at: string | null
+  /**
+   * 実際に領収書へ載る宛名（サーバーで解決済み）。null = 決められない。
+   * ⚠️ 画面で receipt_name || name と組み立て直さないこと。
+   *    サニタイズ・60文字切り詰め・空欄のフォールバックが入るため実物と食い違う。
+   */
+  receipt_payee: string | null
 }
 
 export type BackfillFriendsResult = {

@@ -298,3 +298,66 @@ describe('無効化と、事故からの復旧（#47 第2層）', () => {
     expect(sql).toContain('WHEN receipt_share_revoked_at IS NULL THEN COALESCE(receipt_share_token, ?)');
   });
 });
+
+describe('送信済みのリンクを差し替えるとき（#47 レビュー2周目）', () => {
+  const OTHER = 'https://invoice.secure.freee.co.jp/ivex/dl/aaaaaaaa-1111-4222-8333-444444444444';
+  const sentBooking = (overrides: Record<string, unknown> = {}) =>
+    booking({ receipt_share_url: SHARE, receipt_sent_at: '2026-09-06 05:00:00', ...overrides });
+
+  it('【重要】照合できないまま差し替えさせない', async () => {
+    // トークンは使い回すので、既に届いている URL の指す先が変わる。
+    // 間違ったリンクに差し替えると、**新たに送信しなくても**別人の領収書が見られてしまう
+    mockVerify.mockResolvedValue({ result: 'unavailable' });
+    const { db, sqls } = makeDb({ booking: sentBooking() });
+
+    const res = await saveReceiptShareUrl(db, 1, 5, OTHER);
+
+    expect(res.ok).toBe(false);
+    expect(res.code).toBe('sent_unverified_change');
+    expect(res.error).toContain('無効化');
+    expect(sqls.some((q) => q.includes('UPDATE'))).toBe(false);
+  });
+
+  it('照合が通れば差し替えてよい（間違いを直せる）', async () => {
+    mockVerify.mockResolvedValue({ result: 'match', receiptNumber: 'REC-0000000008' });
+    const { db } = makeDb({ booking: sentBooking() });
+
+    const res = await saveReceiptShareUrl(db, 1, 5, OTHER);
+
+    expect(res.ok).toBe(true);
+  });
+
+  it('同じ URL の貼り直しは、照合できなくても通る', async () => {
+    // 指す先が変わらないので危険がない
+    mockVerify.mockResolvedValue({ result: 'unavailable' });
+    const { db } = makeDb({ booking: sentBooking() });
+
+    const res = await saveReceiptShareUrl(db, 1, 5, SHARE);
+
+    expect(res.ok).toBe(true);
+  });
+
+  it('未送信なら照合できなくても差し替えてよい', async () => {
+    // まだ誰も URL を持っていないので、指す先が変わっても害がない
+    mockVerify.mockResolvedValue({ result: 'unavailable' });
+    const { db } = makeDb({ booking: booking({ receipt_share_url: SHARE, receipt_sent_at: null }) });
+
+    const res = await saveReceiptShareUrl(db, 1, 5, OTHER);
+
+    expect(res.ok).toBe(true);
+  });
+
+  it('【重要】同じ URL の貼り直しでは期限を延ばさない', async () => {
+    // 延ばすと freee 側の実際の期限を追い越し、参加者は案内ではなく死んだページを見る
+    const { db, sqls } = makeDb();
+
+    await saveReceiptShareUrl(db, 1, 5, SHARE);
+
+    const sql = norm(sqls.find((q) => q.includes('receipt_share_expires_at')) ?? '');
+    expect(sql).toContain(
+      'receipt_share_expires_at = CASE'
+      + ' WHEN receipt_share_url = ? THEN receipt_share_expires_at'
+      + " ELSE datetime('now', ?) END",
+    );
+  });
+});

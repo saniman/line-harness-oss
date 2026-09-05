@@ -34,6 +34,7 @@ export type SaveShareUrlCode =
   | 'receipt_mismatch'
   | 'link_not_found'
   | 'duplicate'
+  | 'sent_unverified_change'
   | 'save_failed';
 
 export interface SaveShareUrlResult {
@@ -55,6 +56,7 @@ interface BookingRow {
   receipt_url: string | null;
   receipt_number: string | null;
   receipt_share_url: string | null;
+  receipt_sent_at: string | null;
 }
 
 /** 一意制約に当たったかを、DB のメッセージに依存しすぎず判定する */
@@ -87,7 +89,8 @@ export async function saveReceiptShareUrl(
 
   const booking = await db
     .prepare(
-      `SELECT id, event_id, name, status, receipt_url, receipt_number, receipt_share_url
+      `SELECT id, event_id, name, status, receipt_url, receipt_number,
+              receipt_share_url, receipt_sent_at
          FROM event_bookings WHERE id = ?`,
     )
     .bind(bookingId)
@@ -131,6 +134,28 @@ export async function saveReceiptShareUrl(
   }
   const verified = verification.result === 'match';
 
+  // ⚠️ **送信済みの予約でリンクを差し替えるのは危ない。**
+  //    トークンは使い回すので、既に参加者へ届いている URL の指す先が変わる。
+  //    正しいリンクに直すぶんには有益だが、間違ったリンクに差し替えると
+  //    **新たに送信しなくても** その参加者が別人の領収書を見ることになる。
+  //    照合が通らないまま差し替えさせない。無効化を挟めばトークンが作り直され、
+  //    届いている URL は死ぬので安全にやり直せる。
+  const changingSentLink =
+    !!booking.receipt_sent_at
+    && !!booking.receipt_share_url
+    && booking.receipt_share_url !== parsed.url;
+
+  if (changingSentLink && !verified) {
+    return {
+      ok: false,
+      code: 'sent_unverified_change',
+      error:
+        '送信済みのリンクを差し替えようとしています。freee と照合できなかったため中止しました。'
+        + '先に「リンクを無効化」してから貼り直してください'
+        + '（無効化すると、既に届いているリンクは開けなくなります）。',
+    };
+  }
+
   const token = crypto.randomUUID();
 
   try {
@@ -146,7 +171,12 @@ export async function saveReceiptShareUrl(
       .prepare(
         `UPDATE event_bookings
             SET receipt_share_url = ?,
-                receipt_share_expires_at = datetime('now', ?),
+                -- ⚠️ 同じ URL の貼り直しでは期限を延ばさない。延ばすと freee 側の
+                --    実際の期限を追い越し、参加者は案内ではなく freee の死んだページを見る
+                receipt_share_expires_at = CASE
+                  WHEN receipt_share_url = ? THEN receipt_share_expires_at
+                  ELSE datetime('now', ?)
+                END,
                 receipt_share_verified_at = ${verified ? "datetime('now')" : 'NULL'},
                 receipt_share_token = CASE
                   WHEN receipt_share_revoked_at IS NULL THEN COALESCE(receipt_share_token, ?)
@@ -165,7 +195,7 @@ export async function saveReceiptShareUrl(
           WHERE id = ?
         RETURNING id, receipt_share_token`,
       )
-      .bind(parsed.url, `+${SHARE_EXPIRY_DAYS} days`, token, token, bookingId)
+      .bind(parsed.url, parsed.url, `+${SHARE_EXPIRY_DAYS} days`, token, token, bookingId)
       .first<{ id: number; receipt_share_token: string }>();
 
     if (!saved) return { ok: false, code: 'save_failed', error: '保存できませんでした。' };

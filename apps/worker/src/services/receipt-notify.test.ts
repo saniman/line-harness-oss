@@ -211,13 +211,23 @@ describe('sendReceiptToParticipant（送信）', () => {
     expect(line.pushMessage).not.toHaveBeenCalled();
   });
 
-  it('無効化済みのリンクは送信しない', async () => {
-    const { db } = makeDb({ booking: booking({ receipt_share_revoked_at: '2026-09-06 00:00:00' }) });
+  it('【重要】無効化済みのリンクは送信せず、無効化されたと伝える', async () => {
+    // ⚠️ fixture は **revokeReceiptShare が実際に作る状態** にする。
+    //    「revoked_at あり ＋ url も残っている」はありえず、その形でテストしていたため
+    //    判定順のバグ（no_share_url で先に止まる）を検出できていなかった
+    const { db } = makeDb({
+      booking: booking({
+        receipt_share_revoked_at: '2026-09-06 00:00:00',
+        receipt_share_url: null,
+        receipt_share_verified_at: null,
+      }),
+    });
     const line = makeLine();
 
     const res = await sendReceiptToParticipant(db, line, WORKER_URL, 1, 5);
 
     expect(res.code).toBe('revoked');
+    expect(res.error).toContain('無効化');
     expect(line.pushMessage).not.toHaveBeenCalled();
   });
 

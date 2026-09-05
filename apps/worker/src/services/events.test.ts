@@ -59,6 +59,7 @@ import {
   failCheckoutBooking,
   markCashReceived,
   resolveReceiptName,
+  getEventBookingsAdmin,
 } from './events.js'
 import type { EventBookingRow as EventBookingRowType } from './events.js'
 
@@ -856,5 +857,34 @@ describe('resolveReceiptName', () => {
     expect(resolveReceiptName({
       receipt_name: null, name: '  ', friend_display_name: '   ',
     })).toBeNull()
+  })
+})
+
+describe('getEventBookingsAdmin（宛名の解決）', () => {
+  it('【重要】実際に領収書へ載る宛名をサーバーで解決して返す', async () => {
+    // 管理画面が receipt_name || name と組み立て直すと、サニタイズ・切り詰め・
+    // 空欄のフォールバックが効かず、運営者が確認する値と実物が食い違う（#47）
+    const db = {
+      prepare: () => ({
+        bind: () => ({
+          all: async () => ({
+            results: [
+              { id: 1, receipt_name: '  テスト株式会社  ', name: 'あきひさ' },
+              { id: 2, receipt_name: null, name: 'たろう' },
+              { id: 3, receipt_name: null, name: '' },
+            ],
+          }),
+        }),
+      }),
+    } as unknown as D1Database
+
+    const rows = await getEventBookingsAdmin(db, 1)
+
+    // 前後の空白は落とされる（サニタイズを通っている証拠）
+    expect(rows[0].receipt_payee).toBe('テスト株式会社')
+    // 宛名未指定なら申込者名
+    expect(rows[1].receipt_payee).toBe('たろう')
+    // どれも空なら null（「決められない」と分かる）
+    expect(rows[2].receipt_payee).toBe(null)
   })
 })

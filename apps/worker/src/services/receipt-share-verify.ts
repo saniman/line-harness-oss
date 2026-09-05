@@ -83,7 +83,16 @@ export async function verifyShareUrl(
   //    freee がファイル名の規則を変えただけで、正しい操作が全部止まってしまう
   if (!actual) return { result: 'unavailable' };
 
-  return actual === expectedNumber
+  // ⚠️ **両辺を同じ抽出に通してから比べる。**
+  //    左は Content-Disposition から /REC-\d+/ で切り出した値、右は freee が
+  //    レスポンスで返した生の値。書式が少しでも違うと（余分な空白・接頭辞の変更など）
+  //    全件 mismatch になり、**この機能が丸ごと止まる**。しかも文言は
+  //    「別の方の領収書です」なので、運営者は自分のミスだと思い込む。
+  //    比較できない形なら、拒否ではなく「検証できない」に倒す（他の経路と揃える）。
+  const expected = extractReceiptNumber(expectedNumber);
+  if (!expected) return { result: 'unavailable' };
+
+  return actual === expected
     ? { result: 'match', receiptNumber: actual }
     : { result: 'mismatch', receiptNumber: actual };
 }

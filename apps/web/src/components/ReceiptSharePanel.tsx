@@ -27,6 +27,8 @@ export interface ReceiptShareBooking {
   id: number
   name: string
   receipt_name: string | null
+  /** 実際に領収書へ載る宛名（サーバーで解決済み） */
+  receipt_payee: string | null
   friend_id: string | null
   /** freee の report_url（運営者用・ログイン必須）。「freeeで開く」に使う */
   receipt_url: string | null
@@ -60,7 +62,10 @@ export default function ReceiptSharePanel({ eventId, booking, displayName, onDon
   const verified = !!booking.receipt_share_verified_at
   const revoked = !!booking.receipt_share_revoked_at
   const sent = !!booking.receipt_sent_at
-  const payee = booking.receipt_name || booking.name || displayName
+  // ⚠️ 自前で組み立て直さない。実際に載る宛名はサニタイズ・切り詰め・
+  //    空欄のフォールバックを経ており、receipt_name || name とは違う値になりうる。
+  //    ここは運営者が目で確かめる場所なので、確認対象が実物と違っては意味がない
+  const payee = booking.receipt_payee
 
   // 照合できていないときだけ、人の目での確認を求める。
   // 機械で照合できたのに毎回チェックさせると、運営者が慣れて素通しするようになる
@@ -87,7 +92,9 @@ export default function ReceiptSharePanel({ eventId, booking, displayName, onDon
     <div className="px-4 pb-3 bg-amber-50/60 border-t border-amber-100">
       <p className="text-xs text-gray-600 mt-2">
         <span className="font-medium text-gray-900">{displayName}</span> さんの領収書
-        <span className="text-gray-500">（宛名: {payee}）</span>
+        {payee
+          ? <span className="text-gray-500">（宛名: {payee}）</span>
+          : <span className="text-red-600">（宛名を決められません）</span>}
       </p>
 
       {/* ① freee で開く: 該当の領収書へ直行できると、freee 内を探す手間と取り違えが減る */}
@@ -155,7 +162,7 @@ export default function ReceiptSharePanel({ eventId, booking, displayName, onDon
             className="mt-0.5"
           />
           <span>
-            リンクを開いて、<span className="font-medium">{displayName}</span> さんの領収書であることを確認しました
+            リンクを開いて、宛名が「<span className="font-medium">{payee}</span>」になっていることを確認しました
           </span>
         </label>
       )}

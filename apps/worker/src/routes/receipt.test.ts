@@ -54,7 +54,12 @@ describe('GET /receipt/:token', () => {
   });
 
   it('【重要】無効化されていたら 410（誤配を止められる）', async () => {
-    const { db } = makeDb(row({ receipt_share_revoked_at: '2026-09-06 00:00:00' }));
+    // ⚠️ revokeReceiptShare は receipt_share_url を空にする。
+    //    url が残っている fixture だと、判定順のバグを検出できない
+    const { db } = makeDb(row({
+      receipt_share_revoked_at: '2026-09-06 00:00:00',
+      receipt_share_url: null,
+    }));
 
     const res = await app.request('/receipt/tok-1', {}, { DB: db });
 

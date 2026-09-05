@@ -164,6 +164,11 @@ export async function getEventBookings(db: D1Database, eventId: number): Promise
 export interface EventBookingWithFriend extends EventBookingRow {
   friend_display_name: string | null
   friend_is_following: number | null
+  /**
+   * 実際に領収書へ載る宛名（サーバーで解決済み）。null = 決められない。
+   * 管理画面はこれを表示する（自前で組み立てると実物と食い違う）。
+   */
+  receipt_payee?: string | null
 }
 
 export async function getEventBookingsAdmin(
@@ -177,7 +182,13 @@ export async function getEventBookingsAdmin(
      WHERE b.event_id = ?
      ORDER BY b.created_at`,
   ).bind(eventId).all<EventBookingWithFriend>()
-  return result.results
+
+  // ⚠️ 宛名は**サーバーで解決して返す**。
+  //    管理画面が receipt_name || name で自前に組み立てると、実際に領収書へ載る値
+  //    （resolveReceiptName ＝ サニタイズ・60文字切り詰め・空欄のフォールバック込み）と
+  //    食い違う。この表示は運営者が目で確かめるためのものなので、
+  //    確認対象が実物と違っては意味がない（#47 レビュー）。
+  return result.results.map((b) => ({ ...b, receipt_payee: resolveReceiptName(b) }))
 }
 
 /**

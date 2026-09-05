@@ -126,3 +126,32 @@ describe('freeeShareVerifier（本番の HTTP 呼び出し）', () => {
     expect(res.contentDisposition).toBe(DISPOSITION);
   });
 });
+
+describe('verifyShareUrl（比較の対称性）', () => {
+  it('保存側に余分な空白があっても照合できる', async () => {
+    const fetcher = makeFetcher({ status: 200, disposition: DISPOSITION });
+
+    const res = await verifyShareUrl(UUID, '  REC-0000000008  ', fetcher);
+
+    expect(res.result).toBe('match');
+  });
+
+  it('【重要】保存側から番号を抽出できなければ「検証できない」にする', async () => {
+    // ここを mismatch にすると、freee が採番規則を変えただけで**全件が 400 で拒否**になり、
+    // しかも「別の方の領収書です」と出て運営者は自分のミスだと思い込む。
+    // 他の経路はすべて fail-open なので、ここだけ fail-closed にしない
+    const fetcher = makeFetcher({ status: 200, disposition: DISPOSITION });
+
+    const res = await verifyShareUrl(UUID, 'INVOICE-12345', fetcher);
+
+    expect(res.result).toBe('unavailable');
+  });
+
+  it('番号が本当に違えば mismatch のまま', async () => {
+    const fetcher = makeFetcher({ status: 200, disposition: DISPOSITION });
+
+    const res = await verifyShareUrl(UUID, 'REC-0000000099', fetcher);
+
+    expect(res.result).toBe('mismatch');
+  });
+});

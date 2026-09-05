@@ -140,11 +140,19 @@ export async function sendReceiptToParticipant(
   if (booking.status === 'cancelled') {
     return { ok: false, code: 'cancelled', error: 'キャンセル済みの予約です。' };
   }
+  // ⚠️ 無効化の判定を URL より先に置く。revokeReceiptShare は receipt_share_url を
+  //    空にするので（同じリンクを正しい予約に登録し直せるようにするため）、
+  //    URL を先に見ると「まだ登録されていません」と出て、運営者が状況を誤解する。
+  //    リダイレクタ（routes/receipt.ts）と同じ順序に揃えること。
+  if (booking.receipt_share_revoked_at) {
+    return {
+      ok: false,
+      code: 'revoked',
+      error: 'このリンクは無効化されています。freee で作り直して貼り直してください。',
+    };
+  }
   if (!booking.receipt_share_url || !booking.receipt_share_token) {
     return { ok: false, code: 'no_share_url', error: '共有リンクがまだ登録されていません。' };
-  }
-  if (booking.receipt_share_revoked_at) {
-    return { ok: false, code: 'revoked', error: 'このリンクは無効化されています。' };
   }
   // 届いても開けないものを送らない
   if (isExpired(booking.receipt_share_expires_at)) {
@@ -217,14 +225,20 @@ export async function sendReceiptToParticipant(
   } catch (err) {
     // 送れなかったので送信権を返す。返さないと二度と送れなくなる。
     // ⚠️ 自分が立てた印のときだけ消す（別の送信が入っていたらそれを消さない）
-    await db
-      .prepare(
-        `UPDATE event_bookings
-            SET receipt_sent_at = NULL, updated_at = datetime('now')
-          WHERE id = ? AND receipt_sent_at = ?`,
-      )
-      .bind(bookingId, claimed.receipt_sent_at)
-      .run();
+    // ⚠️ ここで例外が出ても握る。投げるとルートが 500 を返し、
+    //    運営者には原因が伝わらないうえ「送信済み」のまま固定されてしまう
+    try {
+      await db
+        .prepare(
+          `UPDATE event_bookings
+              SET receipt_sent_at = NULL, updated_at = datetime('now')
+            WHERE id = ? AND receipt_sent_at = ?`,
+        )
+        .bind(bookingId, claimed.receipt_sent_at)
+        .run();
+    } catch (rollbackErr) {
+      console.error('[receipt] 送信権を返せませんでした（要手動確認）:', bookingId, rollbackErr);
+    }
     console.error('[receipt] LINE 送信に失敗しました:', bookingId, err);
     return { ok: false, code: 'send_failed', error: '送信できませんでした。時間をおいて再度お試しください。' };
   }
