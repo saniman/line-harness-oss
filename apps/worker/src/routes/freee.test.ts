@@ -434,22 +434,28 @@ describe('GET /api/integrations/freee（接続一覧）', () => {
 })
 
 describe('POST /api/integrations/freee/:id/activate（有効化）', () => {
-  function makeApp2(changes = 1) {
+  function makeApp2(activatedChanges = 1) {
     const stmts: Array<{ sql: string; bound: unknown[] }> = []
+    const batchCalls: unknown[][] = []
     const db = {
       prepare: vi.fn().mockImplementation((sql: string) => ({
         bind: vi.fn().mockImplementation((...args: unknown[]) => {
-          stmts.push({ sql, bound: args })
-          return {
-            run: vi.fn().mockResolvedValue({ meta: { changes } }),
-            first: vi.fn().mockResolvedValue(null),
-          }
+          const stmt = { sql, bound: args }
+          stmts.push(stmt)
+          return stmt
         }),
       })),
+      batch: vi.fn().mockImplementation((list: unknown[]) => {
+        batchCalls.push(list)
+        // 1本目が「対象を有効化」、2本目が「他を無効化」
+        return Promise.resolve(list.map((_, i) => ({
+          meta: { changes: i === 0 ? activatedChanges : 1 },
+        })))
+      }),
     } as unknown as D1Database
     const app = new Hono<{ Bindings: Record<string, unknown> }>()
     app.route('/', freee)
-    return { app, env: { DB: db }, stmts }
+    return { app, env: { DB: db }, stmts, batchCalls, db }
   }
 
   it('指定の接続を有効化する', async () => {
@@ -466,28 +472,69 @@ describe('POST /api/integrations/freee/:id/activate（有効化）', () => {
     expect(stmts.some((s) => s.sql.includes('is_active = 0') && s.sql.includes('id != ?'))).toBe(true)
   })
 
+  it('【原子性】2本の UPDATE を db.batch で一括実行する', async () => {
+    // 別々に実行すると、2本目が失敗したときに「有効な接続が2本」という
+    // この処理が防ごうとしている状態そのものを作ってしまう。
+    const { app, env, batchCalls, db } = makeApp2()
+
+    await app.request('/api/integrations/freee/conn-1/activate', { method: 'POST' }, env)
+
+    expect(db.batch).toHaveBeenCalledTimes(1)
+    expect(batchCalls[0]).toHaveLength(2)
+  })
+
   it('存在しない接続なら 404', async () => {
     const { app, env } = makeApp2(0)
     const res = await app.request('/api/integrations/freee/nope/activate', { method: 'POST' }, env)
     expect(res.status).toBe(404)
   })
+
+  it('【重要】存在しない接続でも、他の接続を巻き込んで無効化しない', async () => {
+    // batch は両方走るため、無効化側にガードが無いと
+    // 存在しないIDを投げるだけで全接続を止められてしまう。
+    const { app, env, stmts } = makeApp2(0)
+
+    await app.request('/api/integrations/freee/nope/activate', { method: 'POST' }, env)
+
+    const deactivate = stmts.find((s) => s.sql.includes('is_active = 0'))
+    expect(deactivate?.sql).toContain('EXISTS')
+  })
+
+  it('すでに無効な接続の updated_at は触らない', async () => {
+    // 無関係な行の「最終更新」が動くと、管理画面の表示が嘘になる
+    const { app, env, stmts } = makeApp2()
+    await app.request('/api/integrations/freee/conn-1/activate', { method: 'POST' }, env)
+    const deactivate = stmts.find((s) => s.sql.includes('is_active = 0'))
+    expect(deactivate?.sql).toContain('is_active = 1')
+  })
 })
 
 describe('DELETE /api/integrations/freee/:id（削除）', () => {
-  it('接続を削除する', async () => {
+  function makeDeleteApp(changes: number) {
     const calls: string[] = []
     const db = {
       prepare: vi.fn().mockImplementation((sql: string) => {
         calls.push(sql)
-        return { bind: vi.fn().mockReturnThis(), run: vi.fn().mockResolvedValue({ meta: { changes: 1 } }) }
+        return { bind: vi.fn().mockReturnThis(), run: vi.fn().mockResolvedValue({ meta: { changes } }) }
       }),
     } as unknown as D1Database
     const app = new Hono<{ Bindings: Record<string, unknown> }>()
     app.route('/', freee)
+    return { app, env: { DB: db }, calls }
+  }
 
-    const res = await app.request('/api/integrations/freee/conn-1', { method: 'DELETE' }, { DB: db })
-
+  it('接続を削除する', async () => {
+    const { app, env, calls } = makeDeleteApp(1)
+    const res = await app.request('/api/integrations/freee/conn-1', { method: 'DELETE' }, env)
     expect(res.status).toBe(200)
     expect(calls.some((q) => q.includes('DELETE FROM freee_accounts'))).toBe(true)
+  })
+
+  it('存在しない接続なら 404（幻の成功を返さない）', async () => {
+    // 古いタブから消えた接続を消すと「削除できた」と嘘の表示になる。
+    // 有効化が 404 を返すのと挙動を揃える。
+    const { app, env } = makeDeleteApp(0)
+    const res = await app.request('/api/integrations/freee/nope', { method: 'DELETE' }, env)
+    expect(res.status).toBe(404)
   })
 })

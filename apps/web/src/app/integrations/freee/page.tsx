@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { api, type FreeeConnection } from '@/lib/api'
+import { buildConnectionLabel, sanitizeCompanyName } from '@/lib/freee-label'
+import { formatJSTWithYear } from '@/lib/format-jst'
 import Header from '@/components/layout/header'
 
 /**
@@ -54,11 +56,15 @@ export default function FreeePage() {
   }
 
   const handleActivate = async (conn: FreeeConnection) => {
-    const label = conn.companyName ?? `事業所ID ${conn.companyId}`
+    // ⚠️ 事業所名は第三者が freee 側で決められる文字列。改行を詰めて警告文を
+    //    押し出したり、偽の安心文を混ぜたりできるため、そのまま出さない。
+    //    改ざんできない事業所IDを必ず併記する。
+    const label = buildConnectionLabel(conn.companyName, conn.companyId)
     if (!confirm(
-      `「${label}」を有効化しますか？\n\n` +
-      `有効化すると、この事業所で領収書が発行されます。\n` +
-      `身に覚えのない接続は有効化せず、削除してください。`
+      `有効化すると、以下の事業所で領収書が発行されます。\n` +
+      `身に覚えのない接続は有効化せず、削除してください。\n\n` +
+      `${label}\n\n` +
+      `有効化しますか？`
     )) return
 
     setBusyId(conn.id)
@@ -74,7 +80,11 @@ export default function FreeePage() {
   }
 
   const handleDelete = async (conn: FreeeConnection) => {
-    if (!confirm('この接続を削除しますか？')) return
+    const label = buildConnectionLabel(conn.companyName, conn.companyId)
+    const warning = conn.isActive
+      ? '\n\n⚠️ この接続は現在有効です。削除すると領収書の自動発行が止まります。'
+      : ''
+    if (!confirm(`以下の接続を削除しますか？\n\n${label}${warning}`)) return
     setBusyId(conn.id)
     try {
       await api.freee.delete(conn.id)
@@ -150,10 +160,14 @@ export default function FreeePage() {
                       )}
                     </td>
                     <td className="px-4 py-3">
-                      {conn.companyName ?? <span className="text-gray-400">（名称未取得）</span>}
+                      {sanitizeCompanyName(conn.companyName) ?? (
+                        <span className="text-gray-400">（名称未取得）</span>
+                      )}
                     </td>
                     <td className="px-4 py-3 font-mono text-xs">{conn.companyId}</td>
-                    <td className="px-4 py-3 text-gray-500 text-xs">{conn.createdAt}</td>
+                    <td className="px-4 py-3 text-gray-500 text-xs">
+                      {formatJSTWithYear(conn.createdAt)}
+                    </td>
                     <td className="px-4 py-3 text-right whitespace-nowrap">
                       {!conn.isActive && (
                         <button

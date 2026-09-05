@@ -445,7 +445,7 @@ describe('getValidAccessTokenFreee', () => {
     expect(result.accessToken).toBe('at-winner');
   });
 
-  it('リフレッシュが失敗したら接続を保留に戻して REAUTH_REQUIRED を投げる', async () => {
+  it('失効（401）なら接続を保留に戻して REAUTH_REQUIRED を投げる', async () => {
     // 90日超過や refresh_token の使い回しで失効した場合。
     // is_active=1 のままだと管理画面で「連携済み」に見えて原因に気づけない。
     fetchMock.mockResolvedValue({
@@ -458,6 +458,86 @@ describe('getValidAccessTokenFreee', () => {
     await expect(getValidAccessTokenFreee(ENV, db)).rejects.toThrow('REAUTH_REQUIRED');
 
     expect(sqls.some((q) => q.includes('is_active = 0'))).toBe(true);
+  });
+
+  // ── 一時的な失敗で接続を落とさない（レビュー②）─────────────────────────
+
+  it('freee の 5xx では接続を保留に戻さない（一時障害）', async () => {
+    // 障害のたびに保留に落ちると、人間が有効化し直すまで領収書が止まる
+    fetchMock.mockResolvedValue({
+      ok: false, status: 503, text: async () => 'service unavailable',
+    });
+    const { db, sqls } = makeDb(makeStmt(activeConn({ token_expires_at: '2020-01-01T00:00:00.000+09:00' })));
+
+    await expect(getValidAccessTokenFreee(ENV, db)).rejects.toThrow('FREEE_TEMPORARILY_UNAVAILABLE');
+
+    expect(sqls.some((q) => q.includes('is_active = 0'))).toBe(false);
+  });
+
+  it('レート制限（429）でも接続を保留に戻さない', async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 429, text: async () => 'too many requests' });
+    const { db, sqls } = makeDb(makeStmt(activeConn({ token_expires_at: '2020-01-01T00:00:00.000+09:00' })));
+
+    await expect(getValidAccessTokenFreee(ENV, db)).rejects.toThrow('FREEE_TEMPORARILY_UNAVAILABLE');
+    expect(sqls.some((q) => q.includes('is_active = 0'))).toBe(false);
+  });
+
+  it('通信自体が落ちても接続を保留に戻さない', async () => {
+    fetchMock.mockRejectedValue(new Error('network down'));
+    const { db, sqls } = makeDb(makeStmt(activeConn({ token_expires_at: '2020-01-01T00:00:00.000+09:00' })));
+
+    await expect(getValidAccessTokenFreee(ENV, db)).rejects.toThrow('FREEE_TEMPORARILY_UNAVAILABLE');
+    expect(sqls.some((q) => q.includes('is_active = 0'))).toBe(false);
+  });
+
+  // ── 同時リフレッシュで道連れにしない（レビュー①・HIGH）──────────────────
+
+  it('【HIGH】保留に戻す UPDATE にも CAS ガードを付ける', async () => {
+    // ガードが無いと、同時実行に負けた側（invalid_grant で失敗する）が、
+    // 勝った側が正常にリフレッシュしたばかりの接続を保留に落としてしまう。
+    fetchMock.mockResolvedValue({
+      ok: false, status: 401, text: async () => '{"error":"invalid_grant"}',
+    });
+    const { db, sqls } = makeDb(makeStmt(activeConn({ token_expires_at: '2020-01-01T00:00:00.000+09:00' })));
+
+    await expect(getValidAccessTokenFreee(ENV, db)).rejects.toThrow('REAUTH_REQUIRED');
+
+    const demote = sqls.find((q) => q.includes('is_active = 0')) ?? '';
+    expect(demote).toMatch(/refresh_token = \?/);
+  });
+
+  it('【HIGH】同時リフレッシュに負けただけなら、勝った側のトークンを使う', async () => {
+    // 負けた側は必ず invalid_grant になる。ここで諦めると、
+    // 同時アクセス2本だけで連携が止まってしまう。
+    fetchMock.mockResolvedValue({
+      ok: false, status: 401, text: async () => '{"error":"invalid_grant"}',
+    });
+    const demoteLost = makeStmt();
+    demoteLost.run.mockResolvedValue({ meta: { changes: 0 } }); // CAS 不一致＝勝者が更新済み
+    const { db } = makeDb(
+      makeStmt(activeConn({ token_expires_at: '2020-01-01T00:00:00.000+09:00' })),
+      demoteLost,
+      makeStmt(activeConn({ access_token: 'at-winner', refresh_token: 'rt-winner', is_active: 1 })),
+    );
+
+    const result = await getValidAccessTokenFreee(ENV, db);
+
+    expect(result.accessToken).toBe('at-winner');
+  });
+
+  it('CAS 不一致でも接続が保留になっていれば REAUTH_REQUIRED', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false, status: 401, text: async () => '{"error":"invalid_grant"}',
+    });
+    const demoteLost = makeStmt();
+    demoteLost.run.mockResolvedValue({ meta: { changes: 0 } });
+    const { db } = makeDb(
+      makeStmt(activeConn({ token_expires_at: '2020-01-01T00:00:00.000+09:00' })),
+      demoteLost,
+      makeStmt(activeConn({ access_token: 'at-x', is_active: 0 })),
+    );
+
+    await expect(getValidAccessTokenFreee(ENV, db)).rejects.toThrow('REAUTH_REQUIRED');
   });
 });
 
@@ -502,6 +582,15 @@ describe('fetchFreeeCompanyName', () => {
   it('通信自体が失敗しても null を返す', async () => {
     fetchMock.mockRejectedValue(new Error('network'));
     expect(await fetchFreeeCompanyName('at-1', 1234567)).toBeNull();
+  });
+
+  it('タイムアウトを設定する（ハングでコールバック全体を巻き込まないため）', async () => {
+    // ベストエフォートのはずが、freee が応答しないと認可コードを消費したまま
+    // 1件も保存されずに終わってしまう。
+    fetchMock.mockResolvedValue(ok({ companies: [] }));
+    await fetchFreeeCompanyName('at-1', 1234567);
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(init.signal).toBeDefined();
   });
 
   it('レスポンスの形が想定外でも null を返す', async () => {

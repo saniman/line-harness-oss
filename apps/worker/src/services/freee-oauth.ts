@@ -203,6 +203,21 @@ export async function verifyOAuthState(
 // ── トークンの自動リフレッシュ ──────────────────────────────────────────────
 
 /**
+ * リフレッシュの失敗種別。
+ *
+ * `permanent = true` は再認可しか復旧手段がないもの（失効・取り消し）。
+ * `false` は一時障害（5xx / 429 / 通信断）で、**接続を落としてはいけない**。
+ * ここを区別しないと、freee 側の短い障害で連携が保留に落ち、
+ * 人間が有効化し直すまで領収書が止まる。
+ */
+export class FreeeAuthError extends Error {
+  constructor(message: string, readonly permanent: boolean) {
+    super(message);
+    this.name = 'FreeeAuthError';
+  }
+}
+
+/**
  * freee の refresh_token を使って新しいトークン一式を得る。
  *
  * ⚠️ freee の refresh_token は **1回限り**。呼ぶたびに新しい refresh_token が
@@ -225,8 +240,10 @@ export async function refreshFreeeTokens(
 
   if (!res.ok) {
     const body = await res.text().catch(() => '');
-    // 失効（90日超過・使い回し）は再認可しか復旧手段がない
-    throw new Error(`freee token refresh failed (${res.status}): ${body}`);
+    // 400/401 = 失効・取り消し（再認可しか復旧手段がない）
+    // 5xx / 429 = 一時障害。接続は維持して次回に賭ける
+    const permanent = res.status === 400 || res.status === 401;
+    throw new FreeeAuthError(`freee token refresh failed (${res.status}): ${body}`, permanent);
   }
 
   const data = await res.json<Partial<FreeeTokens>>();
@@ -245,6 +262,7 @@ interface FreeeAccountRow {
   access_token: string | null;
   refresh_token: string | null;
   token_expires_at: string | null;
+  is_active: number;
 }
 
 /** 期限まで5分を切っていたら更新する（未設定も更新扱い） */
@@ -283,13 +301,34 @@ export async function getValidAccessTokenFreee(
   try {
     tokens = await refreshFreeeTokens(env, conn.refresh_token);
   } catch (err) {
-    // 失効したまま is_active=1 だと管理画面で「連携済み」に見えて原因に気づけない。
-    // 保留に戻して、再接続が必要だと分かる状態にする。
-    console.error('[freee] リフレッシュに失敗したため接続を保留に戻します:', conn.id, err);
-    await db
-      .prepare("UPDATE freee_accounts SET is_active = 0, updated_at = ? WHERE id = ?")
-      .bind(jstNow(), conn.id)
+    // 一時障害では接続を落とさない。落とすと人間が有効化し直すまで領収書が止まる。
+    if (!(err instanceof FreeeAuthError) || !err.permanent) {
+      console.error('[freee] リフレッシュに一時的に失敗しました（接続は維持）:', conn.id, err);
+      throw new Error('FREEE_TEMPORARILY_UNAVAILABLE');
+    }
+
+    // ⚠️ 恒久的失敗に見えても「同時実行に負けただけ」の可能性がある。
+    //    freee は refresh_token を回転させるため、負けた側は必ず invalid_grant になる。
+    //    ここで無条件に保留へ落とすと、勝った側が正常にリフレッシュしたばかりの接続を
+    //    道連れにしてしまう（同時アクセス2本で連携が止まる）。
+    //    そこで保留化にも CAS ガードを付け、不一致なら勝者のトークンを使う。
+    const demoted = await db
+      .prepare('UPDATE freee_accounts SET is_active = 0, updated_at = ? WHERE id = ? AND refresh_token = ?')
+      .bind(jstNow(), conn.id, conn.refresh_token)
       .run();
+
+    if (!demoted.meta.changes) {
+      const fresh = await db
+        .prepare('SELECT * FROM freee_accounts WHERE id = ?')
+        .bind(conn.id)
+        .first<FreeeAccountRow>();
+      if (fresh?.access_token && fresh.is_active) {
+        console.warn('[freee] 同時リフレッシュに負けたため勝った側のトークンを使います:', conn.id);
+        return { accessToken: fresh.access_token, companyId: fresh.company_id, connectionId: fresh.id };
+      }
+    }
+
+    console.error('[freee] リフレッシュに失敗したため接続を保留に戻しました:', conn.id, err);
     throw new Error('REAUTH_REQUIRED');
   }
 
@@ -336,6 +375,9 @@ export async function fetchFreeeCompanyName(
   try {
     const res = await fetch('https://api.freee.co.jp/api/1/companies', {
       headers: { Authorization: `Bearer ${accessToken}` },
+      // ベストエフォートなのにハングすると、認可コードを消費したまま
+      // 1件も保存されずにコールバックが終わってしまう。必ず打ち切る。
+      signal: AbortSignal.timeout(5000),
     });
     if (!res.ok) {
       console.warn(`[freee] 事業所名の取得に失敗 (${res.status}) — company_id で表示します`);

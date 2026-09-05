@@ -240,19 +240,32 @@ freee.post('/api/integrations/freee/:id/activate', async (c) => {
     const id = c.req.param('id');
     const now = jstNow();
 
-    const activated = await c.env.DB
-      .prepare('UPDATE freee_accounts SET is_active = 1, updated_at = ? WHERE id = ?')
-      .bind(now, id)
-      .run();
+    // ⚠️ 2文を別々に実行すると、2文目が失敗したときに「有効な接続が2本」という
+    //    この処理が防ごうとしている状態そのものを作ってしまう。
+    //    D1 の batch はトランザクションなので、まとめて成否が決まる。
+    //
+    //    無効化側には EXISTS のガードを付ける。batch は両方走るため、
+    //    ガードが無いと「存在しないIDを投げるだけで全接続を止められる」ことになる。
+    //    `is_active = 1` の条件は、無関係な行の updated_at を動かさないため
+    //    （管理画面の「最終更新」が嘘になるのを防ぐ）。
+    const [activated] = await c.env.DB.batch([
+      c.env.DB
+        .prepare('UPDATE freee_accounts SET is_active = 1, updated_at = ? WHERE id = ?')
+        .bind(now, id),
+      c.env.DB
+        .prepare(
+          `UPDATE freee_accounts
+              SET is_active = 0, updated_at = ?
+            WHERE id != ?
+              AND is_active = 1
+              AND EXISTS (SELECT 1 FROM freee_accounts WHERE id = ?)`,
+        )
+        .bind(now, id, id),
+    ]);
 
     if (!activated.meta.changes) {
       return c.json({ success: false, error: 'Connection not found' }, 404);
     }
-
-    await c.env.DB
-      .prepare('UPDATE freee_accounts SET is_active = 0, updated_at = ? WHERE id != ?')
-      .bind(now, id)
-      .run();
 
     console.log('[freee] 接続を有効化:', id);
     return c.json({ success: true, data: null });
@@ -266,7 +279,17 @@ freee.post('/api/integrations/freee/:id/activate', async (c) => {
 freee.delete('/api/integrations/freee/:id', async (c) => {
   try {
     const id = c.req.param('id');
-    await c.env.DB.prepare('DELETE FROM freee_accounts WHERE id = ?').bind(id).run();
+    const deleted = await c.env.DB
+      .prepare('DELETE FROM freee_accounts WHERE id = ?')
+      .bind(id)
+      .run();
+
+    // 存在しないIDに success を返すと、古いタブから消えた接続を消したときに
+    // 「削除できた」と嘘の表示になる。有効化の 404 と挙動を揃える。
+    if (!deleted.meta.changes) {
+      return c.json({ success: false, error: 'Connection not found' }, 404);
+    }
+
     console.log('[freee] 接続を削除:', id);
     return c.json({ success: true, data: null });
   } catch (err) {
