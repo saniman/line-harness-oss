@@ -24,6 +24,26 @@ describe('getRefundNotice（現金を受け取ったままキャンセルされ�
     expect(notice?.label).toContain('¥12,000')
   })
 
+  it('【重要】amount が null でもイベント価格から補う', () => {
+    // amount は受領時に焼き込まれるが、その実装より前の行では null のまま。
+    // 金額が出ないと「いくら返すか」が分からず、この印の価値が半減する
+    const notice = getRefundNotice(
+      { status: 'cancelled', cash_received_at: '2026-09-06 05:00:00', amount: null },
+      3000,
+    )
+
+    expect(notice?.label).toBe('⚠️ 要返金 ¥3,000')
+  })
+
+  it('amount があればそちらを優先する（受領時の実額）', () => {
+    const notice = getRefundNotice(
+      { status: 'cancelled', cash_received_at: '2026-09-06 05:00:00', amount: 100 },
+      3000,
+    )
+
+    expect(notice?.label).toBe('⚠️ 要返金 ¥100')
+  })
+
   it('金額が分からなくても注意だけは出す', () => {
     // 金額が無いから黙る、では受領の事実が消えたままになる
     const notice = getRefundNotice({

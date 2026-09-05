@@ -653,15 +653,19 @@ events.post('/api/events/:id/bookings/:bookingId/admin-cancel', requireRole('own
     // 「主催者へご連絡ください」で止められた後なので、処理されたことが分かる方が親切。
     // ⚠️ 結果を捨てない。friend_id が無い参加者には**何も届かない**ので、
     //    「取り消しました」だけ出すと運営者は伝わったと思い込む
-    let notified = false;
+    // ⚠️ 3状態にする。boolean だと「LINE が未設定」でも「友だち未連携」と表示され、
+    //    運営者が存在しない紐付け問題を追いかけることになる
+    let notified: 'sent' | 'no_friend' | 'line_unavailable' = 'line_unavailable';
     if (c.env.LINE_CHANNEL_ACCESS_TOKEN) {
       try {
-        notified = await notifyBookingCancelled(
+        const ok = await notifyBookingCancelled(
           c.env.DB, new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN), bookingId,
           result.refundResult === 'refunded',
         );
+        notified = ok ? 'sent' : 'no_friend';
       } catch (err) {
         console.error('[events] キャンセル通知に失敗:', bookingId, err);
+        notified = 'line_unavailable';
       }
     }
 

@@ -69,6 +69,11 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
   const [cancelError, setCancelError] = useState('')
   // ⚠️ 現金受領の警告（receiptWarning）と分ける。共有すると互いに消し合う
   const [cancelNotice, setCancelNotice] = useState('')
+  // ⚠️ admin-cancel は requireRole('owner')。ボタンを全員に見せると、
+  //    スタッフが「現金を返してから押してください」に従って**現金を返した後で 403**
+  //    になり、現金は戻らず予約も取り消されない。sidebar と同じ出し分けにする
+  const [staffRole, setStaffRole] = useState<string | null>(null)
+  useEffect(() => { setStaffRole(localStorage.getItem('lh_staff_role')) }, [])
   const [linkingBookingId, setLinkingBookingId] = useState<number | null>(null)
   const [friendQuery, setFriendQuery] = useState('')
   const [friendCandidates, setFriendCandidates] = useState<FriendWithTags[]>([])
@@ -208,7 +213,11 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
    * 現金は**対面で返してから**押してもらう必要があるので、金額を出して確認する。
    */
   const handleAdminCancel = async (b: EventBookingItem) => {
-    const amountText = b.amount != null ? `¥${b.amount.toLocaleString()}` : ''
+    // ⚠️ b.amount を直接使わない。現金受領が古い実装のころの行や
+    //    events.price が後から入ったケースでは null のままで、
+    //    **この仕組みの肝である「いくら返すか」が消える**（handleCashReceived と揃える）
+    const amount = resolveBookingAmount(b, event?.price ?? null)
+    const amountText = amount != null ? `¥${amount.toLocaleString()}` : ''
 
     // ⚠️ 取り消しで**お金が動く**ケースは必ず先に伝える。
     //    現金は運営者が手で返す／Stripe はこの操作で自動返金が走る。
@@ -246,8 +255,11 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
         if (res.data.receiptRevoked === 'failed') {
           notes.push('⚠️ 領収書の共有リンクを無効化できませんでした。手動で無効化してください。')
         }
-        if (!res.data.notified) {
+        if (res.data.notified === 'no_friend') {
           notes.push('⚠️ 参加者への LINE 通知は届いていません（友だち未連携）。')
+        }
+        if (res.data.notified === 'line_unavailable') {
+          notes.push('⚠️ 参加者への LINE 通知を送れませんでした（LINE 連携の設定を確認してください）。')
         }
         setCancelNotice(`取り消しました。${notes.join(' ')}`)
       }
@@ -469,7 +481,7 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
                   const statusBadge = getStatusBadge(b.status)
                   const friendBadge = getFriendLinkBadge(b)
                   // 現金を受け取ったままキャンセルされた予約に出す（#65）
-                  const refundNotice = getRefundNotice(b)
+                  const refundNotice = getRefundNotice(b, event?.price ?? null)
                   // 白 = 確定（ヘッダーの「確定 N 名」に数えられている） /
                   // グレー = それ以外（保留・一覧に残るキャンセル）。ヘッダーの 2 つの数と見た目を揃える。
                   // ホバーはグレー行だけ一段濃くしないと、色が付いた瞬間に反応が見えなくなる
@@ -567,7 +579,7 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
                         )}
                         {/* ⚠️ 現金受領済みの予約は参加者から取り消せない（#65）。
                             ここが唯一の導線なので、確定済みには必ず出す */}
-                        {b.status !== 'cancelled' && (
+                        {b.status !== 'cancelled' && staffRole === 'owner' && (
                           <button
                             onClick={() => handleAdminCancel(b)}
                             disabled={cancelBusyId !== null || cashBusyId !== null}

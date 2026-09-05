@@ -395,6 +395,42 @@ export async function cancelEventBooking(
     }
   }
 
+  // ⚠️ **返金する前に取り消し権を取る。**
+  //    上の status チェックは SELECT を見た「読んでから書く」判定なので、
+  //    同時実行を防げない。この PR で運営者という2人目の実行者が増えたため、
+  //    LINE の postback 経路（webhook.ts）と同時に走ると
+  //    **両方が stripe.refunds.create に到達**し、負けた側は
+  //    charge_already_refunded で failed を返す。
+  //    → 成功した返金に対して「手動で返金してください」と画面に出てしまう。
+  //    markCashReceived と同じく、条件付き UPDATE で1本だけ通す。
+  //
+  // pending からのキャンセル＝Stripe 決済画面から戻ってきたケース（cancel_url 経由）。
+  // 本人都合のキャンセル（confirmed からの遷移）と区別できないと、
+  // 名前が空のゴミ行として参加者一覧に混ざる（Issue #56）。
+  //
+  // ⚠️ 運営者が取り消した pending には付けない。付けると「決済画面から戻った」と
+  //    誤ラベルされ、isCheckoutDropout が true になって折りたたみへ移動し、
+  //    **押した直後に一覧から消える**（booking-display.ts のコメント参照）。
+  const cancelReason = !options.byAdmin && booking.status === 'pending' ? CHECKOUT_ABANDONED : null
+
+  const claimed = await db.prepare(
+    `UPDATE event_bookings
+        SET status = 'cancelled', cancel_reason = ?, updated_at = datetime('now')
+      WHERE id = ? AND status != 'cancelled'
+    RETURNING id`,
+  ).bind(cancelReason, bookingId).first<{ id: number }>()
+
+  if (!claimed) {
+    // 一瞬先に別の経路が取り消した。返金はそちらが担当しているので、ここでは何もしない
+    return {
+      success: false,
+      refunded: false,
+      refundResult: 'none',
+      code: 'already_cancelled',
+      error: 'すでにキャンセル済みです。',
+    }
+  }
+
   let refundResult: 'none' | 'refunded' | 'failed' = 'none'
   let refundId: string | undefined
 
@@ -405,7 +441,13 @@ export async function cancelEventBooking(
     try {
       // ⚠️ session_id が無い決済済みは、こちらから返金できない（データ不整合）。
       //    黙って通すと「返金されたつもり」になるので failed のままにする
-      if (!stripe) {
+      // ⚠️ 既に返金 ID があるなら作らない。Stripe の画面から返金済みのケースで、
+      //    ここを通すと二重返金になる（あるいは失敗して「手動で返金」を促してしまう）
+      if (booking.stripe_refund_id) {
+        console.log('[cancelEventBooking] 既に返金済み:', bookingId)
+        refundResult = 'refunded'
+        refundId = booking.stripe_refund_id
+      } else if (!stripe) {
         console.error('[cancelEventBooking] Stripe が未設定のため返金できない:', bookingId)
       } else if (!booking.stripe_session_id) {
         console.error('[cancelEventBooking] 決済済みだが stripe_session_id が無い:', bookingId)
@@ -433,19 +475,6 @@ export async function cancelEventBooking(
   }
 
   const refunded = refundResult === 'refunded'
-
-  // pending からのキャンセル＝Stripe 決済画面から戻ってきたケース（cancel_url 経由）。
-  // 本人都合のキャンセル（confirmed からの遷移）と区別できないと、
-  // 名前が空のゴミ行として参加者一覧に混ざる（Issue #56）。
-  //
-  // ⚠️ 運営者が取り消した pending には付けない。付けると「決済画面から戻った」と
-  //    誤ラベルされ、isCheckoutDropout が true になって折りたたみへ移動し、
-  //    **押した直後に一覧から消える**（booking-display.ts のコメント参照）。
-  const cancelReason = !options.byAdmin && booking.status === 'pending' ? CHECKOUT_ABANDONED : null
-
-  await db.prepare(
-    "UPDATE event_bookings SET status = 'cancelled', cancel_reason = ?, updated_at = datetime('now') WHERE id = ?",
-  ).bind(cancelReason, bookingId).run()
 
   // 参加確定後のキャンセルだけ、お礼シナリオを止めてキャンセル者向けへ切り替える（ベストエフォート）。
   // pending（決済せず取り消しただけ）は申込意思が薄いため対象外。

@@ -699,8 +699,12 @@ export const api = {
          *    失敗が画面で無音になる（リンクが生きたまま残る）
          */
         receiptRevoked: 'revoked' | 'none' | 'failed'
-        /** 参加者に LINE 通知が届いたか。友だち未紐付けなら false */
-        notified: boolean
+        /**
+         * 参加者への LINE 通知の結果。
+         * ⚠️ boolean にしない。「LINE が未設定」でも「友だち未連携」と表示され、
+         *    運営者が存在しない問題を追いかけることになる
+         */
+        notified: 'sent' | 'no_friend' | 'line_unavailable'
       }>>(
         `/api/events/${eventId}/bookings/${bookingId}/admin-cancel`,
         { method: 'POST' },

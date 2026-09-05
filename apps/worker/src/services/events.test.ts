@@ -353,7 +353,9 @@ describe('cancelEventBooking', () => {
   it('booking.friend_id=nullの場合はオーナーチェックをスキップしてキャンセルする', async () => {
     // friend_id が null の予約（checkout-session時にlookup失敗等）でも
     // キャンセルできる必要がある（cancelBookingと同じパターン）
-    const db = makeDb(makeStmt(BOOKING1), makeStmt(null))
+    // 2つ目は status='cancelled' の条件付き UPDATE（claim）。
+    // 取れたことを表すため行を返す（null だと already_cancelled になる）
+    const db = makeDb(makeStmt(BOOKING1), makeStmt({ id: 1 }))
     const stripe = makeStripe()
     const result = await cancelEventBooking(db, 1, 'U_any_friend', stripe)
     expect(result.success).toBe(true)
@@ -362,7 +364,7 @@ describe('cancelEventBooking', () => {
   })
 
   it('payment_status=unpaid の場合は返金なしでキャンセルする', async () => {
-    const db = makeDb(makeStmt(BOOKING1), makeStmt(null))
+    const db = makeDb(makeStmt(BOOKING1), makeStmt({ id: 1 }))
     const stripe = makeStripe()
     const result = await cancelEventBooking(db, 1, null, stripe)
     expect(result.success).toBe(true)
@@ -376,7 +378,8 @@ describe('cancelEventBooking', () => {
     const paidBooking: EventBookingRow = {
       ...BOOKING1, payment_status: 'paid', stripe_session_id: 'cs_test_xxx',
     }
-    const db = makeDb(makeStmt(paidBooking), makeStmt(null), makeStmt(null))
+    // 2つ目は claim（条件付き UPDATE）。取れたことを表す行を返す
+    const db = makeDb(makeStmt(paidBooking), makeStmt({ id: 1 }), makeStmt(null))
     const stripe = makeStripe()
     const result = await cancelEventBooking(db, 1, null, stripe)
     expect(result.success).toBe(true)
@@ -391,7 +394,7 @@ describe('cancelEventBooking', () => {
     const paidBooking: EventBookingRow = {
       ...BOOKING1, payment_status: 'paid', stripe_session_id: 'cs_test_xxx',
     }
-    const db = makeDb(makeStmt(paidBooking), makeStmt(null))
+    const db = makeDb(makeStmt(paidBooking), makeStmt({ id: 1 }))
     const stripe = makeStripe({ throwRefund: true })
     const result = await cancelEventBooking(db, 1, null, stripe)
     expect(result.success).toBe(true)
@@ -403,7 +406,7 @@ describe('cancelEventBooking', () => {
     const confirmed: EventBookingRow = { ...BOOKING1, friend_id: 'f1', status: 'confirmed' }
     const db = makeDb(
       makeStmt(confirmed),                                    // SELECT booking
-      makeStmt(null),                                         // UPDATE status='cancelled'
+      makeStmt({ id: 1 }),                                    // UPDATE status='cancelled'（claim）
       makeStmt({ start_at: '2026-06-01T10:00:00+09:00' }),    // SELECT events.start_at
     )
     const stripe = makeStripe()
@@ -415,7 +418,7 @@ describe('cancelEventBooking', () => {
   it('pendingの予約のキャンセルではフォロー切り替えを行わない', async () => {
     // 決済せず放置して取り消しただけの人には「残念でした」を送らない
     const pending: EventBookingRow = { ...BOOKING1, friend_id: 'f1', status: 'pending' }
-    const db = makeDb(makeStmt(pending), makeStmt(null))
+    const db = makeDb(makeStmt(pending), makeStmt({ id: 1 }))
     const stripe = makeStripe()
     const result = await cancelEventBooking(db, 1, 'f1', stripe)
     expect(result.success).toBe(true)
@@ -424,7 +427,7 @@ describe('cancelEventBooking', () => {
 
   it('フォロー切り替えが失敗してもキャンセル自体は成功する', async () => {
     const confirmed: EventBookingRow = { ...BOOKING1, friend_id: 'f1', status: 'confirmed' }
-    const db = makeDb(makeStmt(confirmed), makeStmt(null), makeStmt({ start_at: '2026-06-01T10:00:00+09:00' }))
+    const db = makeDb(makeStmt(confirmed), makeStmt({ id: 1 }), makeStmt({ start_at: '2026-06-01T10:00:00+09:00' }))
     const stripe = makeStripe()
     mockSwitchToCancelled.mockRejectedValueOnce(new Error('boom'))
     const result = await cancelEventBooking(db, 1, 'f1', stripe)
@@ -1215,5 +1218,85 @@ describe('cancelEventBooking（返金の結果を無音にしない・#65 レビ
     )
 
     expect(res.refundResult).toBe('none')
+  })
+})
+
+describe('cancelEventBooking（同時実行と二重返金・#65 レビュー3周目）', () => {
+  /** claim（条件付き UPDATE）が取れるかを切り替えられる DB */
+  function makeDb(row: Record<string, unknown>, claimTaken = true) {
+    const sqls: string[] = []
+    const db = {
+      prepare: vi.fn().mockImplementation((sql: string) => {
+        sqls.push(sql)
+        return {
+          bind: vi.fn().mockReturnThis(),
+          first: vi.fn().mockImplementation(async () => {
+            if (sql.includes("status = 'cancelled'")) return claimTaken ? { id: 5 } : null
+            if (sql.includes('FROM events')) return { start_at: '2099-01-01' }
+            return row
+          }),
+          run: vi.fn().mockResolvedValue({ meta: { changes: 1 } }),
+        }
+      }),
+    } as unknown as D1Database
+    return { db, sqls }
+  }
+  const paid = (o: Record<string, unknown> = {}) => ({
+    id: 5, event_id: 1, friend_id: 'f1', name: 'あきひさ',
+    status: 'confirmed', payment_status: 'paid', stripe_session_id: 'cs_1',
+    stripe_refund_id: null, amount: 3000, cash_received_at: null, ...o,
+  })
+  const okStripe = () => ({
+    checkout: { sessions: { retrieve: vi.fn().mockResolvedValue({ payment_intent: 'pi_1' }) } },
+    refunds: { create: vi.fn().mockResolvedValue({ id: 're_1', status: 'succeeded' }) },
+  })
+
+  beforeEach(() => { vi.clearAllMocks() })
+
+  it('【重要】返金する前に取り消し権を取る', async () => {
+    // 読んでから書く判定だけだと、LINE の postback 経路と同時に走ったとき
+    // **両方が refunds.create に到達**する
+    const { db, sqls } = makeDb(paid())
+
+    await cancelEventBooking(db, 5, null, okStripe(), { byAdmin: true, eventId: 1 })
+
+    const claim = sqls.find((q) => q.includes("status = 'cancelled'")) ?? ''
+    expect(claim).toContain("status != 'cancelled'")
+  })
+
+  it('【重要】取り消し権を取れなければ返金しない', async () => {
+    // 負けた側が返金に進むと charge_already_refunded で failed になり、
+    // **成功した返金に対して「手動で返金してください」と表示される**
+    const stripe = okStripe()
+    const { db } = makeDb(paid(), false)
+
+    const res = await cancelEventBooking(db, 5, null, stripe, { byAdmin: true, eventId: 1 })
+
+    expect(res.success).toBe(false)
+    expect(res.code).toBe('already_cancelled')
+    expect(stripe.refunds.create).not.toHaveBeenCalled()
+  })
+
+  it('【重要】既に返金 ID があれば返金を作らない（二重返金を防ぐ）', async () => {
+    // Stripe の画面から返金済みのケース。ここを通すと二重返金になる
+    const stripe = okStripe()
+    const { db } = makeDb(paid({ stripe_refund_id: 're_manual' }))
+
+    const res = await cancelEventBooking(db, 5, null, stripe, { byAdmin: true, eventId: 1 })
+
+    expect(stripe.refunds.create).not.toHaveBeenCalled()
+    expect(res.refundResult).toBe('refunded')
+    expect(res.refundId).toBe('re_manual')
+  })
+
+  it('【回帰】通常のキャンセルは今までどおり返金まで進む', async () => {
+    const stripe = okStripe()
+    const { db } = makeDb(paid())
+
+    const res = await cancelEventBooking(db, 5, null, stripe, { byAdmin: true, eventId: 1 })
+
+    expect(res.success).toBe(true)
+    expect(res.refundResult).toBe('refunded')
+    expect(stripe.refunds.create).toHaveBeenCalled()
   })
 })

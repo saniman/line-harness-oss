@@ -1681,8 +1681,8 @@ describe('運営者による取り消し（レビュー2周目の追加検証）
 
     const res = await ownerApp.request(PATH, { method: 'POST' }, ENV)
 
-    const body = await res.json() as { data: { notified: boolean } }
-    expect(body.data.notified).toBe(true)
+    const body = await res.json() as { data: { notified: string } }
+    expect(body.data.notified).toBe('sent')
   })
 
   it('【重要】通知が届かなかったことを返す', async () => {
@@ -1692,8 +1692,9 @@ describe('運営者による取り消し（レビュー2周目の追加検証）
 
     const res = await ownerApp.request(PATH, { method: 'POST' }, ENV)
 
-    const body = await res.json() as { data: { notified: boolean } }
-    expect(body.data.notified).toBe(false)
+    const body = await res.json() as { data: { notified: string } }
+    // ⚠️ boolean だと「LINE 未設定」と区別できず、存在しない紐付け問題を追わせる
+    expect(body.data.notified).toBe('no_friend')
   })
 
   it('返金が走ったときだけ通知に返金の案内を入れる', async () => {

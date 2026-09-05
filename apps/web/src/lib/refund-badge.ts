@@ -33,16 +33,22 @@ export function getRefundNotice(
     cash_received_at?: string | null
     amount?: number | null
   },
+  /** イベントの価格。booking.amount が null のときの補完に使う */
+  eventPrice?: number | null,
 ): RefundNotice | null {
   if (booking.status !== 'cancelled') return null
   // 受け取っていないならそもそも返すものが無い
   if (!booking.cash_received_at) return null
 
-  // 金額は受領時に events.price から焼き込まれる（markCashReceived）。
-  // それでも無いときは「いくら返すか」を出せないので、金額なしで注意だけ出す
-  const amount = typeof booking.amount === 'number' && booking.amount > 0
-    ? `¥${booking.amount.toLocaleString()}`
-    : ''
+  // ⚠️ amount は受領時に events.price から焼き込まれるが、**その実装より前に
+  //    受領した行では null のまま**。イベントの価格から補って、できるだけ金額を出す
+  //    （金額が出ないと「いくら返すか」が分からず、この印の価値が半減する）。
+  const resolved = typeof booking.amount === 'number' && booking.amount > 0
+    ? booking.amount
+    : typeof eventPrice === 'number' && eventPrice > 0
+      ? eventPrice
+      : null
+  const amount = resolved != null ? `¥${resolved.toLocaleString()}` : ''
 
   return {
     label: amount ? `⚠️ 要返金 ${amount}` : '⚠️ 要返金',
