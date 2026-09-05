@@ -72,10 +72,11 @@ export default function FreeePage() {
     try {
       const res = await api.freee.activate(conn.id)
       if (!res.success) setError('有効化に失敗しました')
-      await load()
     } catch {
-      setError('有効化に失敗しました')
+      // 403（権限不足）や 404（既に消えている）も例外で来る
+      setError('有効化できませんでした。権限があるか、接続が残っているかご確認ください。')
     }
+    await load()
     setBusyId('')
   }
 
@@ -86,12 +87,17 @@ export default function FreeePage() {
       : ''
     if (!confirm(`以下の接続を削除しますか？\n\n${label}${warning}`)) return
     setBusyId(conn.id)
+    setError('')
     try {
       await api.freee.delete(conn.id)
-      await load()
     } catch {
-      setError('削除に失敗しました')
+      // 404（既に消えている）でも fetchApi は例外を投げる。
+      // ここで再読込を止めると、消えたはずの行が画面に残り続ける
+      // ——「古いタブ」対策として 404 を返した意味が無くなる。
+      setError('削除できませんでした。最新の状態を読み込みます。')
     }
+    // 成否にかかわらず、サーバーの状態に合わせ直す
+    await load()
     setBusyId('')
   }
 

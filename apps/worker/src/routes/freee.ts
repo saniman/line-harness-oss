@@ -21,6 +21,7 @@
 
 import { Hono } from 'hono';
 import { jstNow, toJstString } from '@line-crm/db';
+import { requireRole } from '../middleware/role-guard.js';
 import {
   getFreeeAuthUrl,
   exchangeCodeForTokens,
@@ -235,7 +236,11 @@ freee.get('/api/integrations/freee', async (c) => {
  * 有効な接続は常に1本に保つ。複数あると getValidAccessTokenFreee が
  * どれを拾うか実質不定になり、領収書の発行先が揺れる。
  */
-freee.post('/api/integrations/freee/:id/activate', async (c) => {
+// ⚠️ owner 限定。この機能の防御は「認証済みの管理者が事業所を目視して有効化する」ことに
+//    依存している。staff の API キーで有効化できると、公開コールバックで登録した
+//    自分の事業所へ領収書の発行先を差し替えられてしまう。
+//    LINE アカウント管理・スタッフ管理と同じ扱いにする。
+freee.post('/api/integrations/freee/:id/activate', requireRole('owner'), async (c) => {
   try {
     const id = c.req.param('id');
     const now = jstNow();
@@ -275,8 +280,8 @@ freee.post('/api/integrations/freee/:id/activate', async (c) => {
   }
 });
 
-/** 接続を削除する（身に覚えのない接続の始末用） */
-freee.delete('/api/integrations/freee/:id', async (c) => {
+/** 接続を削除する（身に覚えのない接続の始末用）。有効化と同じく owner 限定。 */
+freee.delete('/api/integrations/freee/:id', requireRole('owner'), async (c) => {
   try {
     const id = c.req.param('id');
     const deleted = await c.env.DB

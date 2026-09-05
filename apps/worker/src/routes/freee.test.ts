@@ -17,6 +17,23 @@ vi.mock('../services/freee-oauth.js', () => ({
 
 import { freee } from './freee.js'
 
+type Role = 'owner' | 'admin' | 'staff'
+
+/**
+ * 認証済みコンテキストを模したアプリ。
+ * 本番では authMiddleware が c.set('staff', ...) する。
+ */
+function makeAppWithRole(role: Role) {
+  const app = new Hono<{ Bindings: Record<string, unknown> }>()
+  app.use('*', async (c, next) => {
+    // @ts-expect-error テスト用に staff を注入する
+    c.set('staff', { id: 's1', name: 'テスト', role })
+    await next()
+  })
+  app.route('/', freee)
+  return app
+}
+
 function makeStmt(firstResult: unknown = null) {
   return {
     bind: vi.fn().mockReturnThis(),
@@ -42,8 +59,7 @@ function makeApp(upsertResult: unknown = { id: 'conn-new', is_active: 0 }) {
     }),
   } as unknown as D1Database
 
-  const app = new Hono<{ Bindings: Record<string, unknown> }>()
-  app.route('/', freee)
+  const app = makeAppWithRole('owner')
   const env = {
     DB: db,
     FREEE_CLIENT_ID: 'client-abc',
@@ -385,8 +401,7 @@ describe('GET /api/integrations/freee（接続一覧）', () => {
       all: vi.fn().mockResolvedValue({ results: rows }),
     }
     const db = { prepare: vi.fn().mockReturnValue(stmt) } as unknown as D1Database
-    const app = new Hono<{ Bindings: Record<string, unknown> }>()
-    app.route('/', freee)
+    const app = makeAppWithRole('owner')
     return { app, env: { DB: db }, stmt, db }
   }
 
@@ -434,7 +449,7 @@ describe('GET /api/integrations/freee（接続一覧）', () => {
 })
 
 describe('POST /api/integrations/freee/:id/activate（有効化）', () => {
-  function makeApp2(activatedChanges = 1) {
+  function makeApp2(activatedChanges = 1, role: Role = 'owner') {
     const stmts: Array<{ sql: string; bound: unknown[] }> = []
     const batchCalls: unknown[][] = []
     const db = {
@@ -453,8 +468,7 @@ describe('POST /api/integrations/freee/:id/activate（有効化）', () => {
         })))
       }),
     } as unknown as D1Database
-    const app = new Hono<{ Bindings: Record<string, unknown> }>()
-    app.route('/', freee)
+    const app = makeAppWithRole(role)
     return { app, env: { DB: db }, stmts, batchCalls, db }
   }
 
@@ -489,6 +503,22 @@ describe('POST /api/integrations/freee/:id/activate（有効化）', () => {
     expect(res.status).toBe(404)
   })
 
+  it('staff 権限では有効化できない（発行先を差し替えられてしまうため）', async () => {
+    // 「認証済みの管理者が事業所を目視して有効化する」がこの機能の防御。
+    // staff のAPIキーで有効化できると、公開コールバックで登録した自分の事業所に
+    // 領収書の発行先を差し替えられる。
+    const { app, env, db } = makeApp2(1, 'staff')
+    const res = await app.request('/api/integrations/freee/conn-1/activate', { method: 'POST' }, env)
+    expect(res.status).toBe(403)
+    expect(db.batch).not.toHaveBeenCalled()
+  })
+
+  it('admin 権限でも有効化できない（owner のみ）', async () => {
+    const { app, env } = makeApp2(1, 'admin')
+    const res = await app.request('/api/integrations/freee/conn-1/activate', { method: 'POST' }, env)
+    expect(res.status).toBe(403)
+  })
+
   it('【重要】存在しない接続でも、他の接続を巻き込んで無効化しない', async () => {
     // batch は両方走るため、無効化側にガードが無いと
     // 存在しないIDを投げるだけで全接続を止められてしまう。
@@ -510,7 +540,7 @@ describe('POST /api/integrations/freee/:id/activate（有効化）', () => {
 })
 
 describe('DELETE /api/integrations/freee/:id（削除）', () => {
-  function makeDeleteApp(changes: number) {
+  function makeDeleteApp(changes: number, role: Role = 'owner') {
     const calls: string[] = []
     const db = {
       prepare: vi.fn().mockImplementation((sql: string) => {
@@ -518,8 +548,7 @@ describe('DELETE /api/integrations/freee/:id（削除）', () => {
         return { bind: vi.fn().mockReturnThis(), run: vi.fn().mockResolvedValue({ meta: { changes } }) }
       }),
     } as unknown as D1Database
-    const app = new Hono<{ Bindings: Record<string, unknown> }>()
-    app.route('/', freee)
+    const app = makeAppWithRole(role)
     return { app, env: { DB: db }, calls }
   }
 
@@ -528,6 +557,13 @@ describe('DELETE /api/integrations/freee/:id（削除）', () => {
     const res = await app.request('/api/integrations/freee/conn-1', { method: 'DELETE' }, env)
     expect(res.status).toBe(200)
     expect(calls.some((q) => q.includes('DELETE FROM freee_accounts'))).toBe(true)
+  })
+
+  it('staff 権限では削除できない', async () => {
+    const { app, env, calls } = makeDeleteApp(1, 'staff')
+    const res = await app.request('/api/integrations/freee/conn-1', { method: 'DELETE' }, env)
+    expect(res.status).toBe(403)
+    expect(calls.some((q) => q.includes('DELETE FROM freee_accounts'))).toBe(false)
   })
 
   it('存在しない接続なら 404（幻の成功を返さない）', async () => {

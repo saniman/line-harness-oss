@@ -240,9 +240,22 @@ export async function refreshFreeeTokens(
 
   if (!res.ok) {
     const body = await res.text().catch(() => '');
-    // 400/401 = 失効・取り消し（再認可しか復旧手段がない）
-    // 5xx / 429 = 一時障害。接続は維持して次回に賭ける
-    const permanent = res.status === 400 || res.status === 401;
+
+    // ⚠️ HTTP ステータスだけで「失効」と判断してはいけない。
+    //    RFC 6749 §5.2 は invalid_client（＝client_secret の設定ミス）にも 401 を許すため、
+    //    ステータス判定だと wrangler secret put の打ち間違いで全接続が保留に落ち、
+    //    シークレットを直しても人間が有効化し直すまで復旧しなくなる。
+    //    OAuth のエラーコードまで見てドメインエラーに変換する。
+    //    参照: .claude/rules/api-coding.md「OAuth APIのエラーコードはドメインエラーに変換する」
+    let code: string | undefined;
+    try {
+      code = (JSON.parse(body) as { error?: string }).error;
+    } catch {
+      // 本文が JSON でない＝判断がつかない。壊さない側（一時障害）に倒す
+    }
+
+    // 再認可しか復旧手段が無いのは invalid_grant（失効・取り消し）だけ
+    const permanent = code === 'invalid_grant';
     throw new FreeeAuthError(`freee token refresh failed (${res.status}): ${body}`, permanent);
   }
 
@@ -265,10 +278,18 @@ interface FreeeAccountRow {
   is_active: number;
 }
 
-/** 期限まで5分を切っていたら更新する（未設定も更新扱い） */
+/**
+ * 期限まで5分を切っていたら更新する。
+ *
+ * 未設定・解釈できない値も「期限切れ」として扱う（fail safe）。
+ * NaN との比較は false になるため、素直に書くと壊れた値のときに
+ * 二度とリフレッシュされず、freee が 401 を返し続ける状態から自力で戻れない。
+ */
 function expiringSoon(expiresAt: string | null): boolean {
   if (!expiresAt) return true;
-  return new Date(expiresAt).getTime() - Date.now() < 5 * 60 * 1000;
+  const at = new Date(expiresAt).getTime();
+  if (Number.isNaN(at)) return true;
+  return at - Date.now() < 5 * 60 * 1000;
 }
 
 /**
@@ -317,18 +338,23 @@ export async function getValidAccessTokenFreee(
       .bind(jstNow(), conn.id, conn.refresh_token)
       .run();
 
-    if (!demoted.meta.changes) {
-      const fresh = await db
-        .prepare('SELECT * FROM freee_accounts WHERE id = ?')
-        .bind(conn.id)
-        .first<FreeeAccountRow>();
-      if (fresh?.access_token && fresh.is_active) {
-        console.warn('[freee] 同時リフレッシュに負けたため勝った側のトークンを使います:', conn.id);
-        return { accessToken: fresh.access_token, companyId: fresh.company_id, connectionId: fresh.id };
-      }
+    if (demoted.meta.changes) {
+      console.error('[freee] リフレッシュに失敗したため接続を保留に戻しました:', conn.id, err);
+      throw new Error('REAUTH_REQUIRED');
     }
 
-    console.error('[freee] リフレッシュに失敗したため接続を保留に戻しました:', conn.id, err);
+    // CAS 不一致＝別のリクエストが先に refresh_token を回した。
+    // ここは保留化していないので、そう記録する（していないことを「した」と書かない）。
+    const fresh = await db
+      .prepare('SELECT * FROM freee_accounts WHERE id = ?')
+      .bind(conn.id)
+      .first<FreeeAccountRow>();
+    if (fresh?.access_token && fresh.is_active) {
+      console.warn('[freee] 同時リフレッシュに負けたため勝った側のトークンを使います:', conn.id);
+      return { accessToken: fresh.access_token, companyId: fresh.company_id, connectionId: fresh.id };
+    }
+
+    console.error('[freee] リフレッシュに失敗し、接続も有効ではありません（保留化はしていません）:', conn.id, err);
     throw new Error('REAUTH_REQUIRED');
   }
 
@@ -338,8 +364,13 @@ export async function getValidAccessTokenFreee(
   const expiresAt = toJstString(new Date(Date.now() + tokens.expires_in * 1000));
   const result = await db
     .prepare(
+      // ⚠️ is_active = 1 を毎回宣言する。
+      //    負けた側のエラー応答が、勝った側の書き込みより先に届くことがある。
+      //    そのとき負けた側の CAS はまだ一致してしまい is_active = 0 に落ちるため、
+      //    ここで宣言し直さないと「有効なトークンを持ったまま保留で固まる」。
       `UPDATE freee_accounts
-          SET access_token = ?, refresh_token = ?, token_expires_at = ?, updated_at = ?
+          SET access_token = ?, refresh_token = ?, token_expires_at = ?,
+              is_active = 1, updated_at = ?
         WHERE id = ? AND refresh_token = ?`,
     )
     .bind(tokens.access_token, tokens.refresh_token, expiresAt, jstNow(), conn.id, conn.refresh_token)
@@ -352,7 +383,8 @@ export async function getValidAccessTokenFreee(
       .prepare('SELECT * FROM freee_accounts WHERE id = ?')
       .bind(conn.id)
       .first<FreeeAccountRow>();
-    if (!fresh?.access_token) throw new Error('REAUTH_REQUIRED');
+    // 「有効化された接続だけを使う」という前提はこの経路でも守る
+    if (!fresh?.access_token || !fresh.is_active) throw new Error('REAUTH_REQUIRED');
     return { accessToken: fresh.access_token, companyId: fresh.company_id, connectionId: fresh.id };
   }
 
