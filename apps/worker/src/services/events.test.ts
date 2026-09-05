@@ -31,6 +31,7 @@ interface EventBookingRow {
   stripe_refund_id: string | null
   refund_status: string | null
   cash_received_at: string | null
+  receipt_name: string | null
   receipt_url: string | null
   receipt_issued_at: string | null
   cancel_reason: string | null
@@ -74,6 +75,7 @@ import {
   expireCheckoutBooking,
   failCheckoutBooking,
   markCashReceived,
+  resolveReceiptName,
 } from './events.js'
 
 const mockSwitchToCancelled = vi.mocked(switchToCancelledFollowup)
@@ -90,7 +92,7 @@ const BOOKING1: EventBookingRow = {
   email: 'yamada@example.com', status: 'confirmed',
   payment_status: 'unpaid', stripe_session_id: null, paid_at: null, amount: null,
   stripe_refund_id: null, refund_status: null,
-  cash_received_at: null, receipt_url: null, receipt_issued_at: null,
+  cash_received_at: null, receipt_name: null, receipt_url: null, receipt_issued_at: null,
   cancel_reason: null,
   created_at: '', updated_at: '',
 }
@@ -740,5 +742,132 @@ describe('markCashReceived', () => {
 
     expect(res.success).toBe(false)
     expect(res.error).toContain('イベント')
+  })
+})
+
+describe('createEventBooking の領収書宛名', () => {
+  it('宛名を渡すと INSERT に含める', async () => {
+    const db = makeDb(makeStmt(null), makeStmt(BOOKING1))
+    await createEventBooking(db, {
+      event_id: 1, name: '山田太郎', receipt_name: '株式会社サンプル',
+    })
+    const sql = (db.prepare as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
+    expect(sql).toContain('receipt_name')
+  })
+
+  it('【重要】宛名はサーバー側で正規化してから保存する', async () => {
+    // LIFF を経由せず API を直接叩けるので、クライアント検証だけでは守れない。
+    // 改行や双方向制御文字を残すと、管理画面や領収書で別の名前に見せかけられる。
+    const stmt = makeStmt(null)
+    const db = makeDb(stmt, makeStmt(BOOKING1))
+    await createEventBooking(db, {
+      event_id: 1, name: '山田太郎',
+      receipt_name: `  株式会社\n\nサンプル${String.fromCharCode(0x202e)}  `,
+    })
+    const bound = (stmt.bind as ReturnType<typeof vi.fn>).mock.calls.flat()
+    expect(bound).toContain('株式会社 サンプル')
+  })
+
+  it('宛名が空文字なら null で保存する（氏名へのフォールバックを効かせる）', async () => {
+    // ⚠️ bound に null が「含まれるか」で見てはいけない。friend_id ?? null が
+    //    常に null を入れるため、正規化が壊れていても通ってしまう。
+    //    受け渡し位置（6番目のパラメータ）を名指しで確認する。
+    const stmt = makeStmt(null)
+    const db = makeDb(stmt, makeStmt(BOOKING1))
+    await createEventBooking(db, { event_id: 1, name: '山田太郎', receipt_name: '   ' })
+    const args = (stmt.bind as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(args[5]).toBeNull()
+  })
+
+  it('宛名を渡したときも受け渡し位置が正しい', async () => {
+    const stmt = makeStmt(null)
+    const db = makeDb(stmt, makeStmt(BOOKING1))
+    await createEventBooking(db, {
+      event_id: 1, name: '山田太郎', receipt_name: '株式会社サンプル',
+    })
+    const args = (stmt.bind as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(args[5]).toBe('株式会社サンプル')
+  })
+
+  it('宛名を渡さない既存の呼び出しも動く（後方互換）', async () => {
+    const db = makeDb(makeStmt(null), makeStmt(BOOKING1))
+    const res = await createEventBooking(db, { event_id: 1, name: '山田太郎' })
+    expect(res).toBeTruthy()
+  })
+})
+
+describe('resolveReceiptName', () => {
+  it('宛名の指定があればそれを使う', () => {
+    expect(resolveReceiptName({ receipt_name: '株式会社サンプル', name: 'あきひさ' }))
+      .toBe('株式会社サンプル')
+  })
+
+  it('指定が無ければ申込時の氏名（LINEの表示名）を使う', () => {
+    expect(resolveReceiptName({ receipt_name: null, name: 'あきひさ' })).toBe('あきひさ')
+  })
+
+  it('宛名が空文字でも氏名にフォールバックする', () => {
+    // 現状 sanitizeReceiptName は '' を返さないので到達しないが、
+    // 管理画面からの編集や手動 SQL で '' が入った瞬間に宛名が空欄になる。
+    // ?? では '' を「指定あり」と扱ってしまう。
+    expect(resolveReceiptName({ receipt_name: '', name: 'あきひさ' })).toBe('あきひさ')
+  })
+
+  it('宛名が空白のみでも氏名にフォールバックする', () => {
+    expect(resolveReceiptName({ receipt_name: '   ', name: 'あきひさ' })).toBe('あきひさ')
+  })
+
+  it('【重要】氏名も空なら友だちの表示名にフォールバックする', () => {
+    // name='' は実在する状態。/join は body.name ?? '' を保存し、LIFF は
+    // liff.getProfile() が失敗すると displayName ?? '' を送る。
+    // participantDisplayName に3段フォールバックがあるのは、まさにこのため。
+    expect(resolveReceiptName({
+      receipt_name: null, name: '', friend_display_name: 'あきひさ',
+    })).toBe('あきひさ')
+  })
+
+  it('【重要】どれも無ければ null を返す（空欄の領収書を発行させない）', () => {
+    // '' を返すと #46 が空欄のまま発行してしまう。null にして発行側に判断させる。
+    expect(resolveReceiptName({ receipt_name: null, name: '' })).toBeNull()
+    expect(resolveReceiptName({
+      receipt_name: null, name: '', friend_display_name: null,
+    })).toBeNull()
+  })
+
+  it('【重要】name 経由でもサニタイズを迂回できない', () => {
+    // receiptName を送らず name に細工を入れる、という抜け道があった。
+    // /join は body.name ?? '' を無検証で保存するため、入口で守っても漏れる。
+    // 出口（この関数）で必ず通す。
+    const RLO = String.fromCharCode(0x202e)
+    expect(resolveReceiptName({
+      receipt_name: null, name: `正規${RLO}\n偽装`,
+    })).toBe('正規 偽装')
+  })
+
+  it('name 経由の長すぎる宛名も切り詰める', () => {
+    const long = 'あ'.repeat(200)
+    const result = resolveReceiptName({ receipt_name: null, name: long })!
+    expect(Array.from(result).length).toBe(60)
+  })
+
+  it('friend_display_name 経由でもサニタイズされる', () => {
+    const ZWSP = String.fromCharCode(0x200b)
+    expect(resolveReceiptName({
+      receipt_name: null, name: '', friend_display_name: `あき${ZWSP}ひさ`,
+    })).toBe('あき ひさ')
+  })
+
+  it('name が不可視文字だけなら次の候補へ進む', () => {
+    expect(resolveReceiptName({
+      receipt_name: null,
+      name: String.fromCodePoint(0x2800).repeat(3),
+      friend_display_name: 'あきひさ',
+    })).toBe('あきひさ')
+  })
+
+  it('友だちの表示名が空白のみでも null になる', () => {
+    expect(resolveReceiptName({
+      receipt_name: null, name: '  ', friend_display_name: '   ',
+    })).toBeNull()
   })
 })

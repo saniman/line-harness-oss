@@ -956,6 +956,8 @@ export type EventBookingItem = {
   cancel_reason: string | null
   /** 当日現金を受け取った日時。null = 未受領（payment_status='cash' と併せて判定する） */
   cash_received_at: string | null
+  /** 領収書の宛名（申込時の任意入力）。null なら name（LINEの表示名）が使われる */
+  receipt_name: string | null
   /** freee が発行した領収書のURL。null = 未発行 */
   receipt_url: string | null
 }

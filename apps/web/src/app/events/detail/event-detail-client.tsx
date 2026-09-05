@@ -367,9 +367,18 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
                         dimmed ? 'bg-gray-50 hover:bg-gray-100' : 'hover:bg-gray-50'
                       }`}
                     >
-                      <div>
+                      {/* ⚠️ min-w-0 が無いとグリッド項目は min-content 未満に縮まないため、
+                          子に truncate を付けても長い文字列で 1fr 列が広がり表がはみ出す */}
+                      <div className="min-w-0">
                         <p className="text-sm font-medium text-gray-900">{participantDisplayName(b)}</p>
                         <p className="text-xs text-gray-400 truncate">{b.email}</p>
+                        {/* 領収書の宛名。発行前に運営者が目視できるようにする
+                            （参加者が自由に入れられる値なので、確認できることが大事） */}
+                        {b.receipt_name && (
+                          <p className="text-xs text-gray-500 mt-0.5 truncate">
+                            領収書宛名: {b.receipt_name}
+                          </p>
+                        )}
                         {/* 畳まれずにここへ来た cancel_reason は、運営者に確認してほしい理由
                             （Stripe 障害・未知の値）。文言が出る場所がないと気づけない */}
                         {b.cancel_reason && (

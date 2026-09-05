@@ -104,7 +104,7 @@ const BOOKING1 = {
   email: 'yamada@example.com', status: 'confirmed',
   payment_status: 'unpaid', stripe_session_id: null, paid_at: null, amount: null,
   stripe_refund_id: null, refund_status: null,
-  cash_received_at: null, receipt_url: null, receipt_issued_at: null,
+  cash_received_at: null, receipt_name: null, receipt_url: null, receipt_issued_at: null,
   cancel_reason: null,
   created_at: '', updated_at: '',
 }
@@ -113,7 +113,7 @@ const PENDING_BOOKING = {
   status: 'pending', payment_status: 'unpaid',
   stripe_session_id: null, paid_at: null, amount: null,
   stripe_refund_id: null, refund_status: null,
-  cash_received_at: null, receipt_url: null, receipt_issued_at: null,
+  cash_received_at: null, receipt_name: null, receipt_url: null, receipt_issued_at: null,
   cancel_reason: null,
   created_at: '', updated_at: '',
 }
@@ -1011,6 +1011,42 @@ describe('POST /api/events/:id/join の運営者 LINE 通知', () => {
     const res = await join(ADMIN_ENV)
     expect(res.status).toBe(201)
     consoleSpy.mockRestore()
+  })
+})
+
+describe('POST /api/events/:id/join の領収書宛名', () => {
+  it('receiptName をサービスに受け渡す', async () => {
+    // この配線にテストが無いと、行を消しても全テストが緑のまま通る。
+    // 壊れても参加者には気づけない（黙って LINE の表示名で発行される）。
+    vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 2 })
+    vi.mocked(eventsService.createEventBooking).mockResolvedValue(BOOKING1)
+
+    await app.request('/api/events/1/join', {
+      method: 'POST',
+      headers: LIFF_HEADERS,
+      body: JSON.stringify({ name: '山田太郎', paymentMethod: 'cash', receiptName: '株式会社サンプル' }),
+    }, { DB: mockDb })
+
+    expect(eventsService.createEventBooking).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ receipt_name: '株式会社サンプル' }),
+    )
+  })
+
+  it('宛名を送らなければ null が渡る（氏名にフォールバックさせる）', async () => {
+    vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 2 })
+    vi.mocked(eventsService.createEventBooking).mockResolvedValue(BOOKING1)
+
+    await app.request('/api/events/1/join', {
+      method: 'POST',
+      headers: LIFF_HEADERS,
+      body: JSON.stringify({ name: '山田太郎' }),
+    }, { DB: mockDb })
+
+    expect(eventsService.createEventBooking).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ receipt_name: null }),
+    )
   })
 })
 

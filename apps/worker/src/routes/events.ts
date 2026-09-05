@@ -176,7 +176,7 @@ events.delete('/api/events/:id', async (c) => {
 events.post('/api/events/:id/join', async (c) => {
   try {
     const id = Number(c.req.param('id'));
-    const body = await c.req.json<{ name?: string; paymentMethod?: string }>();
+    const body = await c.req.json<{ name?: string; paymentMethod?: string; receiptName?: string }>();
     const isCash = body.paymentMethod === 'cash';
 
     // 本人確認: Authorization: Bearer <LIFF idToken> を検証する。
@@ -216,6 +216,8 @@ events.post('/api/events/:id/join', async (c) => {
       event_id: id,
       friend_id: friendId,
       name: body.name ?? '',
+      // 領収書の宛名（任意）。正規化は createEventBooking の中で行う
+      receipt_name: body.receiptName ?? null,
       payment_status: isCash ? 'cash' : undefined,
     });
 
