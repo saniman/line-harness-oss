@@ -21,11 +21,18 @@
 --
 -- 既存レコードは全件 NULL（＝未受領・領収書なし）で意味が合うため backfill は不要。
 
--- 現金を受け取った日時（JST ISO8601）。NULL = 未受領。
+-- 現金を受け取った日時。NULL = 未受領。
+-- ⚠️ 形式は datetime('now') ＝ **UTC・スペース区切り**（'YYYY-MM-DD HH:MM:SS'）。
+--    paid_at / created_at / updated_at と同じ規約。JST では**ない**。
+--    表示は formatJST()、領収日は formatJstDate() を通すこと。
 ALTER TABLE event_bookings ADD COLUMN cash_received_at  TEXT;
 
 -- freee が発行した領収書の URL。NULL = 未発行。
 ALTER TABLE event_bookings ADD COLUMN receipt_url       TEXT;
 
--- 領収書を発行した日時（JST ISO8601）。NULL = 未発行。
+-- 領収書を発行した日時。NULL = 未発行。
+-- ⚠️ 形式は datetime('now') ＝ **UTC・スペース区切り**。JST では**ない**。
+--    発行権の期限判定（services/freee-receipt.ts）が
+--    receipt_issued_at < datetime('now','-5 minutes') という**文字列比較**なので、
+--    strftime(...,'+9 hours') 形式で書くと比較が壊れて二重発行が復活する。
 ALTER TABLE event_bookings ADD COLUMN receipt_issued_at TEXT;

@@ -79,6 +79,13 @@ export type Env = {
     FREEE_CLIENT_ID: string;
     FREEE_CLIENT_SECRET: string;
     FREEE_REDIRECT_URI?: string;
+    /**
+     * 領収書を紐づける freee の取引先。どちらか一方を設定する（ID を優先）。
+     * freee は領収書を必ず取引先に紐づけるため、参加者ごとに作らず
+     * 「イベント参加者」など固定の1件を用意し、宛名だけ partner_display_name で上書きする。
+     */
+    FREEE_PARTNER_ID?: string;
+    FREEE_PARTNER_CODE?: string;
     ANTHROPIC_API_KEY: string;
     ADMIN_LINE_USER_ID?: string;
     STRIPE_SECRET_KEY: string;

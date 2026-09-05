@@ -56,6 +56,9 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
   // （load() が先頭で setError('') するため、そこへ入れると表示前に消える）
   const [cashBusyId, setCashBusyId] = useState<number | null>(null)
   const [cashError, setCashError] = useState('')
+  // 受領は記録できたが領収書だけ出せなかったケース。エラー（赤）と混ぜると
+  // 「受領も失敗した」と誤解され、運営者が現金を二重に受け取りかねない
+  const [receiptWarning, setReceiptWarning] = useState('')
   const [linkingBookingId, setLinkingBookingId] = useState<number | null>(null)
   const [friendQuery, setFriendQuery] = useState('')
   const [friendCandidates, setFriendCandidates] = useState<FriendWithTags[]>([])
@@ -156,8 +159,19 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
 
     setCashBusyId(b.id)
     setCashError('')
+    setReceiptWarning('')
     try {
-      await api.eventBookings.markCashReceived(eventId, b.id)
+      const res = await api.eventBookings.markCashReceived(eventId, b.id)
+      // 現金の受領は成功している。領収書だけ出せなかった場合は警告に留める
+      if (res.success && !res.data.receiptIssued) {
+        setReceiptWarning(
+          `受領は記録しました。領収書は発行できていません（${res.data.receiptError ?? '原因不明'}）。`,
+        )
+      } else if (res.success && res.data.receiptWarning) {
+        // 発行はできたが人の確認が要るケース（二重発行の疑いなど）。
+        // 「発行できた＝何も出さない」にすると、freee 側の重複に誰も気づけない
+        setReceiptWarning(res.data.receiptWarning)
+      }
     } catch (err) {
       // fetchApi は非2xxで throw する。ステータスで案内を分けないと、
       // 「押しても永久に成功しない」ケースまで通信エラー扱いになり、運営者が押し続ける。
@@ -333,6 +347,9 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
             {/* ⚠️ エラーは分岐の外に出す。「他の端末で取り消された」ケースでは
                 再読込後に active が空になることがあり、else 側に置くと
                 まさにエラーを出したい場面で表示が消える */}
+            {receiptWarning && (
+              <div className="mx-4 mt-3 p-3 rounded-lg bg-amber-50 text-amber-800 text-sm">{receiptWarning}</div>
+            )}
             {cashError && (
               <div className="mx-4 mt-3 p-3 rounded-lg bg-red-50 text-red-700 text-sm">{cashError}</div>
             )}

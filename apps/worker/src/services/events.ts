@@ -161,6 +161,31 @@ export async function getEventBookingsAdmin(
   return result.results
 }
 
+/**
+ * 領収書の宛名を決めるために、友だちの表示名まで含めて1件取る。
+ *
+ * `getEventBookingById` は `SELECT *` なので `friend_display_name` を持たず、
+ * `resolveReceiptName` の3段目のフォールバックが**常に効かない**状態だった。
+ * LIFF の `getProfile()` が失敗すると `name` は空文字で保存されるため
+ * （/join は `body.name ?? ''`）、友だち紐付けがあって管理画面には名前が出ているのに
+ * 領収書だけ「宛名を決められない」で止まる、という食い違いが起きていた。
+ *
+ * ⚠️ `getEventBookingById` 自体に JOIN を足さないこと。呼び出し元が多く、
+ *    戻り値の形が変わると影響範囲が読めない。この用途専用に分ける。
+ */
+export async function getEventBookingForReceipt(
+  db: D1Database,
+  id: number,
+): Promise<EventBookingWithFriend | null> {
+  const row = await db.prepare(
+    `SELECT b.*, f.display_name AS friend_display_name, f.is_following AS friend_is_following
+     FROM event_bookings b
+     LEFT JOIN friends f ON f.id = b.friend_id
+     WHERE b.id = ?`,
+  ).bind(id).first<EventBookingWithFriend>()
+  return row ?? null
+}
+
 /** 申込に友だちを手動で紐付ける（lineUserId が復元できないケースの救済）。 */
 export async function linkBookingToFriend(
   db: D1Database,
