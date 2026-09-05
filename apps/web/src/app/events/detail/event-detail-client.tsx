@@ -40,6 +40,7 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
   const [editForm, setEditForm] = useState({
     title: '', description: '', start_at: '', end_at: '',
     capacity: 10, price: '', is_published: false,
+    reminder_at: '', reminder_message_extra: '',
   })
   const [saving, setSaving] = useState(false)
   const [editError, setEditError] = useState('')
@@ -230,6 +231,8 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
       capacity: event.capacity,
       price: event.price != null && event.price > 0 ? String(event.price) : '',
       is_published: event.is_published === 1,
+      reminder_at: event.reminder_at ? toJstDatetimeLocal(event.reminder_at) : '',
+      reminder_message_extra: event.reminder_message_extra ?? '',
     })
     setEditError('')
     setEditing(true)
@@ -261,6 +264,9 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
         capacity: cap,
         price: priceVal != null && priceVal > 0 ? priceVal : null,
         is_published: editForm.is_published ? 1 : 0,
+        // 空欄ならリマインドを配信しない（null でクリアする）
+        reminder_at: editForm.reminder_at ? jstDatetimeLocalToIso(editForm.reminder_at) : null,
+        reminder_message_extra: editForm.reminder_message_extra.trim() || null,
       })
       setEditing(false)
       await load()
@@ -709,6 +715,35 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
                   placeholder="空欄 = 無料"
                   className={FIELD_CLASS}
                 />
+              </div>
+              <div className="pt-3 border-t border-gray-100">
+                <label className="block text-xs font-medium text-gray-700 mb-1">
+                  当日リマインドの送信日時
+                </label>
+                <input
+                  type="datetime-local"
+                  value={editForm.reminder_at}
+                  onChange={(e) => setEditForm((f) => ({ ...f, reminder_at: e.target.value }))}
+                  className={FIELD_CLASS}
+                />
+                <p className="text-xs text-gray-400 mt-1">
+                  空欄ならリマインドを送りません。参加者（申込確定者）全員に届きます
+                </p>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">
+                  当日リマインドの本文
+                </label>
+                <textarea
+                  value={editForm.reminder_message_extra}
+                  onChange={(e) => setEditForm((f) => ({ ...f, reminder_message_extra: e.target.value }))}
+                  rows={6}
+                  placeholder={'📍【会場名】レンタルスペース Eir\nhttps://maps.app.goo.gl/...\n💻 ノートパソコン・電源アダプタをお忘れなく'}
+                  className={FIELD_CLASS}
+                />
+                <p className="text-xs text-gray-400 mt-1">
+                  イベント名と開始時刻は自動で入ります。会場・地図URL・持ち物などをそのまま書いてください
+                </p>
               </div>
               <div className="flex items-center gap-3">
                 <button

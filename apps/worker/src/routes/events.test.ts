@@ -91,6 +91,8 @@ const EVENT1 = {
   id: 1, title: '無料セミナー', description: null,
   start_at: '2026-06-01T10:00:00+09:00', end_at: '2026-06-01T12:00:00+09:00',
   capacity: 10, is_published: 1, price: 3000, created_at: '', updated_at: '', participant_count: 2,
+  // 当日リマインド（#67）。既定は未設定＝配信しない
+  reminder_at: null, reminder_message_extra: null,
 }
 // 申込締切は start_at の60分前（services/event-deadline.ts）。
 // テストの既定時刻は「締切1分前」＝まだ申し込める時点に固定する。
@@ -236,6 +238,22 @@ describe('GET /api/events/public', () => {
     expect(json.data[0].application_closed).toBe(true)
     // 締切と満席は別の状態。混ぜると「締切なのに満席表示」になる（#14 の再発）
     expect(json.data[0].available).toBe(true)
+  })
+
+  it('運営メモ（リマインド設定）を公開レスポンスに含めない', async () => {
+    // 公開APIは項目をホワイトリストで組み立てている。SELECT e.* の結果をそのまま
+    // 返す形に戻すと、運営者しか見ないはずの本文が LIFF に流れる（#67）
+    vi.mocked(eventsService.getEvents).mockResolvedValue([{
+      ...EVENT1,
+      is_published: 1,
+      reminder_at: '2026-06-01T00:00:00.000Z',
+      reminder_message_extra: '会場はレンタルスペース Eir です',
+    }])
+    const res = await app.request('/api/events/public', {}, { DB: mockDb })
+    const body = await res.text()
+    expect(body).not.toContain('reminder_message_extra')
+    expect(body).not.toContain('レンタルスペース Eir')
+    expect(body).not.toContain('reminder_at')
   })
 })
 

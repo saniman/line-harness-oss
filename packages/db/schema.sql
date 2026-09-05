@@ -686,6 +686,12 @@ CREATE TABLE IF NOT EXISTS events (
   capacity INTEGER NOT NULL,
   price INTEGER,
   is_published INTEGER NOT NULL DEFAULT 0,
+  -- 予約確定通知の末尾に追記する文言（migration 048）。NULL = 追記なし
+  confirmation_message_extra TEXT,
+  -- 当日リマインドの本文（migration 048）。会場・地図URL・持ち物・事前確認などを自由文で書く
+  reminder_message_extra TEXT,
+  -- リマインドの送信日時（UTC ISO・migration 825）。NULL = 配信しない
+  reminder_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -716,16 +722,19 @@ CREATE TABLE IF NOT EXISTS event_bookings (
   -- 領収書の宛名（任意入力）。NULL のときは name（LINEの表示名）にフォールバックする。
   -- ⚠️ この列は ALTER TABLE ADD COLUMN で追加したため、実 DB では物理的に**末尾**
   --    （created_at / updated_at より後ろ）にある。このファイルの並びとは一致しない。
-  --    cash_received_at など他の ALTER 追加列も同じ扱い（読みやすさ優先の並び）。
+  --    cash_received_at / reminder_sent_at など他の ALTER 追加列も同じ扱い（読みやすさ優先の並び）。
   --    テーブル再作成（INSERT INTO v2 SELECT * ...）を書くときは、このファイルの順ではなく
   --    実 DB の PRAGMA table_info を見ること。信じると列がずれる。
   receipt_name TEXT,
+  -- リマインドを送った日時（migration 825）。NULL = 未送信
+  reminder_sent_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_event_bookings_event_id ON event_bookings(event_id);
 CREATE INDEX IF NOT EXISTS idx_event_bookings_status ON event_bookings(status);
+CREATE INDEX IF NOT EXISTS idx_event_bookings_reminder ON event_bookings (event_id, reminder_sent_at);
 
 -- ============================================================
 -- Salon booking (menus / staff / shifts / bookings)

@@ -51,6 +51,8 @@ const BASE_EVENT: EventItem = {
   id: 1, title: '無料セミナー', description: null,
   start_at: '2026-06-01T10:00:00+09:00', end_at: '2026-06-01T12:00:00+09:00',
   capacity: 10, price: null, is_published: 1, participant_count: 3, remaining: 7,
+  // 当日リマインド（#67）。既定は未設定＝配信しない
+  reminder_at: null, reminder_message_extra: null,
   created_at: '', updated_at: '',
 }
 

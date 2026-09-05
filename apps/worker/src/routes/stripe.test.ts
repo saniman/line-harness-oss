@@ -92,6 +92,8 @@ const EVENT1 = {
   start_at: '2026-06-01T10:00:00+09:00', end_at: '2026-06-01T12:00:00+09:00',
   capacity: 10, price: 3000, is_published: 1, created_at: '', updated_at: '',
   participant_count: 2,
+  // 当日リマインド（#67）。既定は未設定＝配信しない
+  reminder_at: null, reminder_message_extra: null,
 }
 
 const MOCK_SESSION = {

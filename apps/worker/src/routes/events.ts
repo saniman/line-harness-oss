@@ -39,6 +39,12 @@ function authErrorCode(reason: CallerAuthFailure): string {
   return reason === 'expired' ? 'id_token_expired' : 'unauthorized';
 }
 
+/** 管理画面のフォームは未入力を '' で送ってくる。DB では「未設定」= NULL に寄せる。 */
+function emptyToNull(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
 // ========== 管理API ==========
 
 events.get('/api/events', async (c) => {
@@ -67,6 +73,8 @@ events.post('/api/events', async (c) => {
       capacity?: number;
       price?: number | null;
       is_published?: number;
+      reminder_at?: string | null;
+      reminder_message_extra?: string | null;
     }>();
     if (!body.title || !body.start_at || !body.end_at || !body.capacity) {
       return c.json({ success: false, error: 'title, start_at, end_at, capacity are required' }, 400);
@@ -79,6 +87,10 @@ events.post('/api/events', async (c) => {
       capacity: body.capacity,
       price: body.price != null && body.price > 0 ? body.price : null,
       is_published: body.is_published,
+      // 空文字は「未設定」。そのまま入れると reminder_at IS NOT NULL に引っかかり、
+      // 日時として読めない行が cron の候補に混ざる（#67）
+      reminder_at: emptyToNull(body.reminder_at),
+      reminder_message_extra: emptyToNull(body.reminder_message_extra),
     });
     return c.json({ success: true, data: { ...event, remaining: event.capacity - event.participant_count } }, 201);
   } catch (err) {
@@ -152,8 +164,17 @@ events.put('/api/events/:id', async (c) => {
       capacity?: number;
       price?: number | null;
       is_published?: number;
+      reminder_at?: string | null;
+      reminder_message_extra?: string | null;
     }>();
-    const event = await updateEvent(c.env.DB, id, body);
+    const event = await updateEvent(c.env.DB, id, {
+      ...body,
+      // undefined（未指定＝変更しない）と '' （クリア＝NULL）を区別する
+      ...(body.reminder_at !== undefined ? { reminder_at: emptyToNull(body.reminder_at) } : {}),
+      ...(body.reminder_message_extra !== undefined
+        ? { reminder_message_extra: emptyToNull(body.reminder_message_extra) }
+        : {}),
+    });
     if (!event) return c.json({ success: false, error: 'Event not found' }, 404);
     return c.json({ success: true, data: { ...event, remaining: event.capacity - event.participant_count } });
   } catch (err) {
