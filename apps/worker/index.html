@@ -565,6 +565,38 @@
       border-bottom: 1px solid #f0f0f0;
     }
 
+    /* 領収書の宛名（任意入力・有料イベントのみ） */
+    .receipt-name-field {
+      margin: 0 0 20px;
+    }
+    .receipt-name-field label {
+      display: block;
+      font-size: 13px;
+      color: #666;
+      margin-bottom: 6px;
+    }
+    .receipt-name-field input {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 12px;
+      font-size: 16px; /* 16px 未満だと iOS が入力時に画面を拡大する */
+      border: 1px solid #e0e0e0;
+      border-radius: 8px;
+      background: #fafafa;
+    }
+    .receipt-name-field input:disabled {
+      opacity: 0.5;
+    }
+    .receipt-name-hint {
+      font-size: 12px;
+      color: #999;
+      margin: 6px 0 0;
+    }
+    /* 表示名が取れず、未入力だと宛名が空欄になる場合の注意喚起 */
+    .receipt-name-hint.receipt-name-warn {
+      color: #c2410c;
+    }
+
     #cash-join-btn {
       display: block;
       width: 100%;

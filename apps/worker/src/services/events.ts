@@ -1,4 +1,5 @@
 import { switchToCancelledFollowup } from './event-followup.js'
+import { sanitizeReceiptName } from '../utils/receipt-name.js'
 
 export interface StripeRefundClient {
   checkout: {
@@ -53,6 +54,11 @@ export interface EventBookingRow {
   refund_status: string | null
   /** 当日現金を受け取った日時。null = 未受領（payment_status='cash' と併せて判定する） */
   cash_received_at: string | null
+  /**
+   * 領収書の宛名（申込時の任意入力）。null なら name（LINEの表示名）にフォールバックする。
+   * 参加者が自由に決められる値なので、保存前に sanitizeReceiptName を通す。
+   */
+  receipt_name: string | null
   /** freee が発行した領収書の URL。null = 未発行 */
   receipt_url: string | null
   /** 領収書を発行した日時。null = 未発行 */
@@ -189,12 +195,23 @@ export async function linkBookingToFriend(
 
 export async function createEventBooking(
   db: D1Database,
-  data: { event_id: number; friend_id?: string | null; name: string; email?: string; payment_status?: string },
+  data: {
+    event_id: number
+    friend_id?: string | null
+    name: string
+    email?: string
+    payment_status?: string
+    /** 領収書の宛名（任意）。ここで必ず正規化してから保存する */
+    receipt_name?: string | null
+  },
 ): Promise<EventBookingRow> {
   const paymentStatus = data.payment_status ?? 'unpaid'
+  // ⚠️ クライアント検証だけに頼らない。LIFF を経由せず API を直接叩けるため、
+  //    保存の直前で必ず正規化する（制御文字・双方向制御文字・長さ）。
+  const receiptName = sanitizeReceiptName(data.receipt_name)
   const result = await db.prepare(
-    'INSERT INTO event_bookings (event_id, friend_id, name, email, payment_status) VALUES (?, ?, ?, ?, ?)',
-  ).bind(data.event_id, data.friend_id ?? null, data.name, data.email ?? '', paymentStatus).run()
+    'INSERT INTO event_bookings (event_id, friend_id, name, email, payment_status, receipt_name) VALUES (?, ?, ?, ?, ?, ?)',
+  ).bind(data.event_id, data.friend_id ?? null, data.name, data.email ?? '', paymentStatus, receiptName).run()
   const lastId = (result as { meta?: { last_row_id?: number } }).meta?.last_row_id
   const row = await db.prepare('SELECT * FROM event_bookings WHERE id = ?')
     .bind(lastId).first<EventBookingRow>()
@@ -467,4 +484,39 @@ export async function markCashReceived(
     error: '受領を記録できませんでした。予約の状態が変わった可能性があります。',
     booking: fresh ?? booking,
   }
+}
+
+/**
+ * 領収書に印字する宛名を決める。
+ *
+ * 申込時の宛名は任意入力なので、未指定なら申込時の氏名（LINE の表示名）を使う。
+ * LIFF の申込画面でも「未入力の場合は『◯◯』が宛名になります」と同じ規則を見せている。
+ */
+export function resolveReceiptName(
+  booking: {
+    receipt_name: string | null
+    name: string
+    /** 紐づく友だちの表示名。name が空のときの最後の頼り */
+    friend_display_name?: string | null
+  },
+): string | null {
+  // ⚠️ `??` では '' を「指定あり」と扱ってしまい、宛名が空欄の領収書になる。
+  //    trim して中身があるものだけを採用する。
+  //
+  // name='' は実在する状態。/join は body.name ?? '' を保存し、LIFF は
+  // liff.getProfile() が失敗すると displayName ?? '' を送る。
+  // participantDisplayName（apps/web）に3段フォールバックがあるのは、まさにこのため。
+  //
+  // ⚠️ どれも無ければ **null** を返す。'' を返すと領収書発行（#46）が
+  //    空欄のまま発行してしまう。発行するかどうかは呼び出し側に判断させる。
+  // ⚠️ どの候補も sanitizeReceiptName を通す。
+  //    receipt_name だけを入口で守っても、/join が無検証で保存する name に
+  //    細工を入れれば迂回できた（receiptName を送らないだけでよかった）。
+  //    入口が増えても漏れないよう、出口のここで一括して正規化する。
+  const candidates = [booking.receipt_name, booking.name, booking.friend_display_name]
+  for (const c of candidates) {
+    const safe = sanitizeReceiptName(c)
+    if (safe) return safe
+  }
+  return null
 }

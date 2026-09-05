@@ -579,3 +579,103 @@ describe('payment routing', () => {
     expect(document.getElementById('app')?.innerHTML).toContain('キャンセル')
   })
 })
+
+describe('領収書の宛名欄（#66）', () => {
+  it('有料イベントには宛名の入力欄が出る', () => {
+    const html = buildEventDetailHtml(EVENT_PAID, 'あきひさ')
+    expect(html).toContain('receipt-name-input')
+    expect(html).toContain('領収書の宛名')
+  })
+
+  it('無料イベントには宛名の入力欄を出さない', () => {
+    // 領収書を出すのは当日現金の経路だけ。無料に置いても使い道が無く、
+    // 申込のハードルだけ上がる
+    const html = buildEventDetailHtml(EVENT_FREE, 'あきひさ')
+    expect(html).not.toContain('receipt-name-input')
+  })
+
+  it('入力は任意だと分かる表記になっている', () => {
+    const html = buildEventDetailHtml(EVENT_PAID, 'あきひさ')
+    expect(html).toContain('任意')
+  })
+
+  it('文字数の上限を画面に出す（黙って切られないように）', () => {
+    // サーバーは60コードポイントで切り詰める。書いていないと、
+    // 61文字以上の法人名を入れた人が「切れた宛名の領収書」を受け取ることになる
+    const html = buildEventDetailHtml(EVENT_PAID, 'あきひさ')
+    expect(html).toContain('60文字')
+  })
+
+  it('【重要】未入力時に何になるかを、実際の表示名で見せる', () => {
+    // 「LINEの表示名になります」だけでは自分の表示名を思い出せない。
+    // 実物を出せば、ニックネーム登録の人がその場で気づける。
+    const html = buildEventDetailHtml(EVENT_PAID, 'あきひさ')
+    expect(html).toContain('あきひさ')
+  })
+
+  it('【重要】表示名が取れないときこそ、入力を促す警告を出す', () => {
+    // 表示名が空 = サーバー側のフォールバックも空になるケース。
+    // ここで黙ると、一番警告が要る人に何も出ないことになる。
+    const html = buildEventDetailHtml(EVENT_PAID, '')
+    expect(html).toContain('receipt-name-input')
+    expect(html).not.toContain('が宛名になります')
+    expect(html).toContain('お名前を取得できませんでした')
+  })
+
+  it('表示名を HTML エスケープする', () => {
+    // LINE の表示名は自由文字列。エスケープしないと画面が壊れる
+    const html = buildEventDetailHtml(EVENT_PAID, '<script>alert(1)</script>')
+    expect(html).not.toContain('<script>')
+    expect(html).toContain('&lt;script&gt;')
+  })
+
+  it('宛名を渡さない既存の呼び出しでも壊れない（後方互換）', () => {
+    const html = buildEventDetailHtml(EVENT_PAID)
+    expect(html).toContain('checkout-btn')
+  })
+})
+
+describe('joinCashEvent の宛名送信', () => {
+  const ID_TOKEN_FRESH = ID_TOKEN
+
+  it('宛名を渡すと receiptName として送る', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ success: true }) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await joinCashEvent(2, ID_TOKEN_FRESH, '山田太郎', '株式会社サンプル')
+
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
+    expect(body.receiptName).toBe('株式会社サンプル')
+    expect(body.paymentMethod).toBe('cash')
+  })
+
+  it('宛名を渡さなければ receiptName を送らない（後方互換）', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ success: true }) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await joinCashEvent(2, ID_TOKEN_FRESH, '山田太郎')
+
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
+    expect(body.receiptName).toBeUndefined()
+  })
+})
+
+describe('宛名欄と決済ボタンの関係（#68 レビュー⑥）', () => {
+  it('宛名欄は当日現金ボタンの直前に置く（決済ボタンから離す）', () => {
+    // 宛名を読むのは現金フローだけ。決済ボタンの真上にあると、
+    // 入力してから決済を押した人の入力が黙って消える。
+    const html = buildEventDetailHtml(EVENT_PAID, 'あきひさ')
+    const receiptIdx = html.indexOf('receipt-name-input')
+    const checkoutIdx = html.indexOf('checkout-btn')
+    const cashIdx = html.indexOf('cash-join-btn')
+    expect(receiptIdx).toBeGreaterThan(checkoutIdx)
+    expect(receiptIdx).toBeLessThan(cashIdx)
+  })
+
+  it('宛名が現金専用だと分かる文言になっている', () => {
+    // ⚠️ '当日現金' だけだと既存ボタンの「当日現金の方はこちら 💴」で通ってしまい、
+    //    宛名欄を丸ごと消しても緑のままになる。ラベル固有の文言で確認する。
+    const html = buildEventDetailHtml(EVENT_PAID, 'あきひさ')
+    expect(html).toContain('当日現金でお支払いの方のみ')
+  })
+})

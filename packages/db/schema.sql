@@ -719,6 +719,13 @@ CREATE TABLE IF NOT EXISTS event_bookings (
   -- キャンセルの理由。NULL = 本人都合のキャンセル
   -- 'checkout_abandoned' = Stripe 決済画面から戻った / 'checkout_expired' = セッション期限切れ
   cancel_reason TEXT,
+  -- 領収書の宛名（任意入力）。NULL のときは name（LINEの表示名）にフォールバックする。
+  -- ⚠️ この列は ALTER TABLE ADD COLUMN で追加したため、実 DB では物理的に**末尾**
+  --    （created_at / updated_at より後ろ）にある。このファイルの並びとは一致しない。
+  --    cash_received_at / reminder_sent_at など他の ALTER 追加列も同じ扱い（読みやすさ優先の並び）。
+  --    テーブル再作成（INSERT INTO v2 SELECT * ...）を書くときは、このファイルの順ではなく
+  --    実 DB の PRAGMA table_info を見ること。信じると列がずれる。
+  receipt_name TEXT,
   -- リマインドを送った日時（migration 825）。NULL = 未送信
   reminder_sent_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
