@@ -59,6 +59,11 @@ export default function EventsPage() {
     const priceVal = price === '' ? null : Number(price)
     const err = validateForm({ title, start_at: startAt, end_at: endAt, capacity: cap, price: priceVal })
     if (err) { setFormError(err); return }
+    // 解釈できない日時は空文字になる。API は 400 で弾くが、利用者には
+    // 「作成に失敗しました」としか出ず原因が分からないので、ここで理由を示す
+    const startAtIso = jstDatetimeLocalToIso(startAt)
+    const endAtIso = jstDatetimeLocalToIso(endAt)
+    if (!startAtIso || !endAtIso) { setFormError('日時の形式が正しくありません'); return }
     setCreating(true)
     setFormError('')
     try {
@@ -68,8 +73,8 @@ export default function EventsPage() {
         // datetime-local の入力は JST の壁時計として解釈する。
         // 編集モーダル（event-detail-client.tsx）と規則を揃えないと、
         // JST 以外の環境で「作成した時刻」と「編集で見える時刻」が食い違う
-        start_at: jstDatetimeLocalToIso(startAt),
-        end_at: jstDatetimeLocalToIso(endAt),
+        start_at: startAtIso,
+        end_at: endAtIso,
         capacity: cap,
         price: priceVal ?? undefined,
         is_published: isPublished ? 1 : 0,

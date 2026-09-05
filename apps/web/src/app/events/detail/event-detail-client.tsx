@@ -197,6 +197,12 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
     if (!editForm.title.trim()) { setEditError('タイトルを入力してください'); return }
     if (!editForm.start_at || !editForm.end_at) { setEditError('日時を入力してください'); return }
     if (new Date(editForm.start_at) >= new Date(editForm.end_at)) { setEditError('終了日時は開始日時より後にしてください'); return }
+    // 解釈できない日時（範囲外の年など）は空文字になる。そのまま送ると
+    // updateEvent が start_at = '' を書き込み、イベントの開催日時が消える。
+    // 送る前に弾いて、静かに壊れるのではなく画面にエラーを出す
+    const startAtIso = jstDatetimeLocalToIso(editForm.start_at)
+    const endAtIso = jstDatetimeLocalToIso(editForm.end_at)
+    if (!startAtIso || !endAtIso) { setEditError('日時の形式が正しくありません'); return }
     if (!Number.isInteger(cap) || cap < 1) { setEditError('定員は1以上の整数で入力してください'); return }
     if (priceVal !== null && (!Number.isInteger(priceVal) || priceVal < 0)) { setEditError('参加費は0以上の整数で入力してください'); return }
     setSaving(true)
@@ -205,8 +211,8 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
       await api.events.update(eventId, {
         title: editForm.title.trim(),
         description: editForm.description.trim() || undefined,
-        start_at: jstDatetimeLocalToIso(editForm.start_at),
-        end_at: jstDatetimeLocalToIso(editForm.end_at),
+        start_at: startAtIso,
+        end_at: endAtIso,
         capacity: cap,
         price: priceVal != null && priceVal > 0 ? priceVal : null,
         is_published: editForm.is_published ? 1 : 0,

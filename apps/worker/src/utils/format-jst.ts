@@ -3,11 +3,17 @@ const WEEKDAYS_JA = ['日', '月', '火', '水', '木', '金', '土'] as const
 /** 解釈できない値のときに出す文字。'Invalid Date' を人目に触れさせない。 */
 const INVALID_LABEL = '—'
 
+// 秒とその小数部は省略・付与どちらもあり得る。完全一致に絞ると桁がゆらいだ値が
+// 無音で素通りし、「ローカル時刻として解釈」に戻ってしまう。
+// そうなると JST 環境では通って UTC の CI で落ちるテストになる。
+// apps/web/src/lib/format-jst.ts と同じ仕様にすること。
+const TIME = String.raw`\d{2}:\d{2}(:\d{2})?(\.\d+)?`
+
 /** SQLite の datetime('now') 形式。UTC・スペース区切り・オフセット表記なし。 */
-const SQLITE_DATETIME = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/
+const SQLITE_DATETIME = new RegExp(String.raw`^\d{4}-\d{2}-\d{2} ${TIME}$`)
 
 /** strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours') 形式。JST・T 区切り・オフセット表記なし。 */
-const ISO_WITHOUT_OFFSET = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?$/
+const ISO_WITHOUT_OFFSET = new RegExp(String.raw`^\d{4}-\d{2}-\d{2}T${TIME}$`)
 
 /**
  * DB の日時文字列を、タイムゾーンが確定した ISO に正規化する。

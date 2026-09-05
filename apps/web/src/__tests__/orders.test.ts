@@ -151,3 +151,27 @@ describe('urgencyLevel（緊急度）', () => {
     expect(urgencyLevel('2026-06-22 12:00:00', base + 11 * 60000)).toBe('late')
   })
 })
+
+describe('parsePlacedAt の日時解釈', () => {
+  it("datetime('now') 形式（UTC・スペース区切り）を UTC として読む", () => {
+    // orders.placed_at / dining_sessions.started_at はこの形式
+    expect(parsePlacedAt('2026-09-01 01:50:08')).toBe(Date.parse('2026-09-01T01:50:08Z'))
+  })
+
+  it('オフセットの無い ISO は JST として読む（lib/format-jst と同じ規則）', () => {
+    // 以前はここだけ「オフセット無し＝UTC」という逆の規則を持っており、
+    // 同じ文字列を 9 時間違う瞬間として読む関数が同居していた（Issue #58）。
+    // 現在この形式を返す列は無いが、増えたときに 9 時間先の時刻として読むと
+    // elapsedLabel が負値を 0:00 に丸め、urgencyLevel が上がらず
+    // 遅れている伝票が新規に見えるため、規則を固定しておく
+    expect(parsePlacedAt('2026-09-01T10:50:08')).toBe(Date.parse('2026-09-01T10:50:08+09:00'))
+  })
+
+  it('オフセット付きはそのまま解釈する', () => {
+    expect(parsePlacedAt('2026-09-01T01:50:08Z')).toBe(Date.parse('2026-09-01T01:50:08Z'))
+  })
+
+  it('空文字は NaN を返す', () => {
+    expect(Number.isNaN(parsePlacedAt(''))).toBe(true)
+  })
+})
