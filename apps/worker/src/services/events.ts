@@ -20,6 +20,16 @@ export interface EventRow {
   capacity: number
   price: number | null
   is_published: number
+  /**
+   * リマインドの送信日時（UTC ISO）。null = 配信しない（#67）。
+   * 管理画面の datetime-local を JST の壁時計として解釈して保存する（start_at と同じ規則）。
+   */
+  reminder_at: string | null
+  /**
+   * リマインド本文（自由文）。会場・地図URL・持ち物・事前確認などをそのまま書く。
+   * migration 048 で追加されていたが今まで未使用だったカラム。
+   */
+  reminder_message_extra: string | null
   created_at: string
   updated_at: string
 }
@@ -67,12 +77,12 @@ const PARTICIPANT_COUNT_SQL = `(SELECT COUNT(*) FROM event_bookings WHERE event_
 
 export async function createEvent(
   db: D1Database,
-  data: { title: string; description?: string; start_at: string; end_at: string; capacity: number; price?: number | null; is_published?: number },
+  data: { title: string; description?: string; start_at: string; end_at: string; capacity: number; price?: number | null; is_published?: number; reminder_at?: string | null; reminder_message_extra?: string | null },
 ): Promise<EventWithCount> {
   if (!data.title) throw new Error('title is required')
   const result = await db.prepare(
-    'INSERT INTO events (title, description, start_at, end_at, capacity, price, is_published) VALUES (?, ?, ?, ?, ?, ?, ?)',
-  ).bind(data.title, data.description ?? null, data.start_at, data.end_at, data.capacity, data.price ?? null, data.is_published ?? 0).run()
+    'INSERT INTO events (title, description, start_at, end_at, capacity, price, is_published, reminder_at, reminder_message_extra) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  ).bind(data.title, data.description ?? null, data.start_at, data.end_at, data.capacity, data.price ?? null, data.is_published ?? 0, data.reminder_at ?? null, data.reminder_message_extra ?? null).run()
   const lastId = (result as { meta?: { last_row_id?: number } }).meta?.last_row_id
   const row = await db.prepare(
     `SELECT e.*, ${PARTICIPANT_COUNT_SQL} FROM events e WHERE e.id = ?`,
@@ -97,7 +107,7 @@ export async function getEventById(db: D1Database, id: number): Promise<EventWit
 export async function updateEvent(
   db: D1Database,
   id: number,
-  updates: Partial<Pick<EventRow, 'title' | 'description' | 'start_at' | 'end_at' | 'capacity' | 'price' | 'is_published'>>,
+  updates: Partial<Pick<EventRow, 'title' | 'description' | 'start_at' | 'end_at' | 'capacity' | 'price' | 'is_published' | 'reminder_at' | 'reminder_message_extra'>>,
 ): Promise<EventWithCount | null> {
   const sets: string[] = ["updated_at = datetime('now')"]
   const binds: unknown[] = []
@@ -108,6 +118,8 @@ export async function updateEvent(
   if (updates.capacity !== undefined) { sets.push('capacity = ?'); binds.push(updates.capacity) }
   if (updates.price !== undefined) { sets.push('price = ?'); binds.push(updates.price) }
   if (updates.is_published !== undefined) { sets.push('is_published = ?'); binds.push(updates.is_published) }
+  if (updates.reminder_at !== undefined) { sets.push('reminder_at = ?'); binds.push(updates.reminder_at) }
+  if (updates.reminder_message_extra !== undefined) { sets.push('reminder_message_extra = ?'); binds.push(updates.reminder_message_extra) }
   binds.push(id)
   await db.prepare(`UPDATE events SET ${sets.join(', ')} WHERE id = ?`).bind(...binds).run()
   return getEventById(db, id)

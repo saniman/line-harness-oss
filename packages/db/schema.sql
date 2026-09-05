@@ -686,6 +686,12 @@ CREATE TABLE IF NOT EXISTS events (
   capacity INTEGER NOT NULL,
   price INTEGER,
   is_published INTEGER NOT NULL DEFAULT 0,
+  -- 予約確定通知の末尾に追記する文言（migration 048）。NULL = 追記なし
+  confirmation_message_extra TEXT,
+  -- 当日リマインドの本文（migration 048）。会場・地図URL・持ち物・事前確認などを自由文で書く
+  reminder_message_extra TEXT,
+  -- リマインドの送信日時（UTC ISO・migration 825）。NULL = 配信しない
+  reminder_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -713,12 +719,15 @@ CREATE TABLE IF NOT EXISTS event_bookings (
   -- キャンセルの理由。NULL = 本人都合のキャンセル
   -- 'checkout_abandoned' = Stripe 決済画面から戻った / 'checkout_expired' = セッション期限切れ
   cancel_reason TEXT,
+  -- リマインドを送った日時（migration 825）。NULL = 未送信
+  reminder_sent_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_event_bookings_event_id ON event_bookings(event_id);
 CREATE INDEX IF NOT EXISTS idx_event_bookings_status ON event_bookings(status);
+CREATE INDEX IF NOT EXISTS idx_event_bookings_reminder ON event_bookings (event_id, reminder_sent_at);
 
 -- ============================================================
 -- Salon booking (menus / staff / shifts / bookings)

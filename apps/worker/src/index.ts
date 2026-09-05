@@ -5,6 +5,7 @@ import { getLineAccounts, getTrafficPoolBySlug, getRandomPoolAccount, getPoolAcc
 import { processStepDeliveries } from './services/step-delivery.js';
 import { processScheduledBroadcasts, processQueuedBroadcasts } from './services/broadcast.js';
 import { processReminderDeliveries } from './services/reminder-delivery.js';
+import { processEventReminders } from './services/event-reminders.js';
 import { checkAccountHealth } from './services/ban-monitor.js';
 import { refreshLineAccessTokens } from './services/token-refresh.js';
 import { processInsightFetch } from './services/insight-fetcher.js';
@@ -420,6 +421,11 @@ async function scheduled(
       processStepDeliveries(env.DB, defaultLineClient, env.WORKER_URL),
       processScheduledBroadcasts(env.DB, defaultLineClient, env.WORKER_URL),
       processReminderDeliveries(env.DB, defaultLineClient),
+      // イベント当日のリマインド（#67）。reminder_at を過ぎた未送信の確定参加者へ push する
+      processEventReminders(env.DB, {
+        defaultClient: defaultLineClient,
+        createClient: (token) => new LineClient(token),
+      }),
     );
     // キュー処理は1回だけ実行（内部でアカウント別lineClientを解決する）
     // ロック解除: タイムアウトでstuckした配信を復旧
