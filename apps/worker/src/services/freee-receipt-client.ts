@@ -29,7 +29,7 @@ const TIMEOUT_MS = 10_000;
  * events.title は長さ無制限の TEXT で、API 側にも検証が無い。超えるとイベント単位で
  * 全員の発行が 400 になるので、送る直前にここで切る。
  */
-const MAX_TEXT_LENGTH = 255;
+export const RECEIPT_TEXT_MAX_LENGTH = 255;
 
 /**
  * コードポイント単位で切り詰める。
@@ -195,11 +195,11 @@ export const freeeReceiptIssuer: FreeeReceiptIssuer = {
       withholding_tax_entry_method: 'out',
       partner_title: resolvePartnerTitle(params.payeeName),
       partner_display_name: params.payeeName,
-      subject: truncate(params.subject, MAX_TEXT_LENGTH),
+      subject: truncate(params.subject, RECEIPT_TEXT_MAX_LENGTH),
       lines: [
         {
           type: 'item',
-          description: truncate(params.description, MAX_TEXT_LENGTH),
+          description: truncate(params.description, RECEIPT_TEXT_MAX_LENGTH),
           quantity: 1,
           // unit_price は数値ではなく文字列（OAS3 の pattern が文字列前提）
           unit_price: String(params.amount),

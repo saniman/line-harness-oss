@@ -398,17 +398,13 @@ describe('issueReceiptForBooking（freee API が失敗したとき）', () => {
   });
 
   it('URL が空で返ってきたら保存しない', async () => {
-    // 発行権を返すかどうかは「2xx なのに URL が無い」の describe で別途見る
-    // （freee 側には領収書があるので返してはいけない）
     const { db, calls } = makeDb();
     const issuer: FreeeReceiptIssuer = {
       createReceipt: vi.fn().mockResolvedValue({ receiptId: 1, receiptUrl: '' }),
     };
 
-    const res = await issueReceiptForBooking(ENV, db, 1, 5, issuer);
+    await issueReceiptForBooking(ENV, db, 1, 5, issuer);
 
-    expect(res.issued).toBe(false);
-    expect(res.code).toBe('issue_failed');
     expect(calls.save).toBe(0);
   });
 
@@ -597,11 +593,28 @@ describe('issueReceiptForBooking（2xx なのに URL が無い）', () => {
       createReceipt: vi.fn().mockResolvedValue({ receiptId: 777, receiptUrl: '' }),
     };
 
-    const res = await issueReceiptForBooking(ENV, db, 1, 5, issuer);
+    await issueReceiptForBooking(ENV, db, 1, 5, issuer);
 
-    expect(res.issued).toBe(false);
     expect(calls.release).toBe(0);
     expect(calls.save).toBe(0);
+  });
+
+  it('【重要】「発行できていません」と言わない（押し直しを誘発するため）', async () => {
+    // issued:false にすると画面が
+    //   「領収書は発行できていません（freee 側に領収書は作成されましたが…）」
+    // という自己矛盾した文になる。読んだ運営者は押し直し、5分後に本物の2枚目が出る
+    const { db } = makeDb();
+    const issuer: FreeeReceiptIssuer = {
+      createReceipt: vi.fn().mockResolvedValue({ receiptId: 777, receiptUrl: '' }),
+    };
+
+    const res = await issueReceiptForBooking(ENV, db, 1, 5, issuer);
+
+    expect(res.issued).toBe(true);
+    expect(res.error).toBeUndefined();
+    expect(res.warning).toContain('作成されました');
+    expect(res.warning).toContain('2枚目');
+    expect(res.receiptUrl).toBe(null);
   });
 
   it('【重要】領収書IDをログに残す（迷子の1枚を特定する唯一の手がかり）', async () => {
@@ -619,16 +632,7 @@ describe('issueReceiptForBooking（2xx なのに URL が無い）', () => {
     spy.mockRestore();
   });
 
-  it('freee で確認するよう運営者に案内する', async () => {
-    const { db } = makeDb();
-    const issuer: FreeeReceiptIssuer = {
-      createReceipt: vi.fn().mockResolvedValue({ receiptId: 777, receiptUrl: '' }),
-    };
 
-    const res = await issueReceiptForBooking(ENV, db, 1, 5, issuer);
-
-    expect(res.error).toContain('作成されました');
-  });
 });
 
 describe('issueReceiptForBooking（宛名のフォールバック）', () => {
@@ -679,5 +683,82 @@ describe('issueReceiptForBooking（宛名のフォールバック）', () => {
 
     const arg = vi.mocked(issuer.createReceipt).mock.calls[0][0];
     expect(arg.payeeName).toBe('株式会社サンプル');
+  });
+});
+
+describe('issueReceiptForBooking（重複時の手がかり）', () => {
+  it('【重要】保存できなかったとき領収書IDをログに残す', async () => {
+    // ここが最も領収書IDを必要とする場面。重複した1枚が確実に存在するのに、
+    // 宛名はログから伏せているので、IDが無いとどれを取り消せばいいか分からない
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { db } = makeDb({ save: false, fresh: booking({ receipt_url: 'https://x/other' }) });
+    const issuer: FreeeReceiptIssuer = {
+      createReceipt: vi.fn().mockResolvedValue({ receiptId: 4242, receiptUrl: ISSUED_URL }),
+    };
+
+    await issueReceiptForBooking(ENV, db, 1, 5, issuer);
+
+    expect(spy.mock.calls.flat().join(' ')).toContain('4242');
+    spy.mockRestore();
+  });
+});
+
+describe('issueReceiptForBooking（但し書き）', () => {
+  it('イベント名と「参加費として」を並べる', async () => {
+    const { db } = makeDb();
+    const issuer = makeIssuer();
+
+    await issueReceiptForBooking(ENV, db, 1, 5, issuer, { eventTitle: '沖縄AI勉強会' });
+
+    const arg = vi.mocked(issuer.createReceipt).mock.calls[0][0];
+    expect(arg.description).toBe('沖縄AI勉強会 参加費として');
+  });
+
+  it('【重要】長いイベント名でも「参加費として」を落とさない', async () => {
+    // 連結後に切ると目的語が消え、何の対価か分からない領収書になる。
+    // events.title は長さ無制限の TEXT なので実際に起こりうる
+    const { db } = makeDb();
+    const issuer = makeIssuer();
+
+    await issueReceiptForBooking(ENV, db, 1, 5, issuer, { eventTitle: 'あ'.repeat(300) });
+
+    const arg = vi.mocked(issuer.createReceipt).mock.calls[0][0];
+    expect(arg.description).toMatch(/参加費として$/);
+    expect(Array.from(arg.description).length).toBeLessThanOrEqual(255);
+  });
+
+  it('イベント名が無ければ既定の但し書きにする', async () => {
+    const { db } = makeDb();
+    const issuer = makeIssuer();
+
+    await issueReceiptForBooking(ENV, db, 1, 5, issuer);
+
+    const arg = vi.mocked(issuer.createReceipt).mock.calls[0][0];
+    expect(arg.description).toBe('イベント参加費として');
+  });
+});
+
+describe('issueReceiptForBooking（発行中の案内）', () => {
+  it('【重要】「ほかの操作で」と言わない（同じ人の押し直しが多いため）', async () => {
+    // タイムアウト後に本人が押し直した場合、他の操作は動いていない。
+    // 「待てば完了する」と読ませると、待った末にまた押して2枚目を出す
+    const { db } = makeDb({ claim: false });
+
+    const res = await issueReceiptForBooking(ENV, db, 1, 5, makeIssuer());
+
+    expect(res.code).toBe('issue_in_progress');
+    expect(res.error).not.toContain('ほかの操作');
+    expect(res.error).toContain('再発行できません');
+    expect(res.error).toContain('確認');
+  });
+
+  it('画面の文言が入れ子カッコにならない', async () => {
+    // 画面は「領収書は発行できていません（〜）」の〜に入れる
+    const { db } = makeDb({ claim: false });
+
+    const res = await issueReceiptForBooking(ENV, db, 1, 5, makeIssuer());
+
+    expect(res.error).not.toContain('（');
+    expect(res.error).not.toContain('）');
   });
 });

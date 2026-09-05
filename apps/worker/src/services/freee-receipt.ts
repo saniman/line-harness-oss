@@ -22,6 +22,7 @@ import { formatJstDate } from '../utils/format-jst.js';
 import {
   freeeReceiptIssuer,
   FreeeReceiptApiError,
+  RECEIPT_TEXT_MAX_LENGTH,
   type FreeeReceiptIssuer,
 } from './freee-receipt-client.js';
 
@@ -94,10 +95,24 @@ function isDefinitelyNotCreated(err: unknown): boolean {
   return false;
 }
 
-/** 但し書き。「〜として」まで入れて領収書らしくする */
+/**
+ * 但し書き。「〜として」まで入れて領収書らしくする。
+ *
+ * ⚠️ 連結してから切ってはいけない。events.title は長さ無制限の TEXT なので、
+ *    長いタイトルだと末尾の「参加費として」が落ちて、ただのタイトルが
+ *    但し書きになってしまう（何の対価か分からない領収書になる）。
+ *    タイトル側を先に切る。
+ */
+const DESCRIPTION_SUFFIX = ' 参加費として';
+
 function buildDescription(eventTitle: string | undefined): string {
   const title = eventTitle?.trim();
-  return title ? `${title} 参加費として` : 'イベント参加費として';
+  if (!title) return 'イベント参加費として';
+
+  const budget = RECEIPT_TEXT_MAX_LENGTH - Array.from(DESCRIPTION_SUFFIX).length;
+  const chars = Array.from(title);
+  const fitted = chars.length <= budget ? title : chars.slice(0, budget).join('').trimEnd();
+  return `${fitted}${DESCRIPTION_SUFFIX}`;
 }
 
 export async function issueReceiptForBooking(
@@ -179,11 +194,19 @@ export async function issueReceiptForBooking(
     if (fresh?.receipt_url) {
       return { issued: true, alreadyIssued: true, receiptUrl: fresh.receipt_url };
     }
-    console.warn('[freee] 別のリクエストが発行中のため見送りました:', bookingId);
+    // ⚠️ 文言に「ほかの操作で」と書かない。よくあるのは**同じ人がタイムアウト後に
+    //    押し直した**ケースで、そのとき他の操作は動いていない（発行権を意図的に
+    //    保持しているだけ）。「待てば完了する」と読ませると、待った末にまた押して
+    //    2枚目を出すことになる。
+    console.warn('[freee] 発行権が保持されているため見送りました:', bookingId);
     return {
       issued: false,
       code: 'issue_in_progress',
-      error: 'ほかの操作で領収書を発行中です。少し待ってから状態を確認してください。',
+      // 画面は「領収書は発行できていません（〜）」の〜に入れる。
+      // カッコを含めると入れ子になって読めなくなるので使わない
+      error:
+        '直前の発行処理が完了していません。重複を防ぐため数分間は再発行できません。'
+        + 'freee 側に領収書ができていないか確認してください。',
     };
   }
 
@@ -288,12 +311,17 @@ export async function issueReceiptForBooking(
       'receipt_id=',
       result.receiptId,
     );
+    // ⚠️ issued: false にしてはいけない。
+    //    画面が「領収書は発行できていません（freee 側に作成されました…）」という
+    //    自己矛盾した文になり、読んだ運営者が押し直す。5分後には発行権が解放されるので、
+    //    本物の2枚目が出る。**この機能が防ぎたい事故を、文言が誘発してしまう。**
+    //    領収書は実際に存在するので issued: true とし、URL が無いことは warning で伝える。
     return {
-      issued: false,
-      code: 'issue_failed',
-      error:
+      issued: true,
+      receiptUrl: null,
+      warning:
         'freee 側に領収書は作成されましたが、URL を取得できませんでした。'
-        + 'freee で確認して手動で共有してください。',
+        + 'もう一度押すと2枚目が発行されます。freee で確認して手動でお渡しください。',
     };
   }
 
@@ -317,9 +345,14 @@ export async function issueReceiptForBooking(
   // 黙って成功を返すと突合できなくなるので、必ず気づける形で残す。
   if (!saved) {
     const fresh = await getEventBookingById(db, bookingId);
+    // ⚠️ **ここが最も領収書IDを必要とする場面**。重複した1枚が確実に存在するのに、
+    //    宛名はログから伏せているので、IDが無いとどれを取り消せばいいか特定できない。
+    //    receipt_id は個人情報ではないので出してよい（receipt_url は出さない）。
     console.error(
       '[freee] 領収書を保存できませんでした。freee 側に重複した領収書がある可能性があります:',
       bookingId,
+      'receipt_id=',
+      result.receiptId,
     );
     return {
       issued: true,
