@@ -649,3 +649,21 @@ describe('joinCashEvent の宛名送信', () => {
     expect(body.receiptName).toBeUndefined()
   })
 })
+
+describe('宛名欄と決済ボタンの関係（#68 レビュー⑥）', () => {
+  it('宛名欄は当日現金ボタンの直前に置く（決済ボタンから離す）', () => {
+    // 宛名を読むのは現金フローだけ。決済ボタンの真上にあると、
+    // 入力してから決済を押した人の入力が黙って消える。
+    const html = buildEventDetailHtml(EVENT_PAID, 'あきひさ')
+    const receiptIdx = html.indexOf('receipt-name-input')
+    const checkoutIdx = html.indexOf('checkout-btn')
+    const cashIdx = html.indexOf('cash-join-btn')
+    expect(receiptIdx).toBeGreaterThan(checkoutIdx)
+    expect(receiptIdx).toBeLessThan(cashIdx)
+  })
+
+  it('宛名が現金専用だと分かる文言になっている', () => {
+    const html = buildEventDetailHtml(EVENT_PAID, 'あきひさ')
+    expect(html).toContain('当日現金')
+  })
+})

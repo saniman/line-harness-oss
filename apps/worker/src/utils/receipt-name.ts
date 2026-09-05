@@ -7,6 +7,8 @@
  *      - 改行を大量に入れて一覧のレイアウトを崩す
  *      - RLO（U+202E）で後続の描画順を反転させ、別の名前に見せかける
  *      - ゼロ幅文字で「見た目が同じ別の文字列」を作る
+ *      - WORD JOINER や HANGUL FILLER のような「\s にも該当しない不可視文字」だけを送り、
+ *        見た目は空なのに非 null で保存させる（氏名へのフォールバックを殺す）
  *
  * ⚠️ **クライアント側の検証だけに頼らない。** LIFF を経由せず API を直接叩けるため、
  *    サーバー側でこの関数を必ず通すこと。
@@ -34,9 +36,19 @@ function isControlChar(ch: string): boolean {
     (code >= 0x200b && code <= 0x200f) || // ゼロ幅 / LRM / RLM
     (code >= 0x202a && code <= 0x202e) || // BIDI 埋め込み・オーバーライド（RLO 含む）
     (code >= 0x2066 && code <= 0x2069) || // BIDI アイソレート
+    code === 0x061c ||                   // ARABIC LETTER MARK（BIDI 制御。上の範囲から漏れる）
     code === 0xfeff ||                   // BOM / ZWNBSP
     code === 0x2028 ||                   // LINE SEPARATOR
-    code === 0x2029                      // PARAGRAPH SEPARATOR
+    code === 0x2029 ||                   // PARAGRAPH SEPARATOR
+    // ここから下は「\s にも該当しない不可視文字」。畳まないと
+    // 見た目が空なのに非 null で保存され、氏名へのフォールバックが効かず
+    // 宛名が空欄の領収書になる。
+    code === 0x2060 ||                   // WORD JOINER
+    code === 0x00ad ||                   // SOFT HYPHEN
+    code === 0x3164 ||                   // HANGUL FILLER
+    code === 0x115f ||                   // HANGUL CHOSEONG FILLER
+    code === 0x1160 ||                   // HANGUL JUNGSEONG FILLER
+    code === 0xffa0                      // HALFWIDTH HANGUL FILLER
   );
 }
 

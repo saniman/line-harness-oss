@@ -706,8 +706,6 @@ CREATE TABLE IF NOT EXISTS event_bookings (
   refund_status TEXT,
   -- 当日現金を受け取った日時。NULL = 未受領（payment_status='cash' と併せて判定する）
   cash_received_at TEXT,
-  -- 領収書の宛名（任意入力）。NULL のときは name（LINEの表示名）にフォールバックする
-  receipt_name TEXT,
   -- freee が発行した領収書の URL。NULL = 未発行
   receipt_url TEXT,
   -- 領収書を発行した日時。NULL = 未発行
@@ -715,6 +713,11 @@ CREATE TABLE IF NOT EXISTS event_bookings (
   -- キャンセルの理由。NULL = 本人都合のキャンセル
   -- 'checkout_abandoned' = Stripe 決済画面から戻った / 'checkout_expired' = セッション期限切れ
   cancel_reason TEXT,
+  -- 領収書の宛名（任意入力）。NULL のときは name（LINEの表示名）にフォールバックする。
+  -- ⚠️ 位置は ALTER TABLE ADD COLUMN が実際に付ける末尾に合わせている。
+  --    このテーブルは将来テーブル再作成（INSERT INTO v2 SELECT ...）を行う可能性があり、
+  --    schema.sql と実 DDL の列順がずれていると移行で値が入れ違う。
+  receipt_name TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

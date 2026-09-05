@@ -1014,6 +1014,42 @@ describe('POST /api/events/:id/join の運営者 LINE 通知', () => {
   })
 })
 
+describe('POST /api/events/:id/join の領収書宛名', () => {
+  it('receiptName をサービスに受け渡す', async () => {
+    // この配線にテストが無いと、行を消しても全テストが緑のまま通る。
+    // 壊れても参加者には気づけない（黙って LINE の表示名で発行される）。
+    vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 2 })
+    vi.mocked(eventsService.createEventBooking).mockResolvedValue(BOOKING1)
+
+    await app.request('/api/events/1/join', {
+      method: 'POST',
+      headers: LIFF_HEADERS,
+      body: JSON.stringify({ name: '山田太郎', paymentMethod: 'cash', receiptName: '株式会社サンプル' }),
+    }, { DB: mockDb })
+
+    expect(eventsService.createEventBooking).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ receipt_name: '株式会社サンプル' }),
+    )
+  })
+
+  it('宛名を送らなければ null が渡る（氏名にフォールバックさせる）', async () => {
+    vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 2 })
+    vi.mocked(eventsService.createEventBooking).mockResolvedValue(BOOKING1)
+
+    await app.request('/api/events/1/join', {
+      method: 'POST',
+      headers: LIFF_HEADERS,
+      body: JSON.stringify({ name: '山田太郎' }),
+    }, { DB: mockDb })
+
+    expect(eventsService.createEventBooking).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ receipt_name: null }),
+    )
+  })
+})
+
 describe('POST /api/events/:id/bookings/:bookingId/cash-received', () => {
   const PATH = '/api/events/1/bookings/5/cash-received'
 

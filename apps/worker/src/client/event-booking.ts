@@ -87,6 +87,9 @@ export function buildEventDetailHtml(event: EventPublic, displayName?: string): 
   // 領収書の宛名（任意）。有料イベントのときだけ出す——領収書を発行するのは
   // 当日現金の経路だけで、そのボタン自体が有料にしか出ないため。
   //
+  // ⚠️ 置く場所は「当日現金ボタンの直前」。決済ボタンの真上に置くと、
+  //    入力してから決済を押した人の入力が黙って消える（読むのは現金フローだけ）。
+  //
   // 補足には「LINEの表示名になります」ではなく**実際の表示名**を埋める。
   // 自分の表示名を覚えている人は少なく、ニックネーム登録の人ほど
   // 「これで領収書が出ると困る」とその場で気づける。
@@ -102,6 +105,7 @@ export function buildEventDetailHtml(event: EventPublic, displayName?: string): 
     ? `<button id="checkout-btn" class="btn-pink" ${blocked ? 'disabled' : ''}>
         ${label('申込・決済へ進む 💳')}
        </button>
+       ${receiptNameHtml}
        <button id="cash-join-btn" ${blocked ? 'disabled' : ''}>
         ${closed ? CLOSED_LABEL : '当日現金の方はこちら 💴'}
        </button>`
@@ -115,7 +119,6 @@ export function buildEventDetailHtml(event: EventPublic, displayName?: string): 
       ${event.description ? `<p class="event-description">${escapeHtml(event.description)}</p>` : ''}
       ${closed ? `<p class="event-closed">${CLOSED_MESSAGE}</p>` : `<p class="event-remaining">残席: ${event.remaining}名</p>`}
       ${priceHtml}
-      ${receiptNameHtml}
       ${actionHtml}
     </div>
   `

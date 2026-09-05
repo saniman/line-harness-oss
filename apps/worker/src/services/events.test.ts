@@ -769,12 +769,24 @@ describe('createEventBooking の領収書宛名', () => {
   })
 
   it('宛名が空文字なら null で保存する（氏名へのフォールバックを効かせる）', async () => {
+    // ⚠️ bound に null が「含まれるか」で見てはいけない。friend_id ?? null が
+    //    常に null を入れるため、正規化が壊れていても通ってしまう。
+    //    受け渡し位置（6番目のパラメータ）を名指しで確認する。
     const stmt = makeStmt(null)
     const db = makeDb(stmt, makeStmt(BOOKING1))
     await createEventBooking(db, { event_id: 1, name: '山田太郎', receipt_name: '   ' })
-    const bound = (stmt.bind as ReturnType<typeof vi.fn>).mock.calls.flat()
-    expect(bound).toContain(null)
-    expect(bound).not.toContain('   ')
+    const args = (stmt.bind as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(args[5]).toBeNull()
+  })
+
+  it('宛名を渡したときも受け渡し位置が正しい', async () => {
+    const stmt = makeStmt(null)
+    const db = makeDb(stmt, makeStmt(BOOKING1))
+    await createEventBooking(db, {
+      event_id: 1, name: '山田太郎', receipt_name: '株式会社サンプル',
+    })
+    const args = (stmt.bind as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(args[5]).toBe('株式会社サンプル')
   })
 
   it('宛名を渡さない既存の呼び出しも動く（後方互換）', async () => {
@@ -796,5 +808,16 @@ describe('resolveReceiptName', () => {
 
   it('どちらも無ければ空文字（発行側で判断できるように null にしない）', () => {
     expect(resolveReceiptName({ receipt_name: null, name: '' })).toBe('')
+  })
+
+  it('宛名が空文字でも氏名にフォールバックする', () => {
+    // 現状 sanitizeReceiptName は '' を返さないので到達しないが、
+    // 管理画面からの編集や手動 SQL で '' が入った瞬間に宛名が空欄になる。
+    // ?? では '' を「指定あり」と扱ってしまう。
+    expect(resolveReceiptName({ receipt_name: '', name: 'あきひさ' })).toBe('あきひさ')
+  })
+
+  it('宛名が空白のみでも氏名にフォールバックする', () => {
+    expect(resolveReceiptName({ receipt_name: '   ', name: 'あきひさ' })).toBe('あきひさ')
   })
 })

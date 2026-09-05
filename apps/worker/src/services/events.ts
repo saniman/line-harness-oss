@@ -483,5 +483,9 @@ export async function markCashReceived(
 export function resolveReceiptName(
   booking: { receipt_name: string | null; name: string },
 ): string {
-  return booking.receipt_name ?? booking.name
+  // ⚠️ `?? ` では '' を「指定あり」と扱ってしまい、宛名が空欄の領収書になる。
+  //    現状 sanitizeReceiptName は '' を返さないので到達しないが、
+  //    管理画面からの編集や手動 SQL で '' が入った瞬間に壊れる。
+  const specified = booking.receipt_name?.trim()
+  return specified ? specified : booking.name
 }

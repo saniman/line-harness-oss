@@ -70,3 +70,29 @@ describe('sanitizeReceiptName（長さ制限）', () => {
     expect(result.endsWith('😀')).toBe(true);
   });
 });
+
+describe('sanitizeReceiptName（\\s に該当しない不可視文字）', () => {
+  // \\s で拾えないため、畳まないと「見た目は空なのに非 null」で保存され、
+  // resolveReceiptName のフォールバックが効かず、宛名が空欄の領収書になる。
+  const INVISIBLE: Array<[string, number]> = [
+    ['U+2060 WORD JOINER', 0x2060],
+    ['U+00AD SOFT HYPHEN', 0x00ad],
+    ['U+3164 HANGUL FILLER', 0x3164],
+    ['U+061C ARABIC LETTER MARK', 0x061c], // BIDI 制御。対策の穴だった
+  ];
+
+  it.each(INVISIBLE)('%s だけなら null にする', (_name, code) => {
+    expect(sanitizeReceiptName(String.fromCharCode(code))).toBeNull();
+  });
+
+  it.each(INVISIBLE)('%s を含む宛名からは取り除く', (_name, code) => {
+    const ch = String.fromCharCode(code);
+    expect(sanitizeReceiptName(`株式会社${ch}サンプル`)).toBe('株式会社 サンプル');
+  });
+
+  it('不可視文字を並べただけの入力も null にする', () => {
+    const junk = [0x2060, 0x00ad, 0x3164, 0x061c, 0x200b]
+      .map((c) => String.fromCharCode(c)).join('');
+    expect(sanitizeReceiptName(junk)).toBeNull();
+  });
+});
