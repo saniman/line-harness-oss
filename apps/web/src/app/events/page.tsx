@@ -5,18 +5,7 @@ import { useRouter } from 'next/navigation'
 import { api } from '@/lib/api'
 import type { EventItem } from '@/lib/api'
 import Header from '@/components/layout/header'
-
-function formatJST(iso: string): string {
-  const d = new Date(iso)
-  const jst = new Date(d.getTime() + 9 * 60 * 60 * 1000)
-  const mm = String(jst.getUTCMonth() + 1).padStart(2, '0')
-  const dd = String(jst.getUTCDate()).padStart(2, '0')
-  const hh = String(jst.getUTCHours()).padStart(2, '0')
-  const min = String(jst.getUTCMinutes()).padStart(2, '0')
-  const weekdays = ['日', '月', '火', '水', '木', '金', '土']
-  const dow = weekdays[jst.getUTCDay()]
-  return `${mm}/${dd}(${dow}) ${hh}:${min}`
-}
+import { formatJST } from '@/lib/format-jst'
 
 function validateForm(data: { title: string; start_at: string; end_at: string; capacity: number; price: number | null }): string | null {
   if (!data.title.trim()) return 'タイトルを入力してください'

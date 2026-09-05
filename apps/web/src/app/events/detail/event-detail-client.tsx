@@ -11,6 +11,7 @@ import {
   partitionBookings,
   getDropoutReasonLabel,
 } from '@/lib/booking-display'
+import { formatJST } from '@/lib/format-jst'
 import Header from '@/components/layout/header'
 
 const FIELD_CLASS = 'text-sm border border-gray-300 rounded-lg px-3 py-2 w-full focus:outline-none focus:ring-2 focus:ring-green-500'
@@ -30,18 +31,6 @@ function isoToDatetimeLocal(iso: string): string {
   const d = new Date(iso)
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
-}
-
-function formatJST(iso: string): string {
-  const d = new Date(iso)
-  const jst = new Date(d.getTime() + 9 * 60 * 60 * 1000)
-  const mm = String(jst.getUTCMonth() + 1).padStart(2, '0')
-  const dd = String(jst.getUTCDate()).padStart(2, '0')
-  const hh = String(jst.getUTCHours()).padStart(2, '0')
-  const min = String(jst.getUTCMinutes()).padStart(2, '0')
-  const weekdays = ['日', '月', '火', '水', '木', '金', '土']
-  const dow = weekdays[jst.getUTCDay()]
-  return `${mm}/${dd}(${dow}) ${hh}:${min}`
 }
 
 export default function EventDetailClient({ eventId }: { eventId: number }) {
@@ -315,10 +304,16 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
                   const paymentBadge = getPaymentBadge(b)
                   const statusBadge = getStatusBadge(b.status)
                   const friendBadge = getFriendLinkBadge(b)
+                  // 白 = 確定（ヘッダーの「確定 N 名」に数えられている） /
+                  // グレー = それ以外（保留・一覧に残るキャンセル）。ヘッダーの 2 つの数と見た目を揃える。
+                  // ホバーはグレー行だけ一段濃くしないと、色が付いた瞬間に反応が見えなくなる
+                  const dimmed = b.status !== 'confirmed'
                   return (
                     <div key={b.id} className="border-b border-gray-100 last:border-0">
                     <div
-                      className="grid grid-cols-1 sm:grid-cols-[1fr_100px_100px_80px_140px] gap-1 sm:gap-4 px-4 py-3 hover:bg-gray-50 transition-colors"
+                      className={`grid grid-cols-1 sm:grid-cols-[1fr_100px_100px_80px_140px] gap-1 sm:gap-4 px-4 py-3 transition-colors ${
+                        dimmed ? 'bg-gray-50 hover:bg-gray-100' : 'hover:bg-gray-50'
+                      }`}
                     >
                       <div>
                         <p className="text-sm font-medium text-gray-900">{participantDisplayName(b)}</p>
