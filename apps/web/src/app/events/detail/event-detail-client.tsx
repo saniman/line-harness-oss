@@ -206,18 +206,41 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
    * 現金は**対面で返してから**押してもらう必要があるので、金額を出して確認する。
    */
   const handleAdminCancel = async (b: EventBookingItem) => {
-    const notice = getRefundNotice({ ...b, status: 'cancelled' })
-    const refundLine = notice
-      ? `\n\n⚠️ この方には現金 ${b.amount != null ? `¥${b.amount.toLocaleString()}` : ''} を受領済みです。\n返金してから取り消してください。`
-      : ''
-    if (!confirm(`${participantDisplayName(b)} さんの申込を取り消します。${refundLine}`)) return
+    const amountText = b.amount != null ? `¥${b.amount.toLocaleString()}` : ''
+
+    // ⚠️ 取り消しで**お金が動く**ケースは必ず先に伝える。
+    //    現金は運営者が手で返す／Stripe はこの操作で自動返金が走る。
+    //    「押したら勝手に返金されていた」を起こさない
+    const warnings: string[] = []
+    if (b.cash_received_at) {
+      warnings.push(
+        `⚠️ この方には現金${amountText ? ` ${amountText}` : ''}を受領済みです。\n`
+        + '　 現金を返してから取り消してください。',
+      )
+    } else if (b.payment_status === 'paid') {
+      warnings.push(
+        `⚠️ Stripe で決済済みです。取り消すと${amountText ? ` ${amountText} の` : ''}返金が自動で行われます。`,
+      )
+    }
+    const detail = warnings.length ? `\n\n${warnings.join('\n')}` : ''
+    if (!confirm(`${participantDisplayName(b)} さんの申込を取り消します。${detail}`)) return
 
     setCancelBusyId(b.id)
     setCancelError('')
+    // ⚠️ 前の行の結果を消す。残すと、共有リンクの無い人を取り消したときに
+    //    「リンクも無効化しました」が残り、その人のリンクも止めたと誤読させる
+    setReceiptWarning('')
     try {
       const res = await api.eventBookings.adminCancel(eventId, b.id)
-      if (res.success && res.data.receiptRevoked) {
-        setReceiptWarning('取り消しました。領収書の共有リンクも無効化しました。')
+      if (res.success) {
+        const notes: string[] = []
+        if (res.data.refunded) notes.push('Stripe の返金を開始しました。')
+        if (res.data.receiptRevoked === 'revoked') notes.push('領収書の共有リンクを無効化しました。')
+        // ⚠️ 無効化の失敗を無音にしない。リンクが生きたまま残る
+        if (res.data.receiptRevoked === 'failed') {
+          notes.push('⚠️ 領収書の共有リンクを無効化できませんでした。手動で無効化してください。')
+        }
+        if (notes.length) setReceiptWarning(`取り消しました。${notes.join(' ')}`)
       }
     } catch (err) {
       // サーバーが返す理由をそのまま出す（固定文にすると原因に辿り着けない）

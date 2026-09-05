@@ -23,6 +23,7 @@ const mockIssueReceipt = vi.hoisted(() => vi.fn())
 const mockSaveShare = vi.hoisted(() => vi.fn())
 const mockSendReceipt = vi.hoisted(() => vi.fn())
 const mockRevokeShare = vi.hoisted(() => vi.fn())
+const mockNotifyCancelled = vi.hoisted(() => vi.fn())
 
 vi.mock('../services/events.js', () => ({
   createEvent: vi.fn(),
@@ -64,6 +65,10 @@ vi.mock('../services/receipt-share.js', () => ({
 
 vi.mock('../services/receipt-notify.js', () => ({
   sendReceiptToParticipant: mockSendReceipt,
+}))
+
+vi.mock('../services/booking-cancel-notify.js', () => ({
+  notifyBookingCancelled: mockNotifyCancelled,
 }))
 
 vi.mock('../services/liff-identity.js', () => ({
@@ -1473,6 +1478,8 @@ describe('運営者による予約の取り消し（#65）', () => {
     })
     mockRevokeShare.mockReset()
     mockRevokeShare.mockResolvedValue({ ok: true })
+    mockNotifyCancelled.mockReset()
+    mockNotifyCancelled.mockResolvedValue(true)
   })
 
   it('運営者としてキャンセルする（byAdmin を渡す）', async () => {
@@ -1480,7 +1487,7 @@ describe('運営者による予約の取り消し（#65）', () => {
 
     expect(res.status).toBe(200)
     expect(eventsService.cancelEventBooking).toHaveBeenCalledWith(
-      expect.anything(), 5, null, expect.anything(), { byAdmin: true },
+      expect.anything(), 5, null, expect.anything(), { byAdmin: true, eventId: 1 },
     )
   })
 
@@ -1495,8 +1502,8 @@ describe('運営者による予約の取り消し（#65）', () => {
     const res = await app.request(PATH, { method: 'POST' }, ENV)
 
     expect(mockRevokeShare).toHaveBeenCalledWith(expect.anything(), 1, 5)
-    const body = await res.json() as { data: { receiptRevoked: boolean } }
-    expect(body.data.receiptRevoked).toBe(true)
+    const body = await res.json() as { data: { receiptRevoked: string } }
+    expect(body.data.receiptRevoked).toBe('revoked')
   })
 
   it('【重要】キャンセルに失敗したらリンクを無効化しない', async () => {
@@ -1518,16 +1525,61 @@ describe('運営者による予約の取り消し（#65）', () => {
     const res = await app.request(PATH, { method: 'POST' }, ENV)
 
     expect(res.status).toBe(200)
-    const body = await res.json() as { data: { receiptRevoked: boolean } }
-    expect(body.data.receiptRevoked).toBe(false)
+    const body = await res.json() as { data: { receiptRevoked: string } }
+    expect(body.data.receiptRevoked).toBe('none')
   })
 
-  it('無効化が例外を投げてもキャンセルは成功する', async () => {
+  it('【重要】無効化が失敗したら failed として返す（無音にしない）', async () => {
+    // boolean だと「リンクが無い」と「失敗した」が区別できず、
+    // リンクが生きたまま残っていることに誰も気づけない
     mockRevokeShare.mockRejectedValue(new Error('boom'))
 
     const res = await app.request(PATH, { method: 'POST' }, ENV)
 
     expect(res.status).toBe(200)
+    const body = await res.json() as { data: { receiptRevoked: string } }
+    expect(body.data.receiptRevoked).toBe('failed')
+  })
+
+  it('【重要】eventId を渡して別イベントの取り消しを防ぐ', async () => {
+    await app.request(PATH, { method: 'POST' }, ENV)
+
+    expect(vi.mocked(eventsService.cancelEventBooking).mock.calls[0][4]).toEqual({
+      byAdmin: true, eventId: 1,
+    })
+  })
+
+  it('イベントが一致しなければ 400', async () => {
+    vi.mocked(eventsService.cancelEventBooking).mockResolvedValue({
+      success: false, refunded: false, code: 'event_mismatch', error: 'イベントが一致しません。',
+    })
+
+    const res = await app.request(PATH, { method: 'POST' }, ENV)
+
+    expect(res.status).toBe(400)
+    expect(mockRevokeShare).not.toHaveBeenCalled()
+  })
+
+  it('取り消したら参加者に通知する', async () => {
+    await app.request(PATH, { method: 'POST' }, ENV)
+
+    expect(mockNotifyCancelled).toHaveBeenCalledWith(expect.anything(), expect.anything(), 5)
+  })
+
+  it('【重要】通知が失敗しても取り消しは成功として返す', async () => {
+    mockNotifyCancelled.mockRejectedValue(new Error('LINE 500'))
+
+    expect((await app.request(PATH, { method: 'POST' }, ENV)).status).toBe(200)
+  })
+
+  it('キャンセルに失敗したら通知しない', async () => {
+    vi.mocked(eventsService.cancelEventBooking).mockResolvedValue({
+      success: false, refunded: false, code: 'not_found', error: '予約が見つかりませんでした。',
+    })
+
+    await app.request(PATH, { method: 'POST' }, ENV)
+
+    expect(mockNotifyCancelled).not.toHaveBeenCalled()
   })
 
   it('存在しない予約なら 404', async () => {

@@ -1008,3 +1008,107 @@ describe('cancelEventBooking（現金受領後のキャンセル・#65）', () =
     expect(res.success).toBe(false)
   })
 })
+
+describe('cancelEventBooking（イベントIDの検証・#65 レビュー）', () => {
+  const stripe = {
+    checkout: { sessions: { retrieve: vi.fn() } },
+    refunds: { create: vi.fn() },
+  }
+
+  function makeDb(row: Record<string, unknown> | null) {
+    const sqls: string[] = []
+    const db = {
+      prepare: vi.fn().mockImplementation((sql: string) => {
+        sqls.push(sql)
+        return {
+          bind: vi.fn().mockReturnThis(),
+          first: vi.fn().mockResolvedValue(sql.includes('FROM events') ? { start_at: '2099-01-01' } : row),
+          run: vi.fn().mockResolvedValue({ meta: { changes: 1 } }),
+        }
+      }),
+    } as unknown as D1Database
+    return { db, sqls }
+  }
+
+  const base = (o: Record<string, unknown> = {}) => ({
+    id: 5, event_id: 1, friend_id: 'f1', name: 'あきひさ',
+    status: 'confirmed', payment_status: 'cash', stripe_session_id: null,
+    amount: 100, cash_received_at: '2026-09-06 05:00:00', ...o,
+  })
+
+  beforeEach(() => { vi.clearAllMocks() })
+
+  it('【重要】別イベントの予約は取り消せない', async () => {
+    // 古いタブから押すと、まったく関係ない予約を取り消して Stripe 返金まで走る。
+    // しかも後続の無効化は WHERE event_id で空振りし、領収書リンクが生きたまま残る
+    const { db, sqls } = makeDb(base({ event_id: 99 }))
+
+    const res = await cancelEventBooking(db, 5, null, stripe, { byAdmin: true, eventId: 1 })
+
+    expect(res.success).toBe(false)
+    expect(res.code).toBe('event_mismatch')
+    expect(sqls.some((q) => q.includes("status = 'cancelled'"))).toBe(false)
+  })
+
+  it('イベントIDが一致すれば取り消せる', async () => {
+    const { db } = makeDb(base())
+
+    const res = await cancelEventBooking(db, 5, null, stripe, { byAdmin: true, eventId: 1 })
+
+    expect(res.success).toBe(true)
+  })
+
+  it('【回帰】eventId を渡さない参加者経路は今までどおり', async () => {
+    // 参加者側の呼び出しは eventId を持たない。検証が必須になっていないこと
+    const { db } = makeDb(base({ cash_received_at: null }))
+
+    const res = await cancelEventBooking(db, 5, 'f1', stripe)
+
+    expect(res.success).toBe(true)
+  })
+
+  /** status='cancelled' の UPDATE に渡された cancel_reason を取り出す */
+  async function captureCancelReason(
+    row: Record<string, unknown>,
+    call: (db: D1Database) => Promise<unknown>,
+  ): Promise<unknown> {
+    let reason: unknown
+    const db = {
+      prepare: vi.fn().mockImplementation((sql: string) => {
+        const stmt: Record<string, unknown> = {}
+        stmt.bind = vi.fn().mockImplementation((...a: unknown[]) => {
+          if (sql.includes("status = 'cancelled'")) reason = a[0]
+          return stmt
+        })
+        stmt.first = vi.fn().mockResolvedValue(
+          sql.includes('FROM events') ? { start_at: '2099-01-01' } : row,
+        )
+        stmt.run = vi.fn().mockResolvedValue({ meta: { changes: 1 } })
+        return stmt
+      }),
+    } as unknown as D1Database
+    await call(db)
+    return reason
+  }
+
+  it('【重要】運営者が pending を取り消しても checkout_abandoned を付けない', async () => {
+    // 付けると「決済画面から戻った」と誤ラベルされ、折りたたみへ移動して
+    // 押した直後に一覧から消える
+    const reason = await captureCancelReason(
+      base({ status: 'pending', cash_received_at: null }),
+      (db) => cancelEventBooking(db, 5, null, stripe, { byAdmin: true, eventId: 1 }),
+    )
+
+    expect(reason).toBe(null)
+  })
+
+  it('【回帰】参加者が pending を取り消したら checkout_abandoned が付く', async () => {
+    // Issue #56 の振る舞い。byAdmin を足したことで壊れていないこと
+    const reason = await captureCancelReason(
+      base({ status: 'pending', cash_received_at: null }),
+      (db) => cancelEventBooking(db, 5, 'f1', stripe),
+    )
+
+    expect(reason).toBe('checkout_abandoned')
+  })
+})

@@ -686,7 +686,15 @@ export const api = {
      * キャンセルできたら領収書の共有リンクも自動で無効化される。
      */
     adminCancel: (eventId: number, bookingId: number) =>
-      fetchApi<ApiResponse<{ refunded: boolean; receiptRevoked: boolean }>>(
+      fetchApi<ApiResponse<{
+        refunded: boolean
+        /**
+         * 領収書の共有リンクをどうしたか。
+         * ⚠️ boolean にしない。「リンクが無い」と「無効化に失敗した」を区別できず、
+         *    失敗が画面で無音になる（リンクが生きたまま残る）
+         */
+        receiptRevoked: 'revoked' | 'none' | 'failed'
+      }>>(
         `/api/events/${eventId}/bookings/${bookingId}/admin-cancel`,
         { method: 'POST' },
       ),

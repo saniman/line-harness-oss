@@ -311,9 +311,21 @@ export interface CancelBookingOptions {
    *   - friend_id の一致を求めない（管理画面に friendId は無い）
    */
   byAdmin?: boolean
+  /**
+   * URL の :id（イベントID）。渡されたら予約がそのイベントのものか検証する。
+   *
+   * ⚠️ 運営者経路では**必ず渡す**。無いと別イベントの予約を取り消せてしまい、
+   *    Stripe の返金まで走る。同じ URL 形の markCashReceived /
+   *    saveReceiptShareUrl と同じガードを持たせる。
+   */
+  eventId?: number
 }
 
-export type CancelBookingCode = 'not_found' | 'already_cancelled' | 'cash_received'
+export type CancelBookingCode =
+  | 'not_found'
+  | 'event_mismatch'
+  | 'already_cancelled'
+  | 'cash_received'
 
 export async function cancelEventBooking(
   db: D1Database,
@@ -332,6 +344,13 @@ export async function cancelEventBooking(
   const booking = await getEventBookingById(db, bookingId)
   if (!booking) {
     return { success: false, refunded: false, code: 'not_found', error: '予約が見つかりませんでした。' }
+  }
+
+  // ⚠️ 別イベントの予約に対して実行させない。古いタブから押した場合などに、
+  //    まったく関係ない予約を取り消して Stripe 返金まで走ってしまう。
+  //    markCashReceived / saveReceiptShareUrl と同じガード。
+  if (options.eventId != null && booking.event_id !== options.eventId) {
+    return { success: false, refunded: false, code: 'event_mismatch', error: 'イベントが一致しません。' }
   }
 
   // ⚠️ 本人確認。運営者は管理画面から操作するので friendId を持たない。
@@ -383,7 +402,11 @@ export async function cancelEventBooking(
   // pending からのキャンセル＝Stripe 決済画面から戻ってきたケース（cancel_url 経由）。
   // 本人都合のキャンセル（confirmed からの遷移）と区別できないと、
   // 名前が空のゴミ行として参加者一覧に混ざる（Issue #56）。
-  const cancelReason = booking.status === 'pending' ? CHECKOUT_ABANDONED : null
+  //
+  // ⚠️ 運営者が取り消した pending には付けない。付けると「決済画面から戻った」と
+  //    誤ラベルされ、isCheckoutDropout が true になって折りたたみへ移動し、
+  //    **押した直後に一覧から消える**（booking-display.ts のコメント参照）。
+  const cancelReason = !options.byAdmin && booking.status === 'pending' ? CHECKOUT_ABANDONED : null
 
   await db.prepare(
     "UPDATE event_bookings SET status = 'cancelled', cancel_reason = ?, updated_at = datetime('now') WHERE id = ?",
