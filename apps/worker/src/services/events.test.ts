@@ -806,10 +806,6 @@ describe('resolveReceiptName', () => {
     expect(resolveReceiptName({ receipt_name: null, name: 'あきひさ' })).toBe('あきひさ')
   })
 
-  it('どちらも無ければ空文字（発行側で判断できるように null にしない）', () => {
-    expect(resolveReceiptName({ receipt_name: null, name: '' })).toBe('')
-  })
-
   it('宛名が空文字でも氏名にフォールバックする', () => {
     // 現状 sanitizeReceiptName は '' を返さないので到達しないが、
     // 管理画面からの編集や手動 SQL で '' が入った瞬間に宛名が空欄になる。
@@ -819,5 +815,28 @@ describe('resolveReceiptName', () => {
 
   it('宛名が空白のみでも氏名にフォールバックする', () => {
     expect(resolveReceiptName({ receipt_name: '   ', name: 'あきひさ' })).toBe('あきひさ')
+  })
+
+  it('【重要】氏名も空なら友だちの表示名にフォールバックする', () => {
+    // name='' は実在する状態。/join は body.name ?? '' を保存し、LIFF は
+    // liff.getProfile() が失敗すると displayName ?? '' を送る。
+    // participantDisplayName に3段フォールバックがあるのは、まさにこのため。
+    expect(resolveReceiptName({
+      receipt_name: null, name: '', friend_display_name: 'あきひさ',
+    })).toBe('あきひさ')
+  })
+
+  it('【重要】どれも無ければ null を返す（空欄の領収書を発行させない）', () => {
+    // '' を返すと #46 が空欄のまま発行してしまう。null にして発行側に判断させる。
+    expect(resolveReceiptName({ receipt_name: null, name: '' })).toBeNull()
+    expect(resolveReceiptName({
+      receipt_name: null, name: '', friend_display_name: null,
+    })).toBeNull()
+  })
+
+  it('友だちの表示名が空白のみでも null になる', () => {
+    expect(resolveReceiptName({
+      receipt_name: null, name: '  ', friend_display_name: '   ',
+    })).toBeNull()
   })
 })

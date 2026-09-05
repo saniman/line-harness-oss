@@ -606,10 +606,13 @@ describe('領収書の宛名欄（#66）', () => {
     expect(html).toContain('あきひさ')
   })
 
-  it('表示名が取れないときは補足を出さない', () => {
+  it('【重要】表示名が取れないときこそ、入力を促す警告を出す', () => {
+    // 表示名が空 = サーバー側のフォールバックも空になるケース。
+    // ここで黙ると、一番警告が要る人に何も出ないことになる。
     const html = buildEventDetailHtml(EVENT_PAID, '')
     expect(html).toContain('receipt-name-input')
     expect(html).not.toContain('が宛名になります')
+    expect(html).toContain('お名前を取得できませんでした')
   })
 
   it('表示名を HTML エスケープする', () => {

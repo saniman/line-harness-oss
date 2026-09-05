@@ -96,9 +96,15 @@ export function buildEventDetailHtml(event: EventPublic, displayName?: string): 
   const receiptNameHtml = isPaid
     ? `<div class="receipt-name-field">
         <label for="receipt-name-input">領収書の宛名（任意・当日現金でお支払いの方のみ）</label>
-        <input id="receipt-name-input" type="text" maxlength="60"
+        <!-- maxlength は UTF-16 コードユニット単位。サーバーは60コードポイントで切るので、
+             サロゲートペアでも手前で切られないよう 4 倍を確保する（実際の上限はサーバー側） -->
+        <input id="receipt-name-input" type="text" maxlength="240"
                placeholder="例）株式会社サンプル" ${blocked ? 'disabled' : ''} />
-        ${displayName ? `<p class="receipt-name-hint">未入力の場合は「${escapeHtml(displayName)}」が宛名になります</p>` : ''}
+        ${displayName
+          ? `<p class="receipt-name-hint">未入力の場合は「${escapeHtml(displayName)}」が宛名になります</p>`
+          // ⚠️ 表示名が取れない＝サーバー側のフォールバックも空になるケース。
+          //    ここで黙ると、一番警告が必要な人に何も出ないことになる。
+          : `<p class="receipt-name-hint receipt-name-warn">お名前を取得できませんでした。領収書が必要な方は宛名をご入力ください</p>`}
        </div>`
     : ''
   const actionHtml = isPaid

@@ -133,3 +133,57 @@ describe('sanitizeReceiptName（列挙では追いきれない不可視文字）
     }
   });
 });
+
+describe('sanitizeReceiptName（可視文字を必須にする）', () => {
+  // 不可視なものを列挙・分類して弾く方針は2回失敗した
+  //   1回目: 列挙 → 隣の U+2061 が漏れた
+  //   2回目: カテゴリ(Cc/Cf/Zl/Zp) → So(点字空白)・Mn(結合文字)が漏れた
+  // 不可視の表現は無限にあるので、逆に「可視文字が1つも無ければ弾く」に反転させる。
+
+  it('点字の空白（U+2800・So カテゴリ）だけなら null', () => {
+    expect(sanitizeReceiptName(String.fromCodePoint(0x2800).repeat(5))).toBeNull();
+  });
+
+  it('結合文字（U+034F CGJ・Mn カテゴリ）だけなら null', () => {
+    expect(sanitizeReceiptName(String.fromCodePoint(0x034f).repeat(5))).toBeNull();
+  });
+
+  it('結合文字を大量に積んだだけの入力も null', () => {
+    // 60個積むと管理画面のレイアウトが壊れる
+    expect(sanitizeReceiptName(String.fromCodePoint(0x0301).repeat(60))).toBeNull();
+  });
+
+  it('絵文字だけの宛名は受け付けない（領収書の宛名として実用性が無い）', () => {
+    // ここを許すと So カテゴリ全体を許すことになり、点字空白も通ってしまう
+    expect(sanitizeReceiptName('😀😀')).toBeNull();
+  });
+
+  it('文字・数字・記号を含む通常の宛名は通る', () => {
+    expect(sanitizeReceiptName('株式会社サンプル')).toBe('株式会社サンプル');
+    expect(sanitizeReceiptName('（株）サンプル')).toBe('（株）サンプル');
+    expect(sanitizeReceiptName('WALOVER LLC')).toBe('WALOVER LLC');
+    expect(sanitizeReceiptName('12345')).toBe('12345');
+  });
+
+  it('可視文字が1つでもあれば、絵文字が混ざっていても通る', () => {
+    expect(sanitizeReceiptName('サンプル😀')).toBe('サンプル😀');
+  });
+});
+
+describe('sanitizeReceiptName（切り詰めと入力量）', () => {
+  it('切り詰めた結果の末尾に空白を残さない', () => {
+    const name = 'あ'.repeat(RECEIPT_NAME_MAX_LENGTH - 1) + ' ' + 'い'.repeat(10);
+    const result = sanitizeReceiptName(name)!;
+    expect(result.endsWith(' ')).toBe(false);
+  });
+
+  it('極端に長い入力でも走査量を抑える（CPU 時間の保護）', () => {
+    // bodyLimit が無いのでメガバイト級を投げられる。1文字ずつ走査すると
+    // Workers の CPU 上限に当たる。先に切ってから処理する。
+    const huge = 'あ'.repeat(500_000);
+    const started = Date.now();
+    const result = sanitizeReceiptName(huge)!;
+    expect(Array.from(result).length).toBe(RECEIPT_NAME_MAX_LENGTH);
+    expect(Date.now() - started).toBeLessThan(500);
+  });
+});

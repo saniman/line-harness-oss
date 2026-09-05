@@ -481,11 +481,26 @@ export async function markCashReceived(
  * LIFF の申込画面でも「未入力の場合は『◯◯』が宛名になります」と同じ規則を見せている。
  */
 export function resolveReceiptName(
-  booking: { receipt_name: string | null; name: string },
-): string {
-  // ⚠️ `?? ` では '' を「指定あり」と扱ってしまい、宛名が空欄の領収書になる。
-  //    現状 sanitizeReceiptName は '' を返さないので到達しないが、
-  //    管理画面からの編集や手動 SQL で '' が入った瞬間に壊れる。
-  const specified = booking.receipt_name?.trim()
-  return specified ? specified : booking.name
+  booking: {
+    receipt_name: string | null
+    name: string
+    /** 紐づく友だちの表示名。name が空のときの最後の頼り */
+    friend_display_name?: string | null
+  },
+): string | null {
+  // ⚠️ `??` では '' を「指定あり」と扱ってしまい、宛名が空欄の領収書になる。
+  //    trim して中身があるものだけを採用する。
+  //
+  // name='' は実在する状態。/join は body.name ?? '' を保存し、LIFF は
+  // liff.getProfile() が失敗すると displayName ?? '' を送る。
+  // participantDisplayName（apps/web）に3段フォールバックがあるのは、まさにこのため。
+  //
+  // ⚠️ どれも無ければ **null** を返す。'' を返すと領収書発行（#46）が
+  //    空欄のまま発行してしまう。発行するかどうかは呼び出し側に判断させる。
+  const candidates = [booking.receipt_name, booking.name, booking.friend_display_name]
+  for (const c of candidates) {
+    const trimmed = c?.trim()
+    if (trimmed) return trimmed
+  }
+  return null
 }
