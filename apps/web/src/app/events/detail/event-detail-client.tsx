@@ -67,6 +67,8 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
   const [receiptBookingId, setReceiptBookingId] = useState<number | null>(null)
   const [cancelBusyId, setCancelBusyId] = useState<number | null>(null)
   const [cancelError, setCancelError] = useState('')
+  // ⚠️ 現金受領の警告（receiptWarning）と分ける。共有すると互いに消し合う
+  const [cancelNotice, setCancelNotice] = useState('')
   const [linkingBookingId, setLinkingBookingId] = useState<number | null>(null)
   const [friendQuery, setFriendQuery] = useState('')
   const [friendCandidates, setFriendCandidates] = useState<FriendWithTags[]>([])
@@ -227,20 +229,27 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
 
     setCancelBusyId(b.id)
     setCancelError('')
-    // ⚠️ 前の行の結果を消す。残すと、共有リンクの無い人を取り消したときに
-    //    「リンクも無効化しました」が残り、その人のリンクも止めたと誤読させる
-    setReceiptWarning('')
+    // ⚠️ 取り消し専用の欄を使う。現金受領の警告と共有すると、
+    //    A の「領収書は発行できていません」が B の取り消しで消える
+    setCancelNotice('')
     try {
       const res = await api.eventBookings.adminCancel(eventId, b.id)
       if (res.success) {
+        // ⚠️ **やれなかったことを必ず出す。** 取り消しは金銭と連絡が絡むので、
+        //    「取り消しました」だけだと運営者は全部終わったと思い込む
         const notes: string[] = []
-        if (res.data.refunded) notes.push('Stripe の返金を開始しました。')
+        if (res.data.refundResult === 'refunded') notes.push('Stripe の返金を開始しました。')
+        if (res.data.refundResult === 'failed') {
+          notes.push('⚠️ Stripe の返金に失敗しました。Stripe の管理画面から手動で返金してください。')
+        }
         if (res.data.receiptRevoked === 'revoked') notes.push('領収書の共有リンクを無効化しました。')
-        // ⚠️ 無効化の失敗を無音にしない。リンクが生きたまま残る
         if (res.data.receiptRevoked === 'failed') {
           notes.push('⚠️ 領収書の共有リンクを無効化できませんでした。手動で無効化してください。')
         }
-        if (notes.length) setReceiptWarning(`取り消しました。${notes.join(' ')}`)
+        if (!res.data.notified) {
+          notes.push('⚠️ 参加者への LINE 通知は届いていません（友だち未連携）。')
+        }
+        setCancelNotice(`取り消しました。${notes.join(' ')}`)
       }
     } catch (err) {
       // サーバーが返す理由をそのまま出す（固定文にすると原因に辿り着けない）
@@ -433,6 +442,9 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
             {cancelError && (
               <div className="mx-4 mt-3 p-3 rounded-lg bg-red-50 text-red-700 text-sm">{cancelError}</div>
             )}
+            {cancelNotice && (
+              <div className="mx-4 mt-3 p-3 rounded-lg bg-amber-50 text-amber-800 text-sm">{cancelNotice}</div>
+            )}
             {cashError && (
               <div className="mx-4 mt-3 p-3 rounded-lg bg-red-50 text-red-700 text-sm">{cashError}</div>
             )}
@@ -532,7 +544,7 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
                             /* 処理中は全行を止める。単一の cashBusyId では、別の行を押すと
                                前の行の「記録中...」が解除され、同時に走った load() が
                                互いの結果を上書きする */
-                            disabled={cashBusyId !== null}
+                            disabled={cashBusyId !== null || cancelBusyId !== null}
                             className="mt-1 block px-2 py-0.5 rounded text-xs text-white bg-amber-600 disabled:opacity-50"
                           >
                             {cashBusyId === b.id ? '記録中...' : '現金受領'}
@@ -558,7 +570,7 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
                         {b.status !== 'cancelled' && (
                           <button
                             onClick={() => handleAdminCancel(b)}
-                            disabled={cancelBusyId !== null}
+                            disabled={cancelBusyId !== null || cashBusyId !== null}
                             className="mt-1 block text-xs text-red-600 hover:underline disabled:opacity-50"
                           >
                             {cancelBusyId === b.id ? '取り消し中...' : '申込を取り消す'}

@@ -22,6 +22,7 @@ import { issueReceiptForBooking } from '../services/freee-receipt.js';
 import { saveReceiptShareUrl, revokeReceiptShare } from '../services/receipt-share.js';
 import { sendReceiptToParticipant } from '../services/receipt-notify.js';
 import { notifyBookingCancelled } from '../services/booking-cancel-notify.js';
+import { requireRole } from '../middleware/role-guard.js';
 import type { IssueReceiptResult } from '../services/freee-receipt.js';
 import { resolveEventApplicant } from '../services/event-friend.js';
 import { isApplicationClosed } from '../services/event-deadline.js';
@@ -602,7 +603,7 @@ events.post('/api/events/bookings/:id/link-friend', async (c) => {
  *
  * ⚠️ **認証必須**。公開すると第三者が他人の予約を取り消せる。
  */
-events.post('/api/events/:id/bookings/:bookingId/admin-cancel', async (c) => {
+events.post('/api/events/:id/bookings/:bookingId/admin-cancel', requireRole('owner'), async (c) => {
   try {
     const eventId = Number(c.req.param('id'));
     const bookingId = Number(c.req.param('bookingId'));
@@ -610,10 +611,15 @@ events.post('/api/events/:id/bookings/:bookingId/admin-cancel', async (c) => {
       return c.json({ success: false, error: 'Invalid id' }, 400);
     }
 
-    const stripe = new Stripe(c.env.STRIPE_SECRET_KEY, {
-      apiVersion: '2026-04-22.dahlia',
-      httpClient: Stripe.createFetchHttpClient(),
-    });
+    // ⚠️ キー未設定でも落とさない。stripe@22 は key が無いと **コンストラクタで例外**を
+    //    投げるため、Stripe を使っていない現金運用では**唯一の取り消し導線が常時 500**になる。
+    //    現金・無料の取り消しは Stripe を使わないので、無くても成立する。
+    const stripe = c.env.STRIPE_SECRET_KEY
+      ? new Stripe(c.env.STRIPE_SECRET_KEY, {
+          apiVersion: '2026-04-22.dahlia',
+          httpClient: Stripe.createFetchHttpClient(),
+        })
+      : null;
 
     // friendId は渡さない（管理画面は本人確認を持たない）。byAdmin で免除する。
     // ⚠️ eventId は必ず渡す。渡さないと別イベントの予約を取り消せて Stripe 返金まで走る
@@ -644,17 +650,29 @@ events.post('/api/events/:id/bookings/:bookingId/admin-cancel', async (c) => {
     }
 
     // 取り消したことを参加者にも伝える（ベストエフォート）。
-    // 「主催者へご連絡ください」で止められた後なので、処理されたことが分かる方が親切
+    // 「主催者へご連絡ください」で止められた後なので、処理されたことが分かる方が親切。
+    // ⚠️ 結果を捨てない。friend_id が無い参加者には**何も届かない**ので、
+    //    「取り消しました」だけ出すと運営者は伝わったと思い込む
+    let notified = false;
     if (c.env.LINE_CHANNEL_ACCESS_TOKEN) {
       try {
-        await notifyBookingCancelled(c.env.DB, new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN), bookingId);
+        notified = await notifyBookingCancelled(
+          c.env.DB, new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN), bookingId,
+          result.refundResult === 'refunded',
+        );
       } catch (err) {
         console.error('[events] キャンセル通知に失敗:', bookingId, err);
       }
     }
 
-    console.log('[events] 運営者が予約を取り消しました:', bookingId, `(領収書リンク: ${receiptRevoked})`);
-    return c.json({ success: true, data: { refunded: result.refunded, receiptRevoked } });
+    console.log(
+      '[events] 運営者が予約を取り消しました:', bookingId,
+      `(返金: ${result.refundResult} / 領収書リンク: ${receiptRevoked} / 通知: ${notified})`,
+    );
+    return c.json({
+      success: true,
+      data: { refundResult: result.refundResult, receiptRevoked, notified },
+    });
   } catch (err) {
     console.error('POST /api/events/:id/bookings/:bookingId/admin-cancel error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);

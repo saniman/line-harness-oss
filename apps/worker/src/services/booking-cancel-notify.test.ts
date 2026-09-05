@@ -15,10 +15,17 @@ describe('buildCancelledMessage（文面）', () => {
     expect(msg).not.toContain('null');
   });
 
-  it('【重要】金額や返金の約束を書かない', () => {
+  it('【重要】現金の取り消しでは返金に触れない', () => {
     // 現金は対面で返す運用。ここで「返金します」と書くと二重に約束したことになる
     const msg = buildCancelledMessage('もくもく会');
     expect(msg).not.toContain('返金');
+    expect(msg).not.toContain('¥');
+  });
+
+  it('【重要】Stripe の返金が走ったときだけ返金を案内する', () => {
+    // 運営者経路は LIFF の返金案内画面を通らないので、ここで伝えないと届かない
+    const msg = buildCancelledMessage('もくもく会', true);
+    expect(msg).toContain('ご返金の手続きを開始しました');
     expect(msg).not.toContain('¥');
   });
 });
@@ -102,5 +109,26 @@ describe('notifyBookingCancelled（送信）', () => {
     expect(sql).toContain('event_bookings');
     expect(sql).toContain('friends');
     expect(sql).toContain('WHERE b.id = ?');
+  });
+});
+
+describe('notifyBookingCancelled（返金の案内）', () => {
+  it('返金が走ったときだけ本文に案内を入れる', async () => {
+    const { db } = makeDb();
+    const line = makeLine();
+
+    await notifyBookingCancelled(db, line, 5, true);
+
+    const text = line.pushMessage.mock.calls[0][1][0].text as string;
+    expect(text).toContain('ご返金の手続きを開始しました');
+  });
+
+  it('返金が走っていなければ入れない', async () => {
+    const { db } = makeDb();
+    const line = makeLine();
+
+    await notifyBookingCancelled(db, line, 5);
+
+    expect(line.pushMessage.mock.calls[0][1][0].text).not.toContain('返金');
   });
 });

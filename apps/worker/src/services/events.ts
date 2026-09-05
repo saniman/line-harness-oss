@@ -331,11 +331,28 @@ export async function cancelEventBooking(
   db: D1Database,
   bookingId: number,
   friendId: string | null,
-  stripe: StripeRefundClient,
+  /**
+   * ⚠️ null を許す。Stripe を導入していない現金運用では、キーが無くても
+   *    取り消しは成立させたい（stripe@22 はキー無しだとコンストラクタで例外を投げる）。
+   *    null のとき決済済みの予約は failed になり、手動返金が必要だと画面に出る。
+   */
+  stripe: StripeRefundClient | null,
   options: CancelBookingOptions = {},
 ): Promise<{
   success: boolean
   refunded: boolean
+  /**
+   * Stripe 返金の結果。
+   *
+   * ⚠️ `refunded: boolean` だけだと「返金の対象ではない」と「返金に失敗した」が
+   *    区別できず、**失敗が画面で無音になる**。取り消しの確認画面で
+   *    「返金が自動で行われます」と約束している以上、守れなかったことは必ず伝える。
+   *
+   *   none    … 返金の対象ではない（現金・無料）
+   *   refunded … 返金を開始できた
+   *   failed  … 対象なのに返金できなかった。**手動で返金する必要がある**
+   */
+  refundResult: 'none' | 'refunded' | 'failed'
   refundId?: string
   eventId?: number
   code?: CancelBookingCode
@@ -343,24 +360,24 @@ export async function cancelEventBooking(
 }> {
   const booking = await getEventBookingById(db, bookingId)
   if (!booking) {
-    return { success: false, refunded: false, code: 'not_found', error: '予約が見つかりませんでした。' }
+    return { success: false, refunded: false, refundResult: 'none', code: 'not_found', error: '予約が見つかりませんでした。' }
   }
 
   // ⚠️ 別イベントの予約に対して実行させない。古いタブから押した場合などに、
   //    まったく関係ない予約を取り消して Stripe 返金まで走ってしまう。
   //    markCashReceived / saveReceiptShareUrl と同じガード。
   if (options.eventId != null && booking.event_id !== options.eventId) {
-    return { success: false, refunded: false, code: 'event_mismatch', error: 'イベントが一致しません。' }
+    return { success: false, refunded: false, refundResult: 'none', code: 'event_mismatch', error: 'イベントが一致しません。' }
   }
 
   // ⚠️ 本人確認。運営者は管理画面から操作するので friendId を持たない。
   //    byAdmin のときだけ免除する（参加者側の確認は今までどおり効かせる）
   if (!options.byAdmin && booking.friend_id !== null && booking.friend_id !== friendId) {
-    return { success: false, refunded: false, code: 'not_found', error: '予約が見つかりませんでした。' }
+    return { success: false, refunded: false, refundResult: 'none', code: 'not_found', error: '予約が見つかりませんでした。' }
   }
 
   if (booking.status === 'cancelled') {
-    return { success: false, refunded: false, code: 'already_cancelled', error: 'すでにキャンセル済みです。' }
+    return { success: false, refunded: false, refundResult: 'none', code: 'already_cancelled', error: 'すでにキャンセル済みです。' }
   }
 
   // ⚠️ **現金を受け取ったあとは、参加者から取り消させない**（Issue #65）。
@@ -372,32 +389,50 @@ export async function cancelEventBooking(
     return {
       success: false,
       refunded: false,
+      refundResult: 'none',
       code: 'cash_received',
       error: 'お支払い済みのため、こちらからは取り消せません。主催者までご連絡ください。',
     }
   }
 
-  let refunded = false
+  let refundResult: 'none' | 'refunded' | 'failed' = 'none'
   let refundId: string | undefined
 
-  if (booking.payment_status === 'paid' && booking.stripe_session_id) {
+  // 決済済みなら返金の対象。ここに入ったら「成功」か「失敗」のどちらかであって、
+  // 黙って none には戻さない（戻すと画面から返金の失敗が消える）
+  if (booking.payment_status === 'paid') {
+    refundResult = 'failed'
     try {
-      const session = await stripe.checkout.sessions.retrieve(booking.stripe_session_id)
-      const paymentIntentId = typeof session.payment_intent === 'string'
-        ? session.payment_intent
-        : session.payment_intent?.id
-      if (paymentIntentId) {
-        const refund = await stripe.refunds.create({ payment_intent: paymentIntentId })
-        refundId = refund.id
-        refunded = true
-        await db.prepare(
-          "UPDATE event_bookings SET stripe_refund_id = ?, refund_status = ?, updated_at = datetime('now') WHERE id = ?",
-        ).bind(refund.id, refund.status, bookingId).run()
+      // ⚠️ session_id が無い決済済みは、こちらから返金できない（データ不整合）。
+      //    黙って通すと「返金されたつもり」になるので failed のままにする
+      if (!stripe) {
+        console.error('[cancelEventBooking] Stripe が未設定のため返金できない:', bookingId)
+      } else if (!booking.stripe_session_id) {
+        console.error('[cancelEventBooking] 決済済みだが stripe_session_id が無い:', bookingId)
+      } else {
+        const session = await stripe.checkout.sessions.retrieve(booking.stripe_session_id)
+        const paymentIntentId = typeof session.payment_intent === 'string'
+          ? session.payment_intent
+          : session.payment_intent?.id
+        if (!paymentIntentId) {
+          console.error('[cancelEventBooking] payment_intent を特定できない:', bookingId)
+        } else {
+          const refund = await stripe.refunds.create({ payment_intent: paymentIntentId })
+          refundId = refund.id
+          refundResult = 'refunded'
+          await db.prepare(
+            "UPDATE event_bookings SET stripe_refund_id = ?, refund_status = ?, updated_at = datetime('now') WHERE id = ?",
+          ).bind(refund.id, refund.status, bookingId).run()
+        }
       }
     } catch (err) {
+      // ⚠️ 例外は握るが、**失敗した事実は返す**。取り消し自体は成立させる
+      //    （ここで中断すると、返金できないだけで取り消しもできなくなる）
       console.error('[cancelEventBooking] Stripe refund failed:', err)
     }
   }
+
+  const refunded = refundResult === 'refunded'
 
   // pending からのキャンセル＝Stripe 決済画面から戻ってきたケース（cancel_url 経由）。
   // 本人都合のキャンセル（confirmed からの遷移）と区別できないと、
@@ -425,7 +460,7 @@ export async function cancelEventBooking(
     }
   }
 
-  return { success: true, refunded, refundId, eventId: booking.event_id }
+  return { success: true, refunded, refundResult, refundId, eventId: booking.event_id }
 }
 
 /**

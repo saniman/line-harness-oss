@@ -687,13 +687,20 @@ export const api = {
      */
     adminCancel: (eventId: number, bookingId: number) =>
       fetchApi<ApiResponse<{
-        refunded: boolean
+        /**
+         * Stripe 返金の結果。
+         * ⚠️ boolean にしない。「対象ではない」と「失敗した」が区別できず、
+         *    **返金されていないことに誰も気づけない**（確認画面で返金を約束しているのに）
+         */
+        refundResult: 'none' | 'refunded' | 'failed'
         /**
          * 領収書の共有リンクをどうしたか。
          * ⚠️ boolean にしない。「リンクが無い」と「無効化に失敗した」を区別できず、
          *    失敗が画面で無音になる（リンクが生きたまま残る）
          */
         receiptRevoked: 'revoked' | 'none' | 'failed'
+        /** 参加者に LINE 通知が届いたか。友だち未紐付けなら false */
+        notified: boolean
       }>>(
         `/api/events/${eventId}/bookings/${bookingId}/admin-cancel`,
         { method: 'POST' },

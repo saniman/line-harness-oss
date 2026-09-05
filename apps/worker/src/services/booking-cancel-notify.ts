@@ -21,10 +21,15 @@ export interface CancelNotifyLineClient {
  *    書くと二重に約束したことになる。Stripe の返金は参加者側のキャンセル導線が
  *    別途案内しているので、こちらでは重ねない。
  */
-export function buildCancelledMessage(eventTitle: string | null): string {
+export function buildCancelledMessage(eventTitle: string | null, refunded = false): string {
   const title = eventTitle?.trim();
   const head = title ? `${title} のお申し込みを取り消しました。` : 'お申し込みを取り消しました。';
-  return `${head}\nご不明な点がありましたら、お気軽にご連絡ください。`;
+  // ⚠️ 返金に触れるのは**実際に Stripe の返金が走ったときだけ**。
+  //    現金は対面で返す運用なので、ここで約束すると二重になる
+  const refundLine = refunded
+    ? '\nご返金の手続きを開始しました。数営業日以内に元のお支払い方法へ返金されます。'
+    : '';
+  return `${head}${refundLine}\nご不明な点がありましたら、お気軽にご連絡ください。`;
 }
 
 interface CancelNotifyRow {
@@ -40,6 +45,8 @@ export async function notifyBookingCancelled(
   db: D1Database,
   line: CancelNotifyLineClient,
   bookingId: number,
+  /** Stripe の返金が走ったか。走ったときだけ返金の案内を添える */
+  refunded = false,
 ): Promise<boolean> {
   try {
     // ⚠️ 宛先は**当該予約に紐づく友だち**から引く。別の経路で取ると取り違える
@@ -58,7 +65,7 @@ export async function notifyBookingCancelled(
     if (!row?.friend_id || !row.line_user_id) return false;
 
     await line.pushMessage(row.line_user_id, [
-      { type: 'text', text: buildCancelledMessage(row.title) },
+      { type: 'text', text: buildCancelledMessage(row.title, refunded) },
     ]);
     return true;
   } catch (err) {

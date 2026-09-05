@@ -1112,3 +1112,108 @@ describe('cancelEventBooking（イベントIDの検証・#65 レビュー）', (
     expect(reason).toBe('checkout_abandoned')
   })
 })
+
+describe('cancelEventBooking（返金の結果を無音にしない・#65 レビュー2周目）', () => {
+  function makeDb(row: Record<string, unknown>) {
+    return {
+      prepare: vi.fn().mockImplementation((sql: string) => ({
+        bind: vi.fn().mockReturnThis(),
+        first: vi.fn().mockResolvedValue(sql.includes('FROM events') ? { start_at: '2099-01-01' } : row),
+        run: vi.fn().mockResolvedValue({ meta: { changes: 1 } }),
+      })),
+    } as unknown as D1Database
+  }
+  const paid = (o: Record<string, unknown> = {}) => ({
+    id: 5, event_id: 1, friend_id: 'f1', name: 'あきひさ',
+    status: 'confirmed', payment_status: 'paid', stripe_session_id: 'cs_1',
+    amount: 3000, cash_received_at: null, ...o,
+  })
+
+  beforeEach(() => { vi.clearAllMocks() })
+
+  it('返金できたら refunded を返す', async () => {
+    const stripe = {
+      checkout: { sessions: { retrieve: vi.fn().mockResolvedValue({ payment_intent: 'pi_1' }) } },
+      refunds: { create: vi.fn().mockResolvedValue({ id: 're_1', status: 'succeeded' }) },
+    }
+
+    const res = await cancelEventBooking(makeDb(paid()), 5, null, stripe, { byAdmin: true, eventId: 1 })
+
+    expect(res.refundResult).toBe('refunded')
+  })
+
+  it('【重要】Stripe が例外を投げたら failed を返す（取り消しは成立させる）', async () => {
+    // 握り潰して refunded:false だけ返すと、確認画面で「返金されます」と約束したのに
+    // **返金されていないことに誰も気づけない**
+    const stripe = {
+      checkout: { sessions: { retrieve: vi.fn().mockRejectedValue(new Error('Stripe 500')) } },
+      refunds: { create: vi.fn() },
+    }
+
+    const res = await cancelEventBooking(makeDb(paid()), 5, null, stripe, { byAdmin: true, eventId: 1 })
+
+    expect(res.success).toBe(true)
+    expect(res.refundResult).toBe('failed')
+  })
+
+  it('【重要】決済済みなのに session_id が無ければ failed', async () => {
+    // データ不整合。黙って通すと「返金されたつもり」になる
+    const stripe = { checkout: { sessions: { retrieve: vi.fn() } }, refunds: { create: vi.fn() } }
+
+    const res = await cancelEventBooking(
+      makeDb(paid({ stripe_session_id: null })), 5, null, stripe, { byAdmin: true, eventId: 1 },
+    )
+
+    expect(res.refundResult).toBe('failed')
+  })
+
+  it('payment_intent を特定できなければ failed', async () => {
+    const stripe = {
+      checkout: { sessions: { retrieve: vi.fn().mockResolvedValue({ payment_intent: null }) } },
+      refunds: { create: vi.fn() },
+    }
+
+    const res = await cancelEventBooking(makeDb(paid()), 5, null, stripe, { byAdmin: true, eventId: 1 })
+
+    expect(res.refundResult).toBe('failed')
+  })
+
+  it('【重要】Stripe 未設定でも取り消しは成立する（現金運用）', async () => {
+    // stripe@22 はキー無しだとコンストラクタで例外を投げる。
+    // null を渡せるようにしないと、現金運用では取り消し導線が常時 500 になる
+    const res = await cancelEventBooking(
+      makeDb(paid({ payment_status: 'cash', stripe_session_id: null, cash_received_at: '2026-09-06 05:00:00' })),
+      5, null, null, { byAdmin: true, eventId: 1 },
+    )
+
+    expect(res.success).toBe(true)
+    expect(res.refundResult).toBe('none')
+  })
+
+  it('Stripe 未設定で決済済みなら failed（手動返金が要ると分かる）', async () => {
+    const res = await cancelEventBooking(makeDb(paid()), 5, null, null, { byAdmin: true, eventId: 1 })
+
+    expect(res.success).toBe(true)
+    expect(res.refundResult).toBe('failed')
+  })
+
+  it('Stripe 未設定でも例外を外に投げない', async () => {
+    // 明示的な !stripe 分岐が無くても catch が拾って failed になるが、
+    // 分岐を残しているのは**ログに理由を出す**ため（原因が「未設定」だと分かる）。
+    // ここでは「呼び出し側に例外が漏れない」ことを固定する
+    await expect(
+      cancelEventBooking(makeDb(paid()), 5, null, null, { byAdmin: true, eventId: 1 }),
+    ).resolves.toMatchObject({ success: true })
+  })
+
+  it('現金・無料は返金の対象ではない（none）', async () => {
+    const stripe = { checkout: { sessions: { retrieve: vi.fn() } }, refunds: { create: vi.fn() } }
+
+    const res = await cancelEventBooking(
+      makeDb(paid({ payment_status: 'unpaid', stripe_session_id: null })),
+      5, null, stripe, { byAdmin: true, eventId: 1 },
+    )
+
+    expect(res.refundResult).toBe('none')
+  })
+})
