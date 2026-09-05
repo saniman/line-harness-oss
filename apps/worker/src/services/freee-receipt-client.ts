@@ -20,6 +20,20 @@ const FREEE_INVOICE_API_BASE = 'https://api.freee.co.jp/iv';
  */
 const TAX_RATE = 10;
 
+/**
+ * 内税・外税の区分。events.price を**税込**で持っているので 'in'（税込表示）。
+ * 'out' にすると freee が税額を上乗せし、受け取った額と領収書の額が食い違う。
+ *
+ * ⚠️ `tax_entry_method` と `withholding_tax_entry_method` は**同じ値でなければならない**。
+ *    freee が組み合わせを検証しており、食い違うと 400 で拒否される:
+ *      「withholding_tax_entry_method が[out:税別価格で計算]の場合、
+ *        tax_entry_method は[out:税別表示（外税）]を指定してください。」
+ *    源泉徴収はイベント参加費では発生しないので、
+ *    `withholding_tax_entry_method` の値自体に意味は無い。必須項目なのでこちらに揃える。
+ *    2つの定数に分けると片方だけ変えられてしまうため、1つにまとめている。
+ */
+const TAX_ENTRY_METHOD = 'in' as const;
+
 /** freee 呼び出しのタイムアウト。現金受領ボタンの応答を待たせすぎない。 */
 const TIMEOUT_MS = 10_000;
 
@@ -188,11 +202,11 @@ export const freeeReceiptIssuer: FreeeReceiptIssuer = {
     const body: Record<string, unknown> = {
       company_id: params.companyId,
       receipt_date: params.issueDate,
-      // 税込表示。price は税込で持っているため 'in'。'out' にすると税額が上乗せされる
-      tax_entry_method: 'in',
+      tax_entry_method: TAX_ENTRY_METHOD,
       tax_fraction: 'omit',
-      // 源泉徴収はイベント参加費では発生しないが、必須項目なので指定する
-      withholding_tax_entry_method: 'out',
+      // ⚠️ 必ず tax_entry_method と同じ値にする（freee が組み合わせを検証している）。
+      //    理由は TAX_ENTRY_METHOD のコメントを参照
+      withholding_tax_entry_method: TAX_ENTRY_METHOD,
       partner_title: resolvePartnerTitle(params.payeeName),
       partner_display_name: params.payeeName,
       subject: truncate(params.subject, RECEIPT_TEXT_MAX_LENGTH),

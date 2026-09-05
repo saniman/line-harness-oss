@@ -115,6 +115,18 @@ describe('freeeReceiptIssuer.createReceipt（送信内容）', () => {
     expect(sentBody().tax_entry_method).toBe('in');
   });
 
+  it('【重要】源泉徴収の計算方法を内税/外税と揃える', async () => {
+    // freee が組み合わせを検証しており、食い違うと 400 で拒否される:
+    //   「withholding_tax_entry_method が[out:税別価格で計算]の場合、
+    //     tax_entry_method は[out:税別表示（外税）]を指定してください。」
+    // 本番で実際に踏んだ（2026-09-06）。源泉徴収はイベント参加費では発生しないので、
+    // この値自体に意味は無く、揃えることだけが重要
+    await freeeReceiptIssuer.createReceipt(BASE_PARAMS);
+
+    const body = sentBody();
+    expect(body.withholding_tax_entry_method).toBe(body.tax_entry_method);
+  });
+
   it('明細に但し書き・数量1・単価・税率10%を載せる', async () => {
     await freeeReceiptIssuer.createReceipt(BASE_PARAMS);
 
