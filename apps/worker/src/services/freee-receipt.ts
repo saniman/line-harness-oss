@@ -70,6 +70,26 @@ export interface IssueReceiptOptions {
  */
 const CLAIM_TIMEOUT = '-5 minutes';
 
+/**
+ * この失敗で「freee に領収書が作られていない」と断言できるか。
+ *
+ * ここが本質。発行権（receipt_issued_at）は**作られたか不明なときこそ持ち続ける**もので、
+ * 一律に返すと押し直しで2枚目が出る。
+ *
+ *   断言できる … トークンを取れず freee を呼んでいない / freee が 4xx で拒否した
+ *   断言できない … タイムアウト・通信断・5xx（freee 側で完了している可能性がある）
+ *
+ * 断言できないときは発行権を持ったままにする。CLAIM_TIMEOUT を過ぎれば自動で解放され、
+ * それまでは押し直しても freee を呼ばない。
+ */
+function isDefinitelyNotCreated(err: unknown): boolean {
+  // freee を呼ぶ前に落ちた
+  if (err instanceof TokenUnavailableError) return true;
+  // freee が受け付けなかった（4xx）。5xx は処理途中で落ちた可能性があるので含めない
+  if (err instanceof FreeeReceiptApiError) return err.status >= 400 && err.status < 500;
+  return false;
+}
+
 /** 但し書き。「〜として」まで入れて領収書らしくする */
 function buildDescription(eventTitle: string | undefined): string {
   const title = eventTitle?.trim();
@@ -194,11 +214,20 @@ export async function issueReceiptForBooking(
     partnerCode: env.FREEE_PARTNER_CODE || undefined,
   };
 
-  let result: { receiptUrl: string };
+  let result: { receiptId: number | null; receiptUrl: string };
   try {
     result = await issueWithReauthRetry(env, db, issuer, params, bookingId);
   } catch (err) {
-    await releaseClaim();
+    // ⚠️ **作られていないと断言できるときだけ**発行権を返す。
+    //    タイムアウトや 5xx は freee 側で完了している可能性があるので持ち続ける。
+    if (isDefinitelyNotCreated(err)) {
+      await releaseClaim();
+    } else {
+      console.error(
+        '[freee] 発行の結果が不明です。領収書が作られた可能性があるため、発行権を保持します:',
+        bookingId,
+      );
+    }
     // ⚠️ ここで throw しない（受領記録を巻き戻さないため。冒頭のコメント参照）
     console.error('[freee] 領収書の発行に失敗しました:', bookingId, err);
 
@@ -229,16 +258,37 @@ export async function issueReceiptForBooking(
         error: `領収書を発行できませんでした。（${err.message}）`,
       };
     }
-    // freee 以外の失敗（通信断・タイムアウト）はメッセージに何が入るか読めないので出さない
-    return { issued: false, code: 'issue_failed', error: '領収書を発行できませんでした。' };
+    // freee 以外の失敗（通信断・タイムアウト）はメッセージに何が入るか読めないので出さない。
+    // 作られた可能性があることは伝える（押し直して2枚目を作らせないため）
+    return {
+      issued: false,
+      code: 'issue_failed',
+      error:
+        '領収書を発行できませんでした。freee 側で発行済みの可能性があるため、'
+        + '確認してから再度お試しください。',
+    };
   }
 
   // URL が取れなければ保存しない。空文字を入れると上の冪等ガードが効かないまま
   // 「発行済み扱いの空 URL」になり、再発行も参加者への送付もできなくなる。
+  //
+  // ⚠️ ここは freee が 2xx を返している＝**領収書は作られている**。
+  //    発行権を返すと押し直しで2枚目が出るので、保持したままにする。
+  //    領収書ID は個人情報ではないのでログに残す（迷子の1枚を特定する唯一の手がかり）。
   if (!result.receiptUrl) {
-    await releaseClaim();
-    console.error('[freee] 領収書は作成されたが URL が取れませんでした:', bookingId);
-    return { issued: false, code: 'issue_failed', error: '領収書の URL を取得できませんでした。' };
+    console.error(
+      '[freee] 領収書は作成されたが URL が取れませんでした。freee 側を確認してください:',
+      bookingId,
+      'receipt_id=',
+      result.receiptId,
+    );
+    return {
+      issued: false,
+      code: 'issue_failed',
+      error:
+        'freee 側に領収書は作成されましたが、URL を取得できませんでした。'
+        + 'freee で確認して手動で共有してください。',
+    };
   }
 
   // ⚠️ receipt_url をログに出さない。URL を知っていれば誰でも開ける可能性があるため、
@@ -330,7 +380,7 @@ async function issueWithReauthRetry(
   issuer: FreeeReceiptIssuer,
   params: Omit<Parameters<FreeeReceiptIssuer['createReceipt']>[0], 'accessToken' | 'companyId'>,
   bookingId: number,
-): Promise<{ receiptUrl: string }> {
+): Promise<{ receiptId: number | null; receiptUrl: string }> {
   const getToken = async (forceRefresh: boolean) => {
     try {
       return await getValidAccessTokenFreee(env, db, forceRefresh);

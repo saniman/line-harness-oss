@@ -26,6 +26,9 @@ import type { Env } from '../index.js';
 
 const FREEE_AUTHORIZE_URL = 'https://accounts.secure.freee.co.jp/public_api/authorize';
 const FREEE_TOKEN_URL = 'https://accounts.secure.freee.co.jp/public_api/token';
+
+/** トークン取得・更新のタイムアウト。ユーザー操作に同期でぶら下がるため短めにする。 */
+const TOKEN_TIMEOUT_MS = 8_000;
 const DEFAULT_REDIRECT_URI = 'https://api.walover-co.work/api/integrations/freee/callback';
 
 export interface FreeeTokens {
@@ -249,6 +252,10 @@ export async function refreshFreeeTokens(
       client_secret: env.FREEE_CLIENT_SECRET,
       refresh_token: refreshToken,
     }).toString(),
+    // ⚠️ タイムアウト必須。この呼び出しは現金受領ボタンの応答に同期でぶら下がっており、
+    //    freee のトークン endpoint が固まると、現金を受け取った直後の運営者が
+    //    無反応のボタンを見続けることになる（fetchFreeeCompanyName と同じ扱い）。
+    signal: AbortSignal.timeout(TOKEN_TIMEOUT_MS),
   });
 
   if (!res.ok) {

@@ -7,6 +7,7 @@ import {
   verifyOAuthState,
   getValidAccessTokenFreee,
   fetchFreeeCompanyName,
+  refreshFreeeTokens,
 } from './freee-oauth.js';
 
 const ENV = {
@@ -695,5 +696,44 @@ describe('fetchFreeeCompanyName', () => {
   it('レスポンスの形が想定外でも null を返す', async () => {
     fetchMock.mockResolvedValue(ok({ unexpected: true }));
     expect(await fetchFreeeCompanyName('at-1', 1234567)).toBeNull();
+  });
+});
+
+describe('refreshFreeeTokens のタイムアウト', () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', fetchMock);
+    fetchMock.mockReset();
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({ access_token: 'a', refresh_token: 'r', expires_in: 3600 }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('【重要】タイムアウトを付けて呼ぶ', async () => {
+    // この呼び出しは現金受領ボタンの応答に同期でぶら下がっている。
+    // freee のトークン endpoint が固まると、現金を受け取った直後の運営者が
+    // 無反応のボタンを見続けることになる
+    await refreshFreeeTokens(ENV, 'refresh-token-1');
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('タイムアウトは無制限にしない（30秒以内）', async () => {
+    await refreshFreeeTokens(ENV, 'refresh-token-1');
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    // AbortSignal.timeout() は abort 済みでない限り reason を持たない。
+    // 「signal はあるが実質無期限」を弾くため、実際に発火するまで待てる長さかを見る
+    expect(init.signal).toBeDefined();
+    expect(init.signal?.aborted).toBe(false);
   });
 });

@@ -342,8 +342,9 @@ describe('issueReceiptForBooking（同時実行）', () => {
     // 条件が receipt_url IS NULL だけだと、期限切れで引き継いだ相手の発行権まで
     // 消してしまい、3本目が同時に走れるようになる
     const { db, sqls, released } = makeDb();
+    // 4xx = 作られていないと断言できる失敗＝発行権を返す経路
     const issuer: FreeeReceiptIssuer = {
-      createReceipt: vi.fn().mockRejectedValue(new Error('freee 500')),
+      createReceipt: vi.fn().mockRejectedValue(new FreeeReceiptApiError('freee 400', 400)),
     };
 
     await issueReceiptForBooking(ENV, db, 1, 5, issuer);
@@ -369,7 +370,7 @@ describe('issueReceiptForBooking（freee API が失敗したとき）', () => {
     // 中途半端に URL を入れると、冪等ガードが効いて二度と発行できなくなる
     const { db, calls } = makeDb();
     const issuer: FreeeReceiptIssuer = {
-      createReceipt: vi.fn().mockRejectedValue(new Error('freee 500')),
+      createReceipt: vi.fn().mockRejectedValue(new FreeeReceiptApiError('freee 400', 400)),
     };
 
     const res = await issueReceiptForBooking(ENV, db, 1, 5, issuer);
@@ -379,10 +380,12 @@ describe('issueReceiptForBooking（freee API が失敗したとき）', () => {
     expect(calls.save).toBe(0);
   });
 
-  it('【重要】失敗したら発行権を返す（再送できるようにする）', async () => {
+  it('【重要】freee が 4xx で拒否したら発行権を返す（作られていないと断言できる）', async () => {
     const { db, calls } = makeDb();
     const issuer: FreeeReceiptIssuer = {
-      createReceipt: vi.fn().mockRejectedValue(new Error('freee 500')),
+      createReceipt: vi
+        .fn()
+        .mockRejectedValue(new FreeeReceiptApiError('freee 400: 取引先を指定してください。', 400)),
     };
 
     await issueReceiptForBooking(ENV, db, 1, 5, issuer);
@@ -390,7 +393,9 @@ describe('issueReceiptForBooking（freee API が失敗したとき）', () => {
     expect(calls.release).toBe(1);
   });
 
-  it('URL が空で返ってきたら保存せず、発行権も返す', async () => {
+  it('URL が空で返ってきたら保存しない', async () => {
+    // 発行権を返すかどうかは「2xx なのに URL が無い」の describe で別途見る
+    // （freee 側には領収書があるので返してはいけない）
     const { db, calls } = makeDb();
     const issuer: FreeeReceiptIssuer = {
       createReceipt: vi.fn().mockResolvedValue({ receiptId: 1, receiptUrl: '' }),
@@ -401,7 +406,6 @@ describe('issueReceiptForBooking（freee API が失敗したとき）', () => {
     expect(res.issued).toBe(false);
     expect(res.code).toBe('issue_failed');
     expect(calls.save).toBe(0);
-    expect(calls.release).toBe(1);
   });
 
   it('例外を外に投げない（受領の記録を巻き戻さないため）', async () => {
@@ -521,5 +525,104 @@ describe('issueReceiptForBooking（運営者への案内）', () => {
 
     expect(res.code).toBe('freee_unavailable');
     expect(res.error).toContain('少し待って');
+  });
+});
+
+describe('issueReceiptForBooking（作られたか不明な失敗）', () => {
+  // ここが二重発行の最後の砦。「失敗＝作られていない」と決めつけると、
+  // タイムアウト後の押し直しで2枚目が出る
+
+  it('【重要】タイムアウトしたら発行権を保持する（押し直しで2枚目を作らせない）', async () => {
+    const { db, calls } = makeDb();
+    const timeout = Object.assign(new Error('The operation was aborted'), { name: 'TimeoutError' });
+    const issuer: FreeeReceiptIssuer = { createReceipt: vi.fn().mockRejectedValue(timeout) };
+
+    await issueReceiptForBooking(ENV, db, 1, 5, issuer);
+
+    expect(calls.release).toBe(0);
+  });
+
+  it('【重要】freee が 5xx でも発行権を保持する（処理途中で落ちた可能性がある）', async () => {
+    const { db, calls } = makeDb();
+    const issuer: FreeeReceiptIssuer = {
+      createReceipt: vi.fn().mockRejectedValue(new FreeeReceiptApiError('freee 503', 503)),
+    };
+
+    await issueReceiptForBooking(ENV, db, 1, 5, issuer);
+
+    expect(calls.release).toBe(0);
+  });
+
+  it('通信断でも発行権を保持する', async () => {
+    const { db, calls } = makeDb();
+    const issuer: FreeeReceiptIssuer = {
+      createReceipt: vi.fn().mockRejectedValue(new TypeError('fetch failed')),
+    };
+
+    await issueReceiptForBooking(ENV, db, 1, 5, issuer);
+
+    expect(calls.release).toBe(0);
+  });
+
+  it('結果が不明なときは「発行済みかも」と伝える', async () => {
+    // 「発行できませんでした」だけだと運営者が押し直して2枚目を作る
+    const { db } = makeDb();
+    const issuer: FreeeReceiptIssuer = {
+      createReceipt: vi.fn().mockRejectedValue(new TypeError('fetch failed')),
+    };
+
+    const res = await issueReceiptForBooking(ENV, db, 1, 5, issuer);
+
+    expect(res.error).toContain('発行済み');
+  });
+
+  it('トークンを取れなかったときは発行権を返す（freee を呼んでいない）', async () => {
+    mockToken.mockRejectedValue(new Error('FREEE_TEMPORARILY_UNAVAILABLE'));
+    const { db, calls } = makeDb();
+
+    await issueReceiptForBooking(ENV, db, 1, 5, makeIssuer());
+
+    expect(calls.release).toBe(1);
+  });
+});
+
+describe('issueReceiptForBooking（2xx なのに URL が無い）', () => {
+  it('【重要】発行権を返さない（freee 側には領収書が存在する）', async () => {
+    const { db, calls } = makeDb();
+    const issuer: FreeeReceiptIssuer = {
+      createReceipt: vi.fn().mockResolvedValue({ receiptId: 777, receiptUrl: '' }),
+    };
+
+    const res = await issueReceiptForBooking(ENV, db, 1, 5, issuer);
+
+    expect(res.issued).toBe(false);
+    expect(calls.release).toBe(0);
+    expect(calls.save).toBe(0);
+  });
+
+  it('【重要】領収書IDをログに残す（迷子の1枚を特定する唯一の手がかり）', async () => {
+    // receipt_id は個人情報ではないので出してよい。receipt_url は出さない
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { db } = makeDb();
+    const issuer: FreeeReceiptIssuer = {
+      createReceipt: vi.fn().mockResolvedValue({ receiptId: 777, receiptUrl: '' }),
+    };
+
+    await issueReceiptForBooking(ENV, db, 1, 5, issuer);
+
+    const logged = spy.mock.calls.flat().join(' ');
+    expect(logged).toContain('777');
+    spy.mockRestore();
+  });
+
+  it('freee で確認するよう運営者に案内する', async () => {
+    const { db } = makeDb();
+    const issuer: FreeeReceiptIssuer = {
+      createReceipt: vi.fn().mockResolvedValue({ receiptId: 777, receiptUrl: '' }),
+    };
+
+    const res = await issueReceiptForBooking(ENV, db, 1, 5, issuer);
+
+    expect(res.error).toContain('作成されました');
   });
 });
