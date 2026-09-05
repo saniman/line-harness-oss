@@ -302,53 +302,179 @@ export async function getEventBookingById(db: D1Database, id: number): Promise<E
   return row ?? null
 }
 
+export interface CancelBookingOptions {
+  /**
+   * 運営者（管理画面）からの取り消しか。
+   *
+   * 参加者からの取り消しには無い権限を2つ与える:
+   *   - 現金受領済みでも取り消せる（現金を返したうえで運営者が記録する）
+   *   - friend_id の一致を求めない（管理画面に friendId は無い）
+   */
+  byAdmin?: boolean
+  /**
+   * URL の :id（イベントID）。渡されたら予約がそのイベントのものか検証する。
+   *
+   * ⚠️ 運営者経路では**必ず渡す**。無いと別イベントの予約を取り消せてしまい、
+   *    Stripe の返金まで走る。同じ URL 形の markCashReceived /
+   *    saveReceiptShareUrl と同じガードを持たせる。
+   */
+  eventId?: number
+}
+
+export type CancelBookingCode =
+  | 'not_found'
+  | 'event_mismatch'
+  | 'already_cancelled'
+  | 'cash_received'
+
 export async function cancelEventBooking(
   db: D1Database,
   bookingId: number,
   friendId: string | null,
-  stripe: StripeRefundClient,
-): Promise<{ success: boolean; refunded: boolean; refundId?: string; eventId?: number; error?: string }> {
+  /**
+   * ⚠️ null を許す。Stripe を導入していない現金運用では、キーが無くても
+   *    取り消しは成立させたい（stripe@22 はキー無しだとコンストラクタで例外を投げる）。
+   *    null のとき決済済みの予約は failed になり、手動返金が必要だと画面に出る。
+   */
+  stripe: StripeRefundClient | null,
+  options: CancelBookingOptions = {},
+): Promise<{
+  success: boolean
+  refunded: boolean
+  /**
+   * Stripe 返金の結果。
+   *
+   * ⚠️ `refunded: boolean` だけだと「返金の対象ではない」と「返金に失敗した」が
+   *    区別できず、**失敗が画面で無音になる**。取り消しの確認画面で
+   *    「返金が自動で行われます」と約束している以上、守れなかったことは必ず伝える。
+   *
+   *   none    … 返金の対象ではない（現金・無料）
+   *   refunded … 返金を開始できた
+   *   failed  … 対象なのに返金できなかった。**手動で返金する必要がある**
+   */
+  refundResult: 'none' | 'refunded' | 'failed'
+  refundId?: string
+  eventId?: number
+  code?: CancelBookingCode
+  error?: string
+}> {
   const booking = await getEventBookingById(db, bookingId)
-  if (!booking) return { success: false, refunded: false, error: '予約が見つかりませんでした。' }
+  if (!booking) {
+    return { success: false, refunded: false, refundResult: 'none', code: 'not_found', error: '予約が見つかりませんでした。' }
+  }
 
-  if (booking.friend_id !== null && booking.friend_id !== friendId) {
-    return { success: false, refunded: false, error: '予約が見つかりませんでした。' }
+  // ⚠️ 別イベントの予約に対して実行させない。古いタブから押した場合などに、
+  //    まったく関係ない予約を取り消して Stripe 返金まで走ってしまう。
+  //    markCashReceived / saveReceiptShareUrl と同じガード。
+  if (options.eventId != null && booking.event_id !== options.eventId) {
+    return { success: false, refunded: false, refundResult: 'none', code: 'event_mismatch', error: 'イベントが一致しません。' }
+  }
+
+  // ⚠️ 本人確認。運営者は管理画面から操作するので friendId を持たない。
+  //    byAdmin のときだけ免除する（参加者側の確認は今までどおり効かせる）
+  if (!options.byAdmin && booking.friend_id !== null && booking.friend_id !== friendId) {
+    return { success: false, refunded: false, refundResult: 'none', code: 'not_found', error: '予約が見つかりませんでした。' }
   }
 
   if (booking.status === 'cancelled') {
-    return { success: false, refunded: false, error: 'すでにキャンセル済みです。' }
+    return { success: false, refunded: false, refundResult: 'none', code: 'already_cancelled', error: 'すでにキャンセル済みです。' }
   }
 
-  let refunded = false
+  // ⚠️ **現金を受け取ったあとは、参加者から取り消させない**（Issue #65）。
+  //    現金の返金は対面でしかできないのに、システムだけキャンセルまで進むと
+  //    「受け取ったはずなのに記録はキャンセル」になり、いくら返すか分からなくなる。
+  //    さらに発行済みの領収書が有効なまま残る。
+  //    運営者が現金を返したうえで管理画面から取り消す導線に寄せる。
+  if (!options.byAdmin && booking.cash_received_at) {
+    return {
+      success: false,
+      refunded: false,
+      refundResult: 'none',
+      code: 'cash_received',
+      error: 'お支払い済みのため、こちらからは取り消せません。主催者までご連絡ください。',
+    }
+  }
+
+  // ⚠️ **返金する前に取り消し権を取る。**
+  //    上の status チェックは SELECT を見た「読んでから書く」判定なので、
+  //    同時実行を防げない。この PR で運営者という2人目の実行者が増えたため、
+  //    LINE の postback 経路（webhook.ts）と同時に走ると
+  //    **両方が stripe.refunds.create に到達**し、負けた側は
+  //    charge_already_refunded で failed を返す。
+  //    → 成功した返金に対して「手動で返金してください」と画面に出てしまう。
+  //    markCashReceived と同じく、条件付き UPDATE で1本だけ通す。
+  //
+  // pending からのキャンセル＝Stripe 決済画面から戻ってきたケース（cancel_url 経由）。
+  // 本人都合のキャンセル（confirmed からの遷移）と区別できないと、
+  // 名前が空のゴミ行として参加者一覧に混ざる（Issue #56）。
+  //
+  // ⚠️ 運営者が取り消した pending には付けない。付けると「決済画面から戻った」と
+  //    誤ラベルされ、isCheckoutDropout が true になって折りたたみへ移動し、
+  //    **押した直後に一覧から消える**（booking-display.ts のコメント参照）。
+  const cancelReason = !options.byAdmin && booking.status === 'pending' ? CHECKOUT_ABANDONED : null
+
+  const claimed = await db.prepare(
+    `UPDATE event_bookings
+        SET status = 'cancelled', cancel_reason = ?, updated_at = datetime('now')
+      WHERE id = ? AND status != 'cancelled'
+    RETURNING id`,
+  ).bind(cancelReason, bookingId).first<{ id: number }>()
+
+  if (!claimed) {
+    // 一瞬先に別の経路が取り消した。返金はそちらが担当しているので、ここでは何もしない
+    return {
+      success: false,
+      refunded: false,
+      refundResult: 'none',
+      code: 'already_cancelled',
+      error: 'すでにキャンセル済みです。',
+    }
+  }
+
+  let refundResult: 'none' | 'refunded' | 'failed' = 'none'
   let refundId: string | undefined
 
-  if (booking.payment_status === 'paid' && booking.stripe_session_id) {
+  // 決済済みなら返金の対象。ここに入ったら「成功」か「失敗」のどちらかであって、
+  // 黙って none には戻さない（戻すと画面から返金の失敗が消える）
+  if (booking.payment_status === 'paid') {
+    refundResult = 'failed'
     try {
-      const session = await stripe.checkout.sessions.retrieve(booking.stripe_session_id)
-      const paymentIntentId = typeof session.payment_intent === 'string'
-        ? session.payment_intent
-        : session.payment_intent?.id
-      if (paymentIntentId) {
-        const refund = await stripe.refunds.create({ payment_intent: paymentIntentId })
-        refundId = refund.id
-        refunded = true
-        await db.prepare(
-          "UPDATE event_bookings SET stripe_refund_id = ?, refund_status = ?, updated_at = datetime('now') WHERE id = ?",
-        ).bind(refund.id, refund.status, bookingId).run()
+      // ⚠️ session_id が無い決済済みは、こちらから返金できない（データ不整合）。
+      //    黙って通すと「返金されたつもり」になるので failed のままにする
+      // ⚠️ 既に返金 ID があるなら作らない。Stripe の画面から返金済みのケースで、
+      //    ここを通すと二重返金になる（あるいは失敗して「手動で返金」を促してしまう）
+      if (booking.stripe_refund_id) {
+        console.log('[cancelEventBooking] 既に返金済み:', bookingId)
+        refundResult = 'refunded'
+        refundId = booking.stripe_refund_id
+      } else if (!stripe) {
+        console.error('[cancelEventBooking] Stripe が未設定のため返金できない:', bookingId)
+      } else if (!booking.stripe_session_id) {
+        console.error('[cancelEventBooking] 決済済みだが stripe_session_id が無い:', bookingId)
+      } else {
+        const session = await stripe.checkout.sessions.retrieve(booking.stripe_session_id)
+        const paymentIntentId = typeof session.payment_intent === 'string'
+          ? session.payment_intent
+          : session.payment_intent?.id
+        if (!paymentIntentId) {
+          console.error('[cancelEventBooking] payment_intent を特定できない:', bookingId)
+        } else {
+          const refund = await stripe.refunds.create({ payment_intent: paymentIntentId })
+          refundId = refund.id
+          refundResult = 'refunded'
+          await db.prepare(
+            "UPDATE event_bookings SET stripe_refund_id = ?, refund_status = ?, updated_at = datetime('now') WHERE id = ?",
+          ).bind(refund.id, refund.status, bookingId).run()
+        }
       }
     } catch (err) {
+      // ⚠️ 例外は握るが、**失敗した事実は返す**。取り消し自体は成立させる
+      //    （ここで中断すると、返金できないだけで取り消しもできなくなる）
       console.error('[cancelEventBooking] Stripe refund failed:', err)
     }
   }
 
-  // pending からのキャンセル＝Stripe 決済画面から戻ってきたケース（cancel_url 経由）。
-  // 本人都合のキャンセル（confirmed からの遷移）と区別できないと、
-  // 名前が空のゴミ行として参加者一覧に混ざる（Issue #56）。
-  const cancelReason = booking.status === 'pending' ? CHECKOUT_ABANDONED : null
-
-  await db.prepare(
-    "UPDATE event_bookings SET status = 'cancelled', cancel_reason = ?, updated_at = datetime('now') WHERE id = ?",
-  ).bind(cancelReason, bookingId).run()
+  const refunded = refundResult === 'refunded'
 
   // 参加確定後のキャンセルだけ、お礼シナリオを止めてキャンセル者向けへ切り替える（ベストエフォート）。
   // pending（決済せず取り消しただけ）は申込意思が薄いため対象外。
@@ -363,7 +489,7 @@ export async function cancelEventBooking(
     }
   }
 
-  return { success: true, refunded, refundId, eventId: booking.event_id }
+  return { success: true, refunded, refundResult, refundId, eventId: booking.event_id }
 }
 
 /**

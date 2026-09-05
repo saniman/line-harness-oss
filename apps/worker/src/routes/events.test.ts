@@ -23,6 +23,7 @@ const mockIssueReceipt = vi.hoisted(() => vi.fn())
 const mockSaveShare = vi.hoisted(() => vi.fn())
 const mockSendReceipt = vi.hoisted(() => vi.fn())
 const mockRevokeShare = vi.hoisted(() => vi.fn())
+const mockNotifyCancelled = vi.hoisted(() => vi.fn())
 
 vi.mock('../services/events.js', () => ({
   createEvent: vi.fn(),
@@ -64,6 +65,10 @@ vi.mock('../services/receipt-share.js', () => ({
 
 vi.mock('../services/receipt-notify.js', () => ({
   sendReceiptToParticipant: mockSendReceipt,
+}))
+
+vi.mock('../services/booking-cancel-notify.js', () => ({
+  notifyBookingCancelled: mockNotifyCancelled,
 }))
 
 vi.mock('../services/liff-identity.js', () => ({
@@ -781,7 +786,7 @@ describe('POST /api/events/bookings/:id/cancel', () => {
   const CANCEL_ENV = { ...MOCK_ENV, LINE_CHANNEL_ACCESS_TOKEN: 'test-token' }
 
   it('正常系：キャンセル成功で200と refunded: false を返す', async () => {
-    vi.mocked(eventsService.cancelEventBooking).mockResolvedValue({ success: true, refunded: false, eventId: 1 })
+    vi.mocked(eventsService.cancelEventBooking).mockResolvedValue({ success: true, refunded: false, refundResult: 'none' as const, eventId: 1 })
     vi.mocked(eventsService.getEventById).mockResolvedValue(EVENT1)
     const res = await app.request('/api/events/bookings/1/cancel', {
       method: 'POST',
@@ -794,7 +799,7 @@ describe('POST /api/events/bookings/:id/cancel', () => {
   })
 
   it('LINE通知：キャンセル成功時にpushMessageが呼ばれる', async () => {
-    vi.mocked(eventsService.cancelEventBooking).mockResolvedValue({ success: true, refunded: false, eventId: 1 })
+    vi.mocked(eventsService.cancelEventBooking).mockResolvedValue({ success: true, refunded: false, refundResult: 'none' as const, eventId: 1 })
     vi.mocked(eventsService.getEventById).mockResolvedValue(EVENT1)
     await app.request('/api/events/bookings/1/cancel', {
       method: 'POST',
@@ -806,7 +811,7 @@ describe('POST /api/events/bookings/:id/cancel', () => {
   })
 
   it('LINE通知：返金ありの場合は返金文言が含まれる', async () => {
-    vi.mocked(eventsService.cancelEventBooking).mockResolvedValue({ success: true, refunded: true, refundId: 're_xxx', eventId: 1 })
+    vi.mocked(eventsService.cancelEventBooking).mockResolvedValue({ success: true, refunded: true, refundResult: 'refunded' as const, refundId: 're_xxx', eventId: 1 })
     vi.mocked(eventsService.getEventById).mockResolvedValue(EVENT1)
     await app.request('/api/events/bookings/1/cancel', {
       method: 'POST',
@@ -820,7 +825,7 @@ describe('POST /api/events/bookings/:id/cancel', () => {
   })
 
   it('LINE_CHANNEL_ACCESS_TOKEN がなければ pushMessage は呼ばれない', async () => {
-    vi.mocked(eventsService.cancelEventBooking).mockResolvedValue({ success: true, refunded: false, eventId: 1 })
+    vi.mocked(eventsService.cancelEventBooking).mockResolvedValue({ success: true, refunded: false, refundResult: 'none' as const, eventId: 1 })
     await app.request('/api/events/bookings/1/cancel', {
       method: 'POST',
       headers: { 'x-line-user-id': 'U123' },
@@ -829,7 +834,7 @@ describe('POST /api/events/bookings/:id/cancel', () => {
   })
 
   it('異常系：cancelEventBooking がエラーを返すと400', async () => {
-    vi.mocked(eventsService.cancelEventBooking).mockResolvedValue({ success: false, refunded: false, error: 'すでにキャンセル済みです。' })
+    vi.mocked(eventsService.cancelEventBooking).mockResolvedValue({ success: false, refunded: false, refundResult: 'none', error: 'すでにキャンセル済みです。' })
     const res = await app.request('/api/events/bookings/1/cancel', {
       method: 'POST',
     }, MOCK_ENV)
@@ -1459,5 +1464,289 @@ describe('領収書の共有リンク（#47）', () => {
     const res = await guarded.request(path, { method, body: JSON.stringify({ url: SHARE }) }, ENV)
 
     expect(res.status).toBe(401)
+  })
+})
+
+/**
+ * ロールを注入したアプリ。本番では authMiddleware が c.set('staff', ...) する。
+ * admin-cancel は不可逆な送金（Stripe 返金）を伴うので owner 限定にしてある。
+ */
+function makeAppWithRole(role: 'owner' | 'admin' | 'staff') {
+  const withRole = new Hono()
+  withRole.use('*', async (c, next) => {
+    // @ts-expect-error テスト用に staff を注入する
+    c.set('staff', { id: 's1', name: 'テスト', role })
+    await next()
+  })
+  withRole.route('/', events)
+  return withRole
+}
+
+describe('運営者による予約の取り消し（#65）', () => {
+  const PATH = '/api/events/1/bookings/5/admin-cancel'
+  const ENV = { DB: mockDb, STRIPE_SECRET_KEY: 'sk_test', LINE_CHANNEL_ACCESS_TOKEN: 't' }
+  const ownerApp = makeAppWithRole('owner')
+
+  beforeEach(() => {
+    vi.mocked(eventsService.cancelEventBooking).mockReset()
+    vi.mocked(eventsService.cancelEventBooking).mockResolvedValue({
+      success: true, refunded: false, refundResult: 'none', eventId: 1,
+    })
+    mockRevokeShare.mockReset()
+    mockRevokeShare.mockResolvedValue({ ok: true })
+    mockNotifyCancelled.mockReset()
+    mockNotifyCancelled.mockResolvedValue(true)
+  })
+
+  it('運営者としてキャンセルする（byAdmin を渡す）', async () => {
+    const res = await ownerApp.request(PATH, { method: 'POST' }, ENV)
+
+    expect(res.status).toBe(200)
+    expect(eventsService.cancelEventBooking).toHaveBeenCalledWith(
+      expect.anything(), 5, null, expect.anything(), { byAdmin: true, eventId: 1 },
+    )
+  })
+
+  it('【重要】管理画面は本人確認を持たないので friendId に null を渡す', async () => {
+    await ownerApp.request(PATH, { method: 'POST' }, ENV)
+
+    expect(vi.mocked(eventsService.cancelEventBooking).mock.calls[0][2]).toBe(null)
+  })
+
+  it('【重要】キャンセルできたら領収書の共有リンクを無効化する', async () => {
+    // 返金したのに参加者が領収書を持ち続ける状態にしない
+    const res = await ownerApp.request(PATH, { method: 'POST' }, ENV)
+
+    expect(mockRevokeShare).toHaveBeenCalledWith(expect.anything(), 1, 5)
+    const body = await res.json() as { data: { receiptRevoked: string } }
+    expect(body.data.receiptRevoked).toBe('revoked')
+  })
+
+  it('【重要】キャンセルに失敗したらリンクを無効化しない', async () => {
+    // 順序を逆にすると、キャンセルできていないのに参加者が領収書を開けなくなる
+    vi.mocked(eventsService.cancelEventBooking).mockResolvedValue({ success: false, refunded: false, refundResult: 'none' as const, code: 'already_cancelled', error: 'すでにキャンセル済みです。',
+    })
+
+    const res = await ownerApp.request(PATH, { method: 'POST' }, ENV)
+
+    expect(res.status).toBe(409)
+    expect(mockRevokeShare).not.toHaveBeenCalled()
+  })
+
+  it('共有リンクが未登録でもキャンセルは成功する', async () => {
+    // 現金はもう返している。無効化できないことでキャンセルまで失敗にしない
+    mockRevokeShare.mockResolvedValue({ ok: false, error: '対象が見つかりませんでした。' })
+
+    const res = await ownerApp.request(PATH, { method: 'POST' }, ENV)
+
+    expect(res.status).toBe(200)
+    const body = await res.json() as { data: { receiptRevoked: string } }
+    expect(body.data.receiptRevoked).toBe('none')
+  })
+
+  it('【重要】無効化が失敗したら failed として返す（無音にしない）', async () => {
+    // boolean だと「リンクが無い」と「失敗した」が区別できず、
+    // リンクが生きたまま残っていることに誰も気づけない
+    mockRevokeShare.mockRejectedValue(new Error('boom'))
+
+    const res = await ownerApp.request(PATH, { method: 'POST' }, ENV)
+
+    expect(res.status).toBe(200)
+    const body = await res.json() as { data: { receiptRevoked: string } }
+    expect(body.data.receiptRevoked).toBe('failed')
+  })
+
+  it('【重要】eventId を渡して別イベントの取り消しを防ぐ', async () => {
+    await ownerApp.request(PATH, { method: 'POST' }, ENV)
+
+    expect(vi.mocked(eventsService.cancelEventBooking).mock.calls[0][4]).toEqual({
+      byAdmin: true, eventId: 1,
+    })
+  })
+
+  it('イベントが一致しなければ 400', async () => {
+    vi.mocked(eventsService.cancelEventBooking).mockResolvedValue({ success: false, refunded: false, refundResult: 'none' as const, code: 'event_mismatch', error: 'イベントが一致しません。',
+    })
+
+    const res = await ownerApp.request(PATH, { method: 'POST' }, ENV)
+
+    expect(res.status).toBe(400)
+    expect(mockRevokeShare).not.toHaveBeenCalled()
+  })
+
+  it('取り消したら参加者に通知する', async () => {
+    await ownerApp.request(PATH, { method: 'POST' }, ENV)
+
+    expect(mockNotifyCancelled).toHaveBeenCalledWith(expect.anything(), expect.anything(), 5, false)
+  })
+
+  it('【重要】通知が失敗しても取り消しは成功として返す', async () => {
+    mockNotifyCancelled.mockRejectedValue(new Error('LINE 500'))
+
+    expect((await ownerApp.request(PATH, { method: 'POST' }, ENV)).status).toBe(200)
+  })
+
+  it('キャンセルに失敗したら通知しない', async () => {
+    vi.mocked(eventsService.cancelEventBooking).mockResolvedValue({ success: false, refunded: false, refundResult: 'none' as const, code: 'not_found', error: '予約が見つかりませんでした。',
+    })
+
+    await ownerApp.request(PATH, { method: 'POST' }, ENV)
+
+    expect(mockNotifyCancelled).not.toHaveBeenCalled()
+  })
+
+  it('存在しない予約なら 404', async () => {
+    vi.mocked(eventsService.cancelEventBooking).mockResolvedValue({ success: false, refunded: false, refundResult: 'none' as const, code: 'not_found', error: '予約が見つかりませんでした。',
+    })
+
+    expect((await ownerApp.request(PATH, { method: 'POST' }, ENV)).status).toBe(404)
+  })
+
+  it('イベントIDが数値でなければ 400（DBに触らない）', async () => {
+    const res = await ownerApp.request('/api/events/abc/bookings/5/admin-cancel', { method: 'POST' }, ENV)
+
+    expect(res.status).toBe(400)
+    expect(eventsService.cancelEventBooking).not.toHaveBeenCalled()
+  })
+
+  it('【重要】認証必須（スキップリストに入れない）', async () => {
+    // 公開すると第三者が他人の予約を取り消せる
+    const { authMiddleware } = await import('../middleware/auth.js')
+    const guarded = new Hono()
+    guarded.use('*', authMiddleware as never)
+    guarded.route('/', events)
+
+    const res = await guarded.request(PATH, { method: 'POST' }, ENV)
+
+    expect(res.status).toBe(401)
+  })
+})
+
+describe('参加者からのキャンセル（#65 の断り）', () => {
+  const PATH = '/api/events/bookings/5/cancel'
+
+  it('【重要】現金受領済みなら理由コードを返す（LIFF が案内を変えられる）', async () => {
+    vi.mocked(eventsService.cancelEventBooking).mockResolvedValue({
+      success: false,
+      refunded: false,
+      refundResult: 'none' as const,
+      code: 'cash_received',
+      error: 'お支払い済みのため、こちらからは取り消せません。主催者までご連絡ください。',
+    })
+
+    const res = await app.request(PATH, {
+      method: 'POST', headers: LIFF_HEADERS, body: JSON.stringify({}),
+    }, { DB: mockDb, STRIPE_SECRET_KEY: 'sk_test' })
+
+    expect(res.status).toBe(400)
+    const body = await res.json() as { code: string; error: string }
+    expect(body.code).toBe('cash_received')
+    expect(body.error).toContain('主催者')
+  })
+})
+
+describe('運営者による取り消し（レビュー2周目の追加検証）', () => {
+  const PATH = '/api/events/1/bookings/5/admin-cancel'
+  const ENV = { DB: mockDb, STRIPE_SECRET_KEY: 'sk_test', LINE_CHANNEL_ACCESS_TOKEN: 't' }
+  const ownerApp = makeAppWithRole('owner')
+
+  beforeEach(() => {
+    vi.mocked(eventsService.cancelEventBooking).mockReset()
+    vi.mocked(eventsService.cancelEventBooking).mockResolvedValue({
+      success: true, refunded: false, refundResult: 'none', eventId: 1,
+    })
+    mockRevokeShare.mockReset()
+    mockRevokeShare.mockResolvedValue({ ok: true })
+    mockNotifyCancelled.mockReset()
+    mockNotifyCancelled.mockResolvedValue(true)
+  })
+
+  it('【重要】返金の失敗を画面に返す（無音にしない）', async () => {
+    // 確認画面で「返金が自動で行われます」と約束しているのに、
+    // 失敗が伝わらないと返金されていないことに誰も気づけない
+    vi.mocked(eventsService.cancelEventBooking).mockResolvedValue({
+      success: true, refunded: false, refundResult: 'failed', eventId: 1,
+    })
+
+    const res = await ownerApp.request(PATH, { method: 'POST' }, ENV)
+
+    const body = await res.json() as { data: { refundResult: string } }
+    expect(body.data.refundResult).toBe('failed')
+  })
+
+  it('【重要】通知が届いたら notified: true を返す', async () => {
+    // 既定値が false なので、結果を代入し忘れても「届かなかった」と同じ見え方になる。
+    // 成功側も固定しないと、握りつぶしを検出できない
+    mockNotifyCancelled.mockResolvedValue(true)
+
+    const res = await ownerApp.request(PATH, { method: 'POST' }, ENV)
+
+    const body = await res.json() as { data: { notified: string } }
+    expect(body.data.notified).toBe('sent')
+  })
+
+  it('【重要】通知が届かなかったことを返す', async () => {
+    // friend_id が無い参加者には何も送られない。
+    // 「取り消しました」だけだと運営者は伝わったと思い込む
+    mockNotifyCancelled.mockResolvedValue(false)
+
+    const res = await ownerApp.request(PATH, { method: 'POST' }, ENV)
+
+    const body = await res.json() as { data: { notified: string } }
+    // ⚠️ boolean だと「LINE 未設定」と区別できず、存在しない紐付け問題を追わせる
+    expect(body.data.notified).toBe('no_friend')
+  })
+
+  it('返金が走ったときだけ通知に返金の案内を入れる', async () => {
+    vi.mocked(eventsService.cancelEventBooking).mockResolvedValue({
+      success: true, refunded: true, refundResult: 'refunded', eventId: 1,
+    })
+
+    await ownerApp.request(PATH, { method: 'POST' }, ENV)
+
+    expect(mockNotifyCancelled).toHaveBeenCalledWith(
+      expect.anything(), expect.anything(), 5, true,
+    )
+  })
+
+  it('【重要】Stripe 未設定でも取り消せる（現金運用で 500 にしない）', async () => {
+    // stripe@22 はキー無しだとコンストラクタで例外を投げる。
+    // 守らないと現金運用では唯一の取り消し導線が常時 500 になる
+    const noStripe = { DB: mockDb, LINE_CHANNEL_ACCESS_TOKEN: 't' }
+
+    const res = await ownerApp.request(PATH, { method: 'POST' }, noStripe)
+
+    expect(res.status).toBe(200)
+    expect(vi.mocked(eventsService.cancelEventBooking).mock.calls[0][3]).toBe(null)
+  })
+})
+
+describe('取り消しの権限（#65 レビュー2周目）', () => {
+  const PATH = '/api/events/1/bookings/5/admin-cancel'
+  const ENV = { DB: mockDb, STRIPE_SECRET_KEY: 'sk_test', LINE_CHANNEL_ACCESS_TOKEN: 't' }
+
+  beforeEach(() => {
+    vi.mocked(eventsService.cancelEventBooking).mockReset()
+    vi.mocked(eventsService.cancelEventBooking).mockResolvedValue({
+      success: true, refunded: false, refundResult: 'none', eventId: 1,
+    })
+    mockRevokeShare.mockReset()
+    mockRevokeShare.mockResolvedValue({ ok: true })
+    mockNotifyCancelled.mockReset()
+    mockNotifyCancelled.mockResolvedValue(true)
+  })
+
+  it('owner は取り消せる', async () => {
+    const res = await makeAppWithRole('owner').request(PATH, { method: 'POST' }, ENV)
+    expect(res.status).toBe(200)
+  })
+
+  it.each(['admin', 'staff'] as const)('【重要】%s は取り消せない', async (role) => {
+    // 不可逆な送金（Stripe 返金）と領収書リンクの無効化を伴う。
+    // 現金受領（cash-received）は受付の通常業務なので絞っていないが、こちらは性質が違う
+    const res = await makeAppWithRole(role).request(PATH, { method: 'POST' }, ENV)
+
+    expect(res.status).toBe(403)
+    expect(eventsService.cancelEventBooking).not.toHaveBeenCalled()
   })
 })

@@ -21,6 +21,8 @@ import { enrollEventFollowupScenarios, enrollEventParticipants } from '../servic
 import { issueReceiptForBooking } from '../services/freee-receipt.js';
 import { saveReceiptShareUrl, revokeReceiptShare } from '../services/receipt-share.js';
 import { sendReceiptToParticipant } from '../services/receipt-notify.js';
+import { notifyBookingCancelled } from '../services/booking-cancel-notify.js';
+import { requireRole } from '../middleware/role-guard.js';
 import type { IssueReceiptResult } from '../services/freee-receipt.js';
 import { resolveEventApplicant } from '../services/event-friend.js';
 import { isApplicationClosed } from '../services/event-deadline.js';
@@ -456,7 +458,9 @@ events.post('/api/events/bookings/:id/cancel', async (c) => {
 
     const result = await cancelEventBooking(c.env.DB, bookingId, friendId, stripe);
     if (!result.success) {
-      return c.json({ success: false, error: result.error }, 400);
+      // ⚠️ 文言ではなく code で分岐できるようにする（LIFF 側で案内を変えられる）。
+      //    現金受領済み（cash_received）は「主催者へご連絡ください」を出す
+      return c.json({ success: false, error: result.error, code: result.code }, 400);
     }
 
     // LINE push通知（ベストエフォート）
@@ -587,6 +591,94 @@ events.post('/api/events/bookings/:id/link-friend', async (c) => {
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('POST /api/events/bookings/:id/link-friend error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * 運営者が予約を取り消す（Issue #65）。
+ *
+ * 現金受領済みの予約は参加者から取り消せないようにしたので、**その誘導先**として要る。
+ * 「現金を返した」という現実の行為を、運営者がここで記録する。
+ *
+ * ⚠️ **認証必須**。公開すると第三者が他人の予約を取り消せる。
+ */
+events.post('/api/events/:id/bookings/:bookingId/admin-cancel', requireRole('owner'), async (c) => {
+  try {
+    const eventId = Number(c.req.param('id'));
+    const bookingId = Number(c.req.param('bookingId'));
+    if (!Number.isInteger(eventId) || !Number.isInteger(bookingId)) {
+      return c.json({ success: false, error: 'Invalid id' }, 400);
+    }
+
+    // ⚠️ キー未設定でも落とさない。stripe@22 は key が無いと **コンストラクタで例外**を
+    //    投げるため、Stripe を使っていない現金運用では**唯一の取り消し導線が常時 500**になる。
+    //    現金・無料の取り消しは Stripe を使わないので、無くても成立する。
+    const stripe = c.env.STRIPE_SECRET_KEY
+      ? new Stripe(c.env.STRIPE_SECRET_KEY, {
+          apiVersion: '2026-04-22.dahlia',
+          httpClient: Stripe.createFetchHttpClient(),
+        })
+      : null;
+
+    // friendId は渡さない（管理画面は本人確認を持たない）。byAdmin で免除する。
+    // ⚠️ eventId は必ず渡す。渡さないと別イベントの予約を取り消せて Stripe 返金まで走る
+    const result = await cancelEventBooking(c.env.DB, bookingId, null, stripe, {
+      byAdmin: true,
+      eventId,
+    });
+    if (!result.success) {
+      const status = result.code === 'not_found' ? 404
+        : result.code === 'already_cancelled' ? 409
+        : 400;
+      return c.json({ success: false, error: result.error, code: result.code }, status);
+    }
+
+    // ⚠️ キャンセルが**成功したときだけ**リンクを止める。順序を逆にすると、
+    //    キャンセルに失敗したのに参加者が領収書を開けなくなる。
+    //    無効化の失敗でキャンセルまで失敗にはしない（現金はもう返している）。
+    //
+    // ⚠️ 3状態で返す。true/false の2値だと「そもそもリンクが無い」と
+    //    「無効化に失敗した」が区別できず、失敗が画面で無音になる。
+    let receiptRevoked: 'revoked' | 'none' | 'failed' = 'none';
+    try {
+      const revoked = await revokeReceiptShare(c.env.DB, eventId, bookingId);
+      receiptRevoked = revoked.ok ? 'revoked' : 'none';
+    } catch (err) {
+      console.error('[events] キャンセル後の共有リンク無効化に失敗:', bookingId, err);
+      receiptRevoked = 'failed';
+    }
+
+    // 取り消したことを参加者にも伝える（ベストエフォート）。
+    // 「主催者へご連絡ください」で止められた後なので、処理されたことが分かる方が親切。
+    // ⚠️ 結果を捨てない。friend_id が無い参加者には**何も届かない**ので、
+    //    「取り消しました」だけ出すと運営者は伝わったと思い込む
+    // ⚠️ 3状態にする。boolean だと「LINE が未設定」でも「友だち未連携」と表示され、
+    //    運営者が存在しない紐付け問題を追いかけることになる
+    let notified: 'sent' | 'no_friend' | 'line_unavailable' = 'line_unavailable';
+    if (c.env.LINE_CHANNEL_ACCESS_TOKEN) {
+      try {
+        const ok = await notifyBookingCancelled(
+          c.env.DB, new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN), bookingId,
+          result.refundResult === 'refunded',
+        );
+        notified = ok ? 'sent' : 'no_friend';
+      } catch (err) {
+        console.error('[events] キャンセル通知に失敗:', bookingId, err);
+        notified = 'line_unavailable';
+      }
+    }
+
+    console.log(
+      '[events] 運営者が予約を取り消しました:', bookingId,
+      `(返金: ${result.refundResult} / 領収書リンク: ${receiptRevoked} / 通知: ${notified})`,
+    );
+    return c.json({
+      success: true,
+      data: { refundResult: result.refundResult, receiptRevoked, notified },
+    });
+  } catch (err) {
+    console.error('POST /api/events/:id/bookings/:bookingId/admin-cancel error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

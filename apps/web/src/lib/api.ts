@@ -680,6 +680,36 @@ export const api = {
         { method: 'POST', body: JSON.stringify({ confirmed }) },
       ),
 
+    /**
+     * 運営者が予約を取り消す（#65）。
+     * 現金受領済みの予約は参加者から取り消せないので、その誘導先。
+     * キャンセルできたら領収書の共有リンクも自動で無効化される。
+     */
+    adminCancel: (eventId: number, bookingId: number) =>
+      fetchApi<ApiResponse<{
+        /**
+         * Stripe 返金の結果。
+         * ⚠️ boolean にしない。「対象ではない」と「失敗した」が区別できず、
+         *    **返金されていないことに誰も気づけない**（確認画面で返金を約束しているのに）
+         */
+        refundResult: 'none' | 'refunded' | 'failed'
+        /**
+         * 領収書の共有リンクをどうしたか。
+         * ⚠️ boolean にしない。「リンクが無い」と「無効化に失敗した」を区別できず、
+         *    失敗が画面で無音になる（リンクが生きたまま残る）
+         */
+        receiptRevoked: 'revoked' | 'none' | 'failed'
+        /**
+         * 参加者への LINE 通知の結果。
+         * ⚠️ boolean にしない。「LINE が未設定」でも「友だち未連携」と表示され、
+         *    運営者が存在しない問題を追いかけることになる
+         */
+        notified: 'sent' | 'no_friend' | 'line_unavailable'
+      }>>(
+        `/api/events/${eventId}/bookings/${bookingId}/admin-cancel`,
+        { method: 'POST' },
+      ),
+
     /** 誤配に気づいたときに共有リンクを無効化する */
     revokeReceipt: (eventId: number, bookingId: number) =>
       fetchApi<ApiResponse<Record<string, never>>>(

@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { api, ApiError } from '@/lib/api'
 import type { EventItem, EventBookingItem, FriendWithTags } from '@/lib/api'
 import { getPaymentBadge } from '@/lib/payment-badge'
+import { getRefundNotice } from '@/lib/refund-badge'
 import ReceiptSharePanel from '@/components/ReceiptSharePanel'
 import {
   getStatusBadge,
@@ -64,6 +65,15 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
   // ⚠️ 領収書パネルは**同時に1つしか開かない**。一覧に入力欄を並べると、
   //    クリップボードを持ち回って別の人のリンクを貼る事故が起きる（#47）
   const [receiptBookingId, setReceiptBookingId] = useState<number | null>(null)
+  const [cancelBusyId, setCancelBusyId] = useState<number | null>(null)
+  const [cancelError, setCancelError] = useState('')
+  // ⚠️ 現金受領の警告（receiptWarning）と分ける。共有すると互いに消し合う
+  const [cancelNotice, setCancelNotice] = useState('')
+  // ⚠️ admin-cancel は requireRole('owner')。ボタンを全員に見せると、
+  //    スタッフが「現金を返してから押してください」に従って**現金を返した後で 403**
+  //    になり、現金は戻らず予約も取り消されない。sidebar と同じ出し分けにする
+  const [staffRole, setStaffRole] = useState<string | null>(null)
+  useEffect(() => { setStaffRole(localStorage.getItem('lh_staff_role')) }, [])
   const [linkingBookingId, setLinkingBookingId] = useState<number | null>(null)
   const [friendQuery, setFriendQuery] = useState('')
   const [friendCandidates, setFriendCandidates] = useState<FriendWithTags[]>([])
@@ -194,6 +204,71 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
     // 成否にかかわらずサーバーの状態に合わせ直す（エラーは消さない）
     await load()
     setCashBusyId(null)
+  }
+
+  /**
+   * 運営者が予約を取り消す（#65）。
+   *
+   * 現金受領済みの予約は参加者から取り消せないようにしたので、ここが唯一の導線。
+   * 現金は**対面で返してから**押してもらう必要があるので、金額を出して確認する。
+   */
+  const handleAdminCancel = async (b: EventBookingItem) => {
+    // ⚠️ b.amount を直接使わない。現金受領が古い実装のころの行や
+    //    events.price が後から入ったケースでは null のままで、
+    //    **この仕組みの肝である「いくら返すか」が消える**（handleCashReceived と揃える）
+    const amount = resolveBookingAmount(b, event?.price ?? null)
+    const amountText = amount != null ? `¥${amount.toLocaleString()}` : ''
+
+    // ⚠️ 取り消しで**お金が動く**ケースは必ず先に伝える。
+    //    現金は運営者が手で返す／Stripe はこの操作で自動返金が走る。
+    //    「押したら勝手に返金されていた」を起こさない
+    const warnings: string[] = []
+    if (b.cash_received_at) {
+      warnings.push(
+        `⚠️ この方には現金${amountText ? ` ${amountText}` : ''}を受領済みです。\n`
+        + '　 現金を返してから取り消してください。',
+      )
+    } else if (b.payment_status === 'paid') {
+      warnings.push(
+        `⚠️ Stripe で決済済みです。取り消すと${amountText ? ` ${amountText} の` : ''}返金が自動で行われます。`,
+      )
+    }
+    const detail = warnings.length ? `\n\n${warnings.join('\n')}` : ''
+    if (!confirm(`${participantDisplayName(b)} さんの申込を取り消します。${detail}`)) return
+
+    setCancelBusyId(b.id)
+    setCancelError('')
+    // ⚠️ 取り消し専用の欄を使う。現金受領の警告と共有すると、
+    //    A の「領収書は発行できていません」が B の取り消しで消える
+    setCancelNotice('')
+    try {
+      const res = await api.eventBookings.adminCancel(eventId, b.id)
+      if (res.success) {
+        // ⚠️ **やれなかったことを必ず出す。** 取り消しは金銭と連絡が絡むので、
+        //    「取り消しました」だけだと運営者は全部終わったと思い込む
+        const notes: string[] = []
+        if (res.data.refundResult === 'refunded') notes.push('Stripe の返金を開始しました。')
+        if (res.data.refundResult === 'failed') {
+          notes.push('⚠️ Stripe の返金に失敗しました。Stripe の管理画面から手動で返金してください。')
+        }
+        if (res.data.receiptRevoked === 'revoked') notes.push('領収書の共有リンクを無効化しました。')
+        if (res.data.receiptRevoked === 'failed') {
+          notes.push('⚠️ 領収書の共有リンクを無効化できませんでした。手動で無効化してください。')
+        }
+        if (res.data.notified === 'no_friend') {
+          notes.push('⚠️ 参加者への LINE 通知は届いていません（友だち未連携）。')
+        }
+        if (res.data.notified === 'line_unavailable') {
+          notes.push('⚠️ 参加者への LINE 通知を送れませんでした（LINE 連携の設定を確認してください）。')
+        }
+        setCancelNotice(`取り消しました。${notes.join(' ')}`)
+      }
+    } catch (err) {
+      // サーバーが返す理由をそのまま出す（固定文にすると原因に辿り着けない）
+      setCancelError(err instanceof ApiError ? err.message : '取り消せませんでした。')
+    }
+    await load()
+    setCancelBusyId(null)
   }
 
   const handleSearchFriends = async (q: string) => {
@@ -376,6 +451,12 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
             {receiptWarning && (
               <div className="mx-4 mt-3 p-3 rounded-lg bg-amber-50 text-amber-800 text-sm">{receiptWarning}</div>
             )}
+            {cancelError && (
+              <div className="mx-4 mt-3 p-3 rounded-lg bg-red-50 text-red-700 text-sm">{cancelError}</div>
+            )}
+            {cancelNotice && (
+              <div className="mx-4 mt-3 p-3 rounded-lg bg-amber-50 text-amber-800 text-sm">{cancelNotice}</div>
+            )}
             {cashError && (
               <div className="mx-4 mt-3 p-3 rounded-lg bg-red-50 text-red-700 text-sm">{cashError}</div>
             )}
@@ -399,6 +480,8 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
                   const paymentBadge = getPaymentBadge(b)
                   const statusBadge = getStatusBadge(b.status)
                   const friendBadge = getFriendLinkBadge(b)
+                  // 現金を受け取ったままキャンセルされた予約に出す（#65）
+                  const refundNotice = getRefundNotice(b, event?.price ?? null)
                   // 白 = 確定（ヘッダーの「確定 N 名」に数えられている） /
                   // グレー = それ以外（保留・一覧に残るキャンセル）。ヘッダーの 2 つの数と見た目を揃える。
                   // ホバーはグレー行だけ一段濃くしないと、色が付いた瞬間に反応が見えなくなる
@@ -447,9 +530,18 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
                           </div>
                         )}
                       </div>
-                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium w-fit self-center ${statusBadge.cls}`}>
-                        {statusBadge.label}
-                      </span>
+                      <div className="self-center">
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium w-fit ${statusBadge.cls}`}>
+                          {statusBadge.label}
+                        </span>
+                        {/* ⚠️ バッジ本体はキャンセル最優先のまま（Issue #14 の再発防止）。
+                            受け取った事実が消えないよう、別の印で併記する（#65） */}
+                        {refundNotice && (
+                          <span className={`mt-1 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium w-fit ${refundNotice.cls}`}>
+                            {refundNotice.label}
+                          </span>
+                        )}
+                      </div>
                       <div className="self-center">
                         <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium w-fit ${paymentBadge.cls}`}>
                           {paymentBadge.label}
@@ -464,7 +556,7 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
                             /* 処理中は全行を止める。単一の cashBusyId では、別の行を押すと
                                前の行の「記録中...」が解除され、同時に走った load() が
                                互いの結果を上書きする */
-                            disabled={cashBusyId !== null}
+                            disabled={cashBusyId !== null || cancelBusyId !== null}
                             className="mt-1 block px-2 py-0.5 rounded text-xs text-white bg-amber-600 disabled:opacity-50"
                           >
                             {cashBusyId === b.id ? '記録中...' : '現金受領'}
@@ -480,9 +572,20 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
                         {b.receipt_url && (
                           <button
                             onClick={() => setReceiptBookingId(receiptBookingId === b.id ? null : b.id)}
-                            className="mt-1 text-xs text-blue-600 hover:underline"
+                            className="mt-1 block text-xs text-blue-600 hover:underline"
                           >
                             {b.receipt_sent_at ? '🧾 送信済み' : b.receipt_share_url ? '🧾 未送信' : '🧾 領収書を送る'}
+                          </button>
+                        )}
+                        {/* ⚠️ 現金受領済みの予約は参加者から取り消せない（#65）。
+                            ここが唯一の導線なので、確定済みには必ず出す */}
+                        {b.status !== 'cancelled' && staffRole === 'owner' && (
+                          <button
+                            onClick={() => handleAdminCancel(b)}
+                            disabled={cancelBusyId !== null || cashBusyId !== null}
+                            className="mt-1 block text-xs text-red-600 hover:underline disabled:opacity-50"
+                          >
+                            {cancelBusyId === b.id ? '取り消し中...' : '申込を取り消す'}
                           </button>
                         )}
                       </div>
