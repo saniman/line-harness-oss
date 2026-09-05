@@ -31,7 +31,9 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
     path === '/api/integrations/google-calendar/callback' || // Google OAuth callback
     path === '/api/integrations/google-calendar/slots' || // Public: called from LIFF booking UI
     path === '/api/integrations/google-calendar/book' ||  // Public: called from LIFF booking UI
-    path === '/api/integrations/freee/auth' ||     // freee OAuth start (redirect=1 for browser)
+    // NOTE: /api/integrations/freee/auth は認証必須（管理画面から叩く）。
+    //       公開のままだと誰でも有効な state を発行でき、第三者が自分の freee 事業所で
+    //       認可を完走する足がかりになる。callback は freee からのリダイレクトなので公開。
     path === '/api/integrations/freee/callback' || // freee OAuth callback
     path === '/api/events/public' ||                              // Public: LIFF event list
     path.match(/^\/api\/events\/\d+\/join$/) !== null ||          // Public: LIFF event join

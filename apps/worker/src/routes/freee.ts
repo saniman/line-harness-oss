@@ -26,6 +26,7 @@ import {
   exchangeCodeForTokens,
   createOAuthState,
   verifyOAuthState,
+  fetchFreeeCompanyName,
 } from '../services/freee-oauth.js';
 import type { Env } from '../index.js';
 
@@ -53,10 +54,8 @@ freee.get('/api/integrations/freee/auth', async (c) => {
   try {
     const state = await createOAuthState(c.env);
     const url = getFreeeAuthUrl(c.env, state);
-    // redirect=1 ならブラウザで直接開ける（管理画面の「接続する」ボタン用）
-    if (c.req.query('redirect') === '1') {
-      return c.redirect(url);
-    }
+    // 認証必須（管理画面から叩く）。URL を返し、遷移はブラウザ側で行う。
+    // ブラウザから直接開ける redirect=1 は廃止した（state オラクルになるため）。
     return c.json({ success: true, data: { url } });
   } catch (err) {
     console.error('GET /api/integrations/freee/auth error:', err);
@@ -123,6 +122,10 @@ freee.get('/api/integrations/freee/callback', async (c) => {
       );
     }
 
+    // 事業所名はベストエフォート（取れなくても連携は成立させる）。
+    // 管理画面で「自分の事業所」を見分けるための表示用。
+    const companyName = await fetchFreeeCompanyName(tokens.access_token, tokens.company_id);
+
     // ⚠️ 期限も JST(+09:00) で保存する。SQLite の日時比較は文字列比較なので、
     //    ここだけ UTC の Z にすると created_at 等との比較が9時間ずれる。
     const expiresAt = toJstString(new Date(Date.now() + tokens.expires_in * 1000));
@@ -136,9 +139,10 @@ freee.get('/api/integrations/freee/callback', async (c) => {
     //    再認可のたびに 0 へ戻すと、稼働中の連携が90日ごとに止まる。
     const row = await c.env.DB.prepare(`
       INSERT INTO freee_accounts
-        (id, company_id, access_token, refresh_token, token_expires_at, is_active, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+        (id, company_id, company_name, access_token, refresh_token, token_expires_at, is_active, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
       ON CONFLICT(company_id) WHERE company_id IS NOT NULL DO UPDATE SET
+        company_name     = COALESCE(excluded.company_name, freee_accounts.company_name),
         access_token     = excluded.access_token,
         refresh_token    = excluded.refresh_token,
         token_expires_at = excluded.token_expires_at,
@@ -147,6 +151,7 @@ freee.get('/api/integrations/freee/callback', async (c) => {
     `).bind(
       crypto.randomUUID(),
       tokens.company_id,
+      companyName,
       tokens.access_token,
       tokens.refresh_token,
       expiresAt,
@@ -179,6 +184,94 @@ freee.get('/api/integrations/freee/callback', async (c) => {
       ),
       500,
     );
+  }
+});
+
+// ========== 接続管理（管理画面から・要認証）==========
+
+/**
+ * 接続一覧。
+ *
+ * ⚠️ トークン列は絶対に返さない。管理画面に出す＝ブラウザに渡るため、
+ *    漏れると連携を乗っ取られる。列追加で事故らないよう `SELECT *` を使わず明示する。
+ */
+freee.get('/api/integrations/freee', async (c) => {
+  try {
+    const rows = await c.env.DB.prepare(
+      `SELECT id, company_id, company_name, is_active, token_expires_at, created_at, updated_at
+         FROM freee_accounts
+        ORDER BY is_active DESC, created_at DESC`,
+    ).all<{
+      id: string;
+      company_id: number;
+      company_name: string | null;
+      is_active: number;
+      token_expires_at: string | null;
+      created_at: string;
+      updated_at: string;
+    }>();
+
+    return c.json({
+      success: true,
+      data: rows.results.map((r) => ({
+        id: r.id,
+        companyId: r.company_id,
+        companyName: r.company_name,
+        isActive: Boolean(r.is_active),
+        tokenExpiresAt: r.token_expires_at,
+        createdAt: r.created_at,
+        updatedAt: r.updated_at,
+      })),
+    });
+  } catch (err) {
+    console.error('GET /api/integrations/freee error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * 接続を有効化する。
+ *
+ * 有効な接続は常に1本に保つ。複数あると getValidAccessTokenFreee が
+ * どれを拾うか実質不定になり、領収書の発行先が揺れる。
+ */
+freee.post('/api/integrations/freee/:id/activate', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const now = jstNow();
+
+    const activated = await c.env.DB
+      .prepare('UPDATE freee_accounts SET is_active = 1, updated_at = ? WHERE id = ?')
+      .bind(now, id)
+      .run();
+
+    if (!activated.meta.changes) {
+      return c.json({ success: false, error: 'Connection not found' }, 404);
+    }
+
+    await c.env.DB
+      .prepare('UPDATE freee_accounts SET is_active = 0, updated_at = ? WHERE id != ?')
+      .bind(now, id)
+      .run();
+
+    console.log('[freee] 接続を有効化:', id);
+    return c.json({ success: true, data: null });
+  } catch (err) {
+    console.error('POST /api/integrations/freee/:id/activate error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/** 接続を削除する（身に覚えのない接続の始末用） */
+freee.delete('/api/integrations/freee/:id', async (c) => {
+  try {
+    const id = c.req.param('id');
+    await c.env.DB.prepare('DELETE FROM freee_accounts WHERE id = ?').bind(id).run();
+    console.log('[freee] 接続を削除:', id);
+    return c.json({ success: true, data: null });
+  } catch (err) {
+    console.error('DELETE /api/integrations/freee/:id error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
 

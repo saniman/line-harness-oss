@@ -5,12 +5,14 @@ const mockGetFreeeAuthUrl = vi.hoisted(() => vi.fn())
 const mockExchangeCodeForTokens = vi.hoisted(() => vi.fn())
 const mockCreateOAuthState = vi.hoisted(() => vi.fn())
 const mockVerifyOAuthState = vi.hoisted(() => vi.fn())
+const mockFetchCompanyName = vi.hoisted(() => vi.fn())
 
 vi.mock('../services/freee-oauth.js', () => ({
   getFreeeAuthUrl: mockGetFreeeAuthUrl,
   exchangeCodeForTokens: mockExchangeCodeForTokens,
   createOAuthState: mockCreateOAuthState,
   verifyOAuthState: mockVerifyOAuthState,
+  fetchFreeeCompanyName: mockFetchCompanyName,
 }))
 
 import { freee } from './freee.js'
@@ -65,6 +67,7 @@ beforeEach(() => {
   mockGetFreeeAuthUrl.mockReturnValue('https://accounts.secure.freee.co.jp/public_api/authorize?x=1')
   mockCreateOAuthState.mockResolvedValue('signed-state')
   mockVerifyOAuthState.mockResolvedValue(true)
+  mockFetchCompanyName.mockResolvedValue('WALOVER合同会社')
 })
 
 describe('GET /api/integrations/freee/auth', () => {
@@ -91,11 +94,10 @@ describe('GET /api/integrations/freee/auth', () => {
     expect(res.status).toBe(500)
   })
 
-  it('redirect=1 ならブラウザをリダイレクトする', async () => {
+  it('redirect=1 でもリダイレクトせず JSON を返す（state オラクル化を防ぐため廃止）', async () => {
     const { app, env } = makeApp()
     const res = await app.request('/api/integrations/freee/auth?redirect=1', {}, env)
-    expect(res.status).toBe(302)
-    expect(res.headers.get('location')).toContain('accounts.secure.freee.co.jp')
+    expect(res.status).toBe(200)
   })
 })
 
@@ -289,6 +291,27 @@ describe('GET /api/integrations/freee/callback', () => {
     expect(db.prepare).not.toHaveBeenCalled()
   })
 
+  it('事業所名を取得して保存する（管理画面で見分けるため）', async () => {
+    mockExchangeCodeForTokens.mockResolvedValue(TOKENS)
+    const { app, env } = makeApp()
+
+    await app.request('/api/integrations/freee/callback?code=the-code&state=signed-state', {}, env)
+
+    expect(mockFetchCompanyName).toHaveBeenCalledWith('at-1', 1234567)
+    expect(allBound()).toContain('WALOVER合同会社')
+  })
+
+  it('事業所名が取れなくても連携は成功させる（ベストエフォート）', async () => {
+    mockExchangeCodeForTokens.mockResolvedValue(TOKENS)
+    mockFetchCompanyName.mockResolvedValue(null)
+    const { app, env } = makeApp()
+
+    const res = await app.request('/api/integrations/freee/callback?code=the-code&state=signed-state', {}, env)
+
+    expect(res.status).toBe(200)
+    expect(allSql()).toContain('INSERT INTO freee_accounts')
+  })
+
   it('company_id が無いときのエラー画面は原因を名指しする', async () => {
     mockExchangeCodeForTokens.mockResolvedValue({ ...TOKENS, company_id: undefined })
     const { app, env } = makeApp()
@@ -348,5 +371,123 @@ describe('GET /api/integrations/freee/callback', () => {
     const html = await res.text()
     expect(html).toContain('やり直')
     expect(html).not.toContain('時間をおいて')
+  })
+})
+
+// ── 接続管理 API（#44）────────────────────────────────────────────────────
+
+describe('GET /api/integrations/freee（接続一覧）', () => {
+  function makeListApp(rows: unknown[]) {
+    const stmt = {
+      bind: vi.fn().mockReturnThis(),
+      run: vi.fn().mockResolvedValue({ meta: { changes: 1 } }),
+      first: vi.fn().mockResolvedValue(null),
+      all: vi.fn().mockResolvedValue({ results: rows }),
+    }
+    const db = { prepare: vi.fn().mockReturnValue(stmt) } as unknown as D1Database
+    const app = new Hono<{ Bindings: Record<string, unknown> }>()
+    app.route('/', freee)
+    return { app, env: { DB: db }, stmt, db }
+  }
+
+  const ROW = {
+    id: 'conn-1', company_id: 1234567, company_name: 'テスト事業所',
+    is_active: 0, token_expires_at: '2026-09-05T18:00:00.000+09:00',
+    created_at: '2026-09-05T09:00:00.000+09:00', updated_at: '2026-09-05T09:00:00.000+09:00',
+  }
+
+  it('接続一覧を返す', async () => {
+    const { app, env } = makeListApp([ROW])
+    const res = await app.request('/api/integrations/freee', {}, env)
+    expect(res.status).toBe(200)
+    const body = await res.json() as { success: boolean; data: unknown[] }
+    expect(body.success).toBe(true)
+    expect(body.data).toHaveLength(1)
+  })
+
+  it('【重要】トークンを一覧に含めない', async () => {
+    // 管理画面に出す＝ブラウザに渡る。トークンが漏れると連携を乗っ取られる。
+    const { app, env } = makeListApp([{ ...ROW, access_token: 'at-secret', refresh_token: 'rt-secret' }])
+    const res = await app.request('/api/integrations/freee', {}, env)
+    const text = await res.text()
+    expect(text).not.toContain('at-secret')
+    expect(text).not.toContain('rt-secret')
+  })
+
+  it('SELECT * ではなく列を明示して取得する（列追加でトークンが漏れないように）', async () => {
+    const { app, env, db } = makeListApp([ROW])
+    await app.request('/api/integrations/freee', {}, env)
+    const sql = (db.prepare as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
+    expect(sql).not.toContain('SELECT *')
+    expect(sql).not.toContain('access_token')
+    expect(sql).not.toContain('refresh_token')
+  })
+
+  it('見分けに必要な company_id / company_name を返す', async () => {
+    const { app, env } = makeListApp([ROW])
+    const res = await app.request('/api/integrations/freee', {}, env)
+    const body = await res.json() as { data: Array<Record<string, unknown>> }
+    expect(body.data[0].companyId).toBe(1234567)
+    expect(body.data[0].companyName).toBe('テスト事業所')
+    expect(body.data[0].isActive).toBe(false)
+  })
+})
+
+describe('POST /api/integrations/freee/:id/activate（有効化）', () => {
+  function makeApp2(changes = 1) {
+    const stmts: Array<{ sql: string; bound: unknown[] }> = []
+    const db = {
+      prepare: vi.fn().mockImplementation((sql: string) => ({
+        bind: vi.fn().mockImplementation((...args: unknown[]) => {
+          stmts.push({ sql, bound: args })
+          return {
+            run: vi.fn().mockResolvedValue({ meta: { changes } }),
+            first: vi.fn().mockResolvedValue(null),
+          }
+        }),
+      })),
+    } as unknown as D1Database
+    const app = new Hono<{ Bindings: Record<string, unknown> }>()
+    app.route('/', freee)
+    return { app, env: { DB: db }, stmts }
+  }
+
+  it('指定の接続を有効化する', async () => {
+    const { app, env, stmts } = makeApp2()
+    const res = await app.request('/api/integrations/freee/conn-1/activate', { method: 'POST' }, env)
+    expect(res.status).toBe(200)
+    expect(stmts.some((s) => s.sql.includes('is_active = 1') && s.bound.includes('conn-1'))).toBe(true)
+  })
+
+  it('他の接続は無効化する（有効な接続は常に1本）', async () => {
+    // 複数が有効だと getValidAccessTokenFreee がどれを拾うか不定になる
+    const { app, env, stmts } = makeApp2()
+    await app.request('/api/integrations/freee/conn-1/activate', { method: 'POST' }, env)
+    expect(stmts.some((s) => s.sql.includes('is_active = 0') && s.sql.includes('id != ?'))).toBe(true)
+  })
+
+  it('存在しない接続なら 404', async () => {
+    const { app, env } = makeApp2(0)
+    const res = await app.request('/api/integrations/freee/nope/activate', { method: 'POST' }, env)
+    expect(res.status).toBe(404)
+  })
+})
+
+describe('DELETE /api/integrations/freee/:id（削除）', () => {
+  it('接続を削除する', async () => {
+    const calls: string[] = []
+    const db = {
+      prepare: vi.fn().mockImplementation((sql: string) => {
+        calls.push(sql)
+        return { bind: vi.fn().mockReturnThis(), run: vi.fn().mockResolvedValue({ meta: { changes: 1 } }) }
+      }),
+    } as unknown as D1Database
+    const app = new Hono<{ Bindings: Record<string, unknown> }>()
+    app.route('/', freee)
+
+    const res = await app.request('/api/integrations/freee/conn-1', { method: 'DELETE' }, { DB: db })
+
+    expect(res.status).toBe(200)
+    expect(calls.some((q) => q.includes('DELETE FROM freee_accounts'))).toBe(true)
   })
 })

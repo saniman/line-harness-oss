@@ -21,6 +21,7 @@
  *    出典: https://developer.freee.co.jp/reference/認可コード
  */
 
+import { jstNow, toJstString } from '@line-crm/db';
 import type { Env } from '../index.js';
 
 const FREEE_AUTHORIZE_URL = 'https://accounts.secure.freee.co.jp/public_api/authorize';
@@ -197,4 +198,154 @@ export async function verifyOAuthState(
   const age = Date.now() - decoded.t;
   // 過去10分以内のみ有効。負値（未来の時刻）も弾く。
   return age >= 0 && age <= STATE_TTL_MS;
+}
+
+// ── トークンの自動リフレッシュ ──────────────────────────────────────────────
+
+/**
+ * freee の refresh_token を使って新しいトークン一式を得る。
+ *
+ * ⚠️ freee の refresh_token は **1回限り**。呼ぶたびに新しい refresh_token が
+ *    発行され、渡した古い値は無効になる。返り値の refresh_token を必ず保存すること。
+ */
+export async function refreshFreeeTokens(
+  env: Env['Bindings'],
+  refreshToken: string,
+): Promise<FreeeTokens> {
+  const res = await fetch(FREEE_TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'refresh_token',
+      client_id: env.FREEE_CLIENT_ID,
+      client_secret: env.FREEE_CLIENT_SECRET,
+      refresh_token: refreshToken,
+    }).toString(),
+  });
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    // 失効（90日超過・使い回し）は再認可しか復旧手段がない
+    throw new Error(`freee token refresh failed (${res.status}): ${body}`);
+  }
+
+  const data = await res.json<Partial<FreeeTokens>>();
+  if (typeof data.access_token !== 'string' || typeof data.refresh_token !== 'string') {
+    throw new Error('freee refresh response: access_token / refresh_token がありません');
+  }
+  if (typeof data.expires_in !== 'number' || !Number.isFinite(data.expires_in)) {
+    throw new Error('freee refresh response: expires_in が数値ではありません');
+  }
+  return data as FreeeTokens;
+}
+
+interface FreeeAccountRow {
+  id: string;
+  company_id: number;
+  access_token: string | null;
+  refresh_token: string | null;
+  token_expires_at: string | null;
+}
+
+/** 期限まで5分を切っていたら更新する（未設定も更新扱い） */
+function expiringSoon(expiresAt: string | null): boolean {
+  if (!expiresAt) return true;
+  return new Date(expiresAt).getTime() - Date.now() < 5 * 60 * 1000;
+}
+
+/**
+ * 有効化済みの freee 接続から、使えるアクセストークンを得る。
+ * 期限が近ければリフレッシュし、**新しい refresh_token を保存し直す**。
+ *
+ * @throws FREEE_NOT_CONNECTED  有効化された接続が無い（未連携 or 保留のまま）
+ * @throws REAUTH_REQUIRED      リフレッシュできない（失効等）。再認可が必要
+ */
+export async function getValidAccessTokenFreee(
+  env: Env['Bindings'],
+  db: D1Database,
+): Promise<{ accessToken: string; companyId: number; connectionId: string }> {
+  const conn = await db
+    .prepare('SELECT * FROM freee_accounts WHERE is_active = 1 ORDER BY updated_at DESC LIMIT 1')
+    .first<FreeeAccountRow>();
+
+  if (!conn) throw new Error('FREEE_NOT_CONNECTED');
+
+  if (!expiringSoon(conn.token_expires_at) && conn.access_token) {
+    return { accessToken: conn.access_token, companyId: conn.company_id, connectionId: conn.id };
+  }
+
+  if (!conn.refresh_token) {
+    console.error('[freee] refresh_token が未設定 — 再認可が必要です:', conn.id);
+    throw new Error('REAUTH_REQUIRED');
+  }
+
+  let tokens: FreeeTokens;
+  try {
+    tokens = await refreshFreeeTokens(env, conn.refresh_token);
+  } catch (err) {
+    // 失効したまま is_active=1 だと管理画面で「連携済み」に見えて原因に気づけない。
+    // 保留に戻して、再接続が必要だと分かる状態にする。
+    console.error('[freee] リフレッシュに失敗したため接続を保留に戻します:', conn.id, err);
+    await db
+      .prepare("UPDATE freee_accounts SET is_active = 0, updated_at = ? WHERE id = ?")
+      .bind(jstNow(), conn.id)
+      .run();
+    throw new Error('REAUTH_REQUIRED');
+  }
+
+  // ⚠️ 読んだときの refresh_token を条件にして更新する（compare-and-swap）。
+  //    同時に2本リフレッシュが走ると片方の refresh_token が無効化されるため、
+  //    負けた側が有効なトークンを古い値で上書きしないようにする。
+  const expiresAt = toJstString(new Date(Date.now() + tokens.expires_in * 1000));
+  const result = await db
+    .prepare(
+      `UPDATE freee_accounts
+          SET access_token = ?, refresh_token = ?, token_expires_at = ?, updated_at = ?
+        WHERE id = ? AND refresh_token = ?`,
+    )
+    .bind(tokens.access_token, tokens.refresh_token, expiresAt, jstNow(), conn.id, conn.refresh_token)
+    .run();
+
+  if (!result.meta.changes) {
+    // 競合に負けた。勝った側が保存したトークンを読み直して使う。
+    console.warn('[freee] 同時リフレッシュに負けたため読み直します:', conn.id);
+    const fresh = await db
+      .prepare('SELECT * FROM freee_accounts WHERE id = ?')
+      .bind(conn.id)
+      .first<FreeeAccountRow>();
+    if (!fresh?.access_token) throw new Error('REAUTH_REQUIRED');
+    return { accessToken: fresh.access_token, companyId: fresh.company_id, connectionId: fresh.id };
+  }
+
+  return { accessToken: tokens.access_token, companyId: conn.company_id, connectionId: conn.id };
+}
+
+/**
+ * freee会計の事業所一覧から、指定 company_id の表示名を取得する。
+ *
+ * 管理画面で「自分の事業所」と「第三者の事業所」を見分けるための表示用。
+ * **ベストエフォート**：取得できなくても連携自体は成功させる
+ * （アプリのスコープが会計APIを含まない場合など。その場合は company_id で見分ける）。
+ *
+ * @returns 表示名。取得できなければ null
+ */
+export async function fetchFreeeCompanyName(
+  accessToken: string,
+  companyId: number,
+): Promise<string | null> {
+  try {
+    const res = await fetch('https://api.freee.co.jp/api/1/companies', {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!res.ok) {
+      console.warn(`[freee] 事業所名の取得に失敗 (${res.status}) — company_id で表示します`);
+      return null;
+    }
+    const body = await res.json<{ companies?: Array<{ id?: number; name?: string; display_name?: string }> }>();
+    const hit = body.companies?.find((co) => co.id === companyId);
+    return hit?.display_name ?? hit?.name ?? null;
+  } catch (err) {
+    console.warn('[freee] 事業所名の取得に失敗しました:', err);
+    return null;
+  }
 }
