@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { api, ApiError } from '@/lib/api'
 import type { EventItem, EventBookingItem, FriendWithTags } from '@/lib/api'
 import { getPaymentBadge } from '@/lib/payment-badge'
+import ReceiptSharePanel from '@/components/ReceiptSharePanel'
 import {
   getStatusBadge,
   participantDisplayName,
@@ -59,6 +60,9 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
   // 受領は記録できたが領収書だけ出せなかったケース。エラー（赤）と混ぜると
   // 「受領も失敗した」と誤解され、運営者が現金を二重に受け取りかねない
   const [receiptWarning, setReceiptWarning] = useState('')
+  // ⚠️ 領収書パネルは**同時に1つしか開かない**。一覧に入力欄を並べると、
+  //    クリップボードを持ち回って別の人のリンクを貼る事故が起きる（#47）
+  const [receiptBookingId, setReceiptBookingId] = useState<number | null>(null)
   const [linkingBookingId, setLinkingBookingId] = useState<number | null>(null)
   const [friendQuery, setFriendQuery] = useState('')
   const [friendCandidates, setFriendCandidates] = useState<FriendWithTags[]>([])
@@ -323,6 +327,10 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
   const full = event.participant_count >= event.capacity
   // 決済に至らなかった申込を通常の一覧から外す（Issue #56）
   const { active, dropouts, confirmedCount } = partitionBookings(bookings)
+  // 領収書が発行済み（＝送るべき）件数と、送信済み件数。
+  // 手作業が挟まるので「貼り忘れた人」が必ず出る。一覧でひと目で分かるようにする（#47）
+  const receiptIssuedCount = bookings.filter((b) => b.receipt_url && b.status !== 'cancelled').length
+  const receiptSentCount = bookings.filter((b) => b.receipt_sent_at).length
 
   return (
     <div>
@@ -341,6 +349,14 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
               {/* 全件数だけを出すと定員と混同して「満席では」と誤読される（Issue #56） */}
               <span className="text-xs text-gray-500">
                 確定 {confirmedCount} 名 <span className="text-gray-300">/</span> 全 {bookings.length} 件
+                {receiptIssuedCount > 0 && (
+                  <>
+                    <span className="text-gray-300 mx-1">/</span>
+                    <span className={receiptSentCount < receiptIssuedCount ? 'text-amber-700' : 'text-green-700'}>
+                      🧾 {receiptSentCount}/{receiptIssuedCount} 送信
+                    </span>
+                  </>
+                )}
               </span>
             </div>
 
@@ -448,8 +464,28 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
                       <p className="text-sm text-gray-700 self-center">
                         {b.amount != null ? `¥${b.amount.toLocaleString()}` : '—'}
                       </p>
-                      <p className="text-xs text-gray-400 self-center">{formatJST(b.created_at)}</p>
+                      <div className="self-center">
+                        <p className="text-xs text-gray-400">{formatJST(b.created_at)}</p>
+                        {/* 領収書が発行済みの予約にだけ出す。未発行なら共有リンクも存在しない */}
+                        {b.receipt_url && (
+                          <button
+                            onClick={() => setReceiptBookingId(receiptBookingId === b.id ? null : b.id)}
+                            className="mt-1 text-xs text-blue-600 hover:underline"
+                          >
+                            {b.receipt_sent_at ? '🧾 送信済み' : b.receipt_share_url ? '🧾 未送信' : '🧾 領収書を送る'}
+                          </button>
+                        )}
+                      </div>
                     </div>
+
+                    {receiptBookingId === b.id && (
+                      <ReceiptSharePanel
+                        eventId={eventId}
+                        booking={b}
+                        displayName={participantDisplayName(b)}
+                        onDone={load}
+                      />
+                    )}
 
                     {/* 手動紐付け: 決済情報から LINE ユーザーを特定できない申込（無料/現金）用 */}
                     {linkingBookingId === b.id && (

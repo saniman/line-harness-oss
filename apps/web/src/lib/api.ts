@@ -638,6 +638,30 @@ export const api = {
         `/api/events/${eventId}/bookings/${bookingId}/cash-received`,
         { method: 'POST' },
       ),
+
+    /**
+     * freee の共有リンクを登録する（#47）。
+     * 形式の検証・重複の検出・freee との照合はすべてサーバー側で行う。
+     */
+    saveReceiptShare: (eventId: number, bookingId: number, url: string) =>
+      fetchApi<ApiResponse<{ verified: boolean }>>(
+        `/api/events/${eventId}/bookings/${bookingId}/receipt-share`,
+        { method: 'PUT', body: JSON.stringify({ url }) },
+      ),
+
+    /** 登録済みの共有リンクを LINE で参加者に送る */
+    sendReceipt: (eventId: number, bookingId: number) =>
+      fetchApi<ApiResponse<Record<string, never>>>(
+        `/api/events/${eventId}/bookings/${bookingId}/send-receipt`,
+        { method: 'POST' },
+      ),
+
+    /** 誤配に気づいたときに共有リンクを無効化する */
+    revokeReceipt: (eventId: number, bookingId: number) =>
+      fetchApi<ApiResponse<Record<string, never>>>(
+        `/api/events/${eventId}/bookings/${bookingId}/revoke-receipt`,
+        { method: 'POST' },
+      ),
   },
   freee: {
     list: () =>
@@ -967,8 +991,25 @@ export type EventBookingItem = {
   cash_received_at: string | null
   /** 領収書の宛名（申込時の任意入力）。null なら name（LINEの表示名）が使われる */
   receipt_name: string | null
-  /** freee が発行した領収書のURL。null = 未発行 */
+  /**
+   * freee が発行した領収書のURL（report_url）。null = 未発行。
+   * ⚠️ **ログイン必須なので運営者にしか見せない**。参加者に送るのは receipt_share_url。
+   */
   receipt_url: string | null
+  /** freee が採番した領収書番号（例: REC-0000000008） */
+  receipt_number: string | null
+  /** 運営者が freee で作って貼った共有リンク。**参加者に見せる実体** */
+  receipt_share_url: string | null
+  /** 共有リンクの閲覧期限（freee の既定は60日） */
+  receipt_share_expires_at: string | null
+  /** freee と照合できた日時。null = 未照合（目視での確認が要る） */
+  receipt_share_verified_at: string | null
+  /** 誤配に気づいて無効化した日時 */
+  receipt_share_revoked_at: string | null
+  /** 参加者が最初に開いた日時 */
+  receipt_share_opened_at: string | null
+  /** LINE で送信した日時。null = 未送信 */
+  receipt_sent_at: string | null
 }
 
 export type BackfillFriendsResult = {

@@ -1,0 +1,214 @@
+/**
+ * 領収書の共有リンクを LINE で参加者に送る（Issue #47）。
+ *
+ * ## ⚠️ 送信先の取り違えは「誤配」では済まない
+ *
+ * 領収書には**宛名と金額**が載る。送信先を間違えると個人情報の漏洩になり、
+ * しかも **LINE の送信は取り消せない**。だから宛先は当該予約の friend_id から
+ * 厳密に引き、少しでも条件が揃わなければ送らない。
+ *
+ * ## 文面は Flex にしない
+ *
+ * カード型は「システムからの通知」に見える。領収書の送付は本来「人が送るもの」なので、
+ * プレーンテキストで事務連絡として自然に読める形にする。
+ */
+
+import { formatJST } from '../utils/format-jst.js';
+import { buildShareUrl } from '../utils/receipt-share-url.js';
+import { resolveReceiptName } from './events.js';
+
+/**
+ * LINE 送信に使う最小のインターフェース。
+ * `.claude/rules/api-coding.md` の「ミニマルな構造的インターフェース」に従う。
+ */
+export interface ReceiptLineClient {
+  pushMessage(to: string, messages: { type: 'text'; text: string }[]): Promise<unknown>;
+}
+
+export interface ReceiptMessageParams {
+  eventTitle: string | null;
+  payeeName: string;
+  shareUrl: string;
+  /** 閲覧期限（DB の UTC 文字列）。null なら期限の案内を出さない */
+  expiresAt: string | null;
+}
+
+/** 期限を「11月5日」の形にする。ISO をそのまま出すと読めない */
+function formatExpiry(expiresAt: string): string | null {
+  // formatJST は「MM/DD(曜) HH:mm」を返す。日付部分だけ取り出して和文にする
+  const jst = formatJST(expiresAt);
+  const hit = /^(\d{2})\/(\d{2})/.exec(jst);
+  if (!hit) return null;
+  return `${Number(hit[1])}月${Number(hit[2])}日`;
+}
+
+/**
+ * 参加者に送る本文を組み立てる。
+ *
+ * ⚠️ 本文に出すのは**受信者自身の宛名だけ**。他の参加者の情報は絶対に入れない。
+ *    宛名を書いておくと、万一取り違えても開いた PDF との食い違いに本人が気づける（第3.5層）。
+ */
+export function buildReceiptMessage(params: ReceiptMessageParams): string {
+  const title = params.eventTitle?.trim();
+  const greeting = title
+    ? `${title}へのご参加ありがとうございました。`
+    : 'ご参加ありがとうございました。';
+
+  const lines = [
+    greeting,
+    '領収書を送付いたしますので、ご確認のほどよろしくお願いいたします🙇',
+    '',
+    `宛名：${params.payeeName}`,
+    params.shareUrl,
+  ];
+
+  const expiry = params.expiresAt ? formatExpiry(params.expiresAt) : null;
+  if (expiry) {
+    lines.push('', `※${expiry}を過ぎるとダウンロードできなくなります`);
+  }
+
+  return lines.join('\n');
+}
+
+export type SendReceiptCode =
+  | 'not_found'
+  | 'event_mismatch'
+  | 'no_share_url'
+  | 'expired'
+  | 'revoked'
+  | 'already_sent'
+  | 'no_friend'
+  | 'no_payee'
+  | 'send_failed';
+
+export interface SendReceiptResult {
+  ok: boolean;
+  code?: SendReceiptCode;
+  error?: string;
+}
+
+interface BookingRow {
+  id: number;
+  event_id: number;
+  friend_id: string | null;
+  name: string;
+  receipt_name: string | null;
+  status: string;
+  receipt_share_url: string | null;
+  receipt_share_token: string | null;
+  receipt_share_expires_at: string | null;
+  receipt_share_revoked_at: string | null;
+  receipt_sent_at: string | null;
+}
+
+/** 期限切れか。解釈できない値は「切れている」側に倒す（黙って送らない） */
+function isExpired(expiresAt: string | null): boolean {
+  if (!expiresAt) return false;
+  const at = new Date(`${expiresAt.replace(' ', 'T')}Z`).getTime();
+  if (Number.isNaN(at)) return true;
+  return at <= Date.now();
+}
+
+export async function sendReceiptToParticipant(
+  db: D1Database,
+  line: ReceiptLineClient,
+  workerBaseUrl: string,
+  eventId: number,
+  bookingId: number,
+): Promise<SendReceiptResult> {
+  const booking = await db
+    .prepare(
+      `SELECT b.id, b.event_id, b.friend_id, b.name, b.receipt_name, b.status,
+              b.receipt_share_url, b.receipt_share_token, b.receipt_share_expires_at,
+              b.receipt_share_revoked_at, b.receipt_sent_at,
+              f.display_name AS friend_display_name
+         FROM event_bookings b
+         LEFT JOIN friends f ON f.id = b.friend_id
+        WHERE b.id = ?`,
+    )
+    .bind(bookingId)
+    .first<BookingRow & { friend_display_name: string | null }>();
+
+  if (!booking) return { ok: false, code: 'not_found', error: '予約が見つかりませんでした。' };
+  // ⚠️ 別イベントの予約に送れてしまうと、古いタブから押したときに取り違える
+  if (booking.event_id !== eventId) {
+    return { ok: false, code: 'event_mismatch', error: 'イベントが一致しません。' };
+  }
+  if (!booking.receipt_share_url || !booking.receipt_share_token) {
+    return { ok: false, code: 'no_share_url', error: '共有リンクがまだ登録されていません。' };
+  }
+  if (booking.receipt_share_revoked_at) {
+    return { ok: false, code: 'revoked', error: 'このリンクは無効化されています。' };
+  }
+  // 届いても開けないものを送らない
+  if (isExpired(booking.receipt_share_expires_at)) {
+    return {
+      ok: false,
+      code: 'expired',
+      error: '共有リンクの期限が切れています。freee で作り直して貼り直してください。',
+    };
+  }
+  if (booking.receipt_sent_at) {
+    return { ok: false, code: 'already_sent', error: '既に送信済みです。' };
+  }
+  // ⚠️ 宛先を特定できないまま送らない。無言で握りつぶさず理由を返す
+  if (!booking.friend_id) {
+    return {
+      ok: false,
+      code: 'no_friend',
+      error: 'LINE の友だちが紐づいていないため送信できません。先に友だちを紐付けてください。',
+    };
+  }
+
+  const payeeName = resolveReceiptName(booking);
+  if (!payeeName) {
+    return { ok: false, code: 'no_payee', error: '宛名を決められませんでした。' };
+  }
+
+  const friend = await db
+    .prepare('SELECT line_user_id FROM friends WHERE id = ?')
+    .bind(booking.friend_id)
+    .first<{ line_user_id: string }>();
+
+  if (!friend?.line_user_id) {
+    return {
+      ok: false,
+      code: 'no_friend',
+      error: 'LINE の友だちが見つかりませんでした。',
+    };
+  }
+
+  const event = await db
+    .prepare('SELECT title FROM events WHERE id = ?')
+    .bind(eventId)
+    .first<{ title: string }>();
+
+  const text = buildReceiptMessage({
+    eventTitle: event?.title ?? null,
+    payeeName,
+    // ⚠️ freee の URL を直接送らない。誤配に気づいたときに止められなくなる
+    shareUrl: buildShareUrl(workerBaseUrl, booking.receipt_share_token),
+    expiresAt: booking.receipt_share_expires_at,
+  });
+
+  try {
+    await line.pushMessage(friend.line_user_id, [{ type: 'text', text }]);
+  } catch (err) {
+    // ⚠️ 送信済みにしない。共有リンクも消さない（再送できる状態を保つ）
+    console.error('[receipt] LINE 送信に失敗しました:', bookingId, err);
+    return { ok: false, code: 'send_failed', error: '送信できませんでした。時間をおいて再度お試しください。' };
+  }
+
+  await db
+    .prepare(
+      `UPDATE event_bookings
+          SET receipt_sent_at = datetime('now'), updated_at = datetime('now')
+        WHERE id = ?`,
+    )
+    .bind(bookingId)
+    .run();
+
+  // ⚠️ 共有 URL・トークンをログに出さない（Workers Logs の閲覧権限だけで領収書が開ける）
+  console.log('[receipt] 領収書を送信しました:', bookingId);
+  return { ok: true };
+}

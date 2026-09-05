@@ -53,6 +53,25 @@ export interface EventBookingRow {
   receipt_url: string | null
   /** 領収書を発行した日時。null = 未発行 */
   receipt_issued_at: string | null
+  /** freee が採番した領収書番号（例: REC-0000000008）。共有リンクの照合に使う */
+  receipt_number: string | null
+  /**
+   * 運営者が freee の画面で作って貼り付けた共有リンク。**参加者に見せる実体**。
+   * ⚠️ receipt_url（report_url = ログイン必須・運営者用）とは別物。混ぜないこと。
+   */
+  receipt_share_url: string | null
+  /** 共有リンクの閲覧期限（freee の既定は 60 日） */
+  receipt_share_expires_at: string | null
+  /** freee に問い合わせて領収書番号が一致した日時。null = 未検証 */
+  receipt_share_verified_at: string | null
+  /** 参加者に送る URL のトークン（freee の URL を直接送らないため） */
+  receipt_share_token: string | null
+  /** 誤配に気づいて無効化した日時。以降そのトークンは 410 を返す */
+  receipt_share_revoked_at: string | null
+  /** 参加者が最初にリンクを開いた日時（被害範囲の把握に使う） */
+  receipt_share_opened_at: string | null
+  /** LINE で送信した日時。null = 未送信（二重送信の防止） */
+  receipt_sent_at: string | null
   /**
    * キャンセルの理由。null = 本人都合のキャンセル（返金対象になり得る）。
    * 'checkout_abandoned' = Stripe 決済画面から戻った / 'checkout_expired' = セッション期限切れ。

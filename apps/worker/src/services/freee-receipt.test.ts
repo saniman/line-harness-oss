@@ -106,7 +106,11 @@ function makeDb(opts: DbOptions = {}) {
 
 /** 領収書を1件発行する最小の発行器 */
 function makeIssuer(url = ISSUED_URL): FreeeReceiptIssuer {
-  return { createReceipt: vi.fn().mockResolvedValue({ receiptId: 1, receiptUrl: url }) };
+  return {
+    createReceipt: vi
+      .fn()
+      .mockResolvedValue({ receiptId: 1, receiptNumber: 'REC-0000000008', receiptUrl: url }),
+  };
 }
 
 beforeEach(() => {
@@ -760,5 +764,17 @@ describe('issueReceiptForBooking（発行中の案内）', () => {
 
     expect(res.error).not.toContain('（');
     expect(res.error).not.toContain('）');
+  });
+});
+
+describe('issueReceiptForBooking（領収書番号の保存）', () => {
+  it('【重要】freee の領収書番号を保存する（#47 の照合に必要）', async () => {
+    // 保存し忘れると、共有リンクが本人のものか機械的に照合できなくなる
+    const { db, sqls } = makeDb();
+
+    await issueReceiptForBooking(ENV, db, 1, 5, makeIssuer());
+
+    const sql = sqls.find((q) => q.includes('receipt_url = ?')) ?? '';
+    expect(sql).toContain('receipt_number');
   });
 });

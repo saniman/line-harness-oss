@@ -19,6 +19,8 @@ import {
 } from '../services/events.js';
 import { enrollEventFollowupScenarios, enrollEventParticipants } from '../services/event-followup.js';
 import { issueReceiptForBooking } from '../services/freee-receipt.js';
+import { saveReceiptShareUrl } from '../services/receipt-share.js';
+import { sendReceiptToParticipant } from '../services/receipt-notify.js';
 import type { IssueReceiptResult } from '../services/freee-receipt.js';
 import { resolveEventApplicant } from '../services/event-friend.js';
 import { isApplicationClosed } from '../services/event-deadline.js';
@@ -577,6 +579,108 @@ events.post('/api/events/bookings/:id/link-friend', async (c) => {
  * ⚠️ 認証必須。公開すると第三者が勝手に受領済みにして領収書を発行させられる。
  *    ロールは絞らない（受付での現金受領はスタッフの通常業務のため）。
  */
+/**
+ * 領収書の共有リンクを登録する（Issue #47）。
+ *
+ * ⚠️ **認証必須**。スキップリストに入れてはいけない。
+ *    公開すると、第三者が任意の参加者に任意の URL を仕込めるようになる。
+ */
+events.put('/api/events/:id/bookings/:bookingId/receipt-share', async (c) => {
+  try {
+    const eventId = Number(c.req.param('id'));
+    const bookingId = Number(c.req.param('bookingId'));
+    if (!Number.isInteger(eventId) || !Number.isInteger(bookingId)) {
+      return c.json({ success: false, error: 'Invalid id' }, 400);
+    }
+
+    const body = await c.req.json<{ url?: unknown }>().catch(() => ({} as { url?: unknown }));
+    if (typeof body.url !== 'string') {
+      return c.json({ success: false, error: 'url が必要です', code: 'invalid_url' }, 400);
+    }
+
+    const result = await saveReceiptShareUrl(c.env.DB, eventId, bookingId, body.url);
+    if (!result.ok) {
+      // 文言ではなく code で分岐する（文言を直した瞬間にステータスが変わる壊れ方を防ぐ）
+      const status = result.code === 'not_found' ? 404
+        : result.code === 'duplicate' ? 409
+        : 400;
+      return c.json({ success: false, error: result.error, code: result.code }, status);
+    }
+
+    // ⚠️ 共有 URL・トークンをログに出さない
+    console.log('[receipt] 共有リンクを登録:', bookingId, result.verified ? '(照合済み)' : '(未照合)');
+    return c.json({ success: true, data: { verified: result.verified } });
+  } catch (err) {
+    console.error('PUT /api/events/:id/bookings/:bookingId/receipt-share error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * 登録済みの共有リンクを LINE で参加者に送る（Issue #47）。
+ *
+ * ⚠️ **認証必須**。公開すると第三者が任意の参加者へ送信を起こせる。
+ */
+events.post('/api/events/:id/bookings/:bookingId/send-receipt', async (c) => {
+  try {
+    const eventId = Number(c.req.param('id'));
+    const bookingId = Number(c.req.param('bookingId'));
+    if (!Number.isInteger(eventId) || !Number.isInteger(bookingId)) {
+      return c.json({ success: false, error: 'Invalid id' }, 400);
+    }
+
+    const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
+    const result = await sendReceiptToParticipant(
+      c.env.DB, lineClient, c.env.WORKER_URL, eventId, bookingId,
+    );
+
+    if (!result.ok) {
+      const status = result.code === 'not_found' ? 404
+        : result.code === 'already_sent' ? 409
+        : result.code === 'send_failed' ? 502
+        : 400;
+      return c.json({ success: false, error: result.error, code: result.code }, status);
+    }
+
+    return c.json({ success: true });
+  } catch (err) {
+    console.error('POST /api/events/:id/bookings/:bookingId/send-receipt error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * 誤配に気づいたときに共有リンクを無効化する（Issue #47 第2層）。
+ *
+ * ⚠️ **認証必須**。ここが公開されると、第三者が正常な領収書を止められる。
+ */
+events.post('/api/events/:id/bookings/:bookingId/revoke-receipt', async (c) => {
+  try {
+    const eventId = Number(c.req.param('id'));
+    const bookingId = Number(c.req.param('bookingId'));
+    if (!Number.isInteger(eventId) || !Number.isInteger(bookingId)) {
+      return c.json({ success: false, error: 'Invalid id' }, 400);
+    }
+
+    const revoked = await c.env.DB.prepare(
+      `UPDATE event_bookings
+          SET receipt_share_revoked_at = datetime('now'), updated_at = datetime('now')
+        WHERE id = ? AND event_id = ? AND receipt_share_token IS NOT NULL
+      RETURNING id`,
+    ).bind(bookingId, eventId).first<{ id: number }>();
+
+    if (!revoked) {
+      return c.json({ success: false, error: '対象が見つかりませんでした。' }, 404);
+    }
+
+    console.warn('[receipt] 共有リンクを無効化しました:', bookingId);
+    return c.json({ success: true });
+  } catch (err) {
+    console.error('POST /api/events/:id/bookings/:bookingId/revoke-receipt error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
 events.post('/api/events/:id/bookings/:bookingId/cash-received', async (c) => {
   try {
     const eventId = Number(c.req.param('id'));

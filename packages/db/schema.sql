@@ -718,6 +718,25 @@ CREATE TABLE IF NOT EXISTS event_bookings (
   -- キャンセルの理由。NULL = 本人都合のキャンセル
   -- 'checkout_abandoned' = Stripe 決済画面から戻った / 'checkout_expired' = セッション期限切れ
   cancel_reason TEXT,
+  -- freee が採番した領収書番号（例: REC-0000000008）。
+  -- 貼られた共有リンクが「その予約の領収書か」を照合するのに使う（#47 取り違え対策）
+  receipt_number TEXT,
+  -- 運営者が freee の画面で作って貼り付けた共有リンク。**参加者に見せる実体**。
+  -- ⚠️ receipt_url（report_url = ログイン必須・運営者用）とは別物。混ぜると
+  --    ログインを求められる URL を参加者に送る事故になる
+  receipt_share_url TEXT,
+  -- 共有リンクの閲覧期限（freee の既定は 60 日）
+  receipt_share_expires_at TEXT,
+  -- freee に問い合わせて領収書番号が一致した日時。NULL = 未検証
+  receipt_share_verified_at TEXT,
+  -- 参加者に送る URL のトークン（freee の URL を直接送らず、無効化できるようにする）
+  receipt_share_token TEXT,
+  -- 誤配に気づいて無効化した日時。以降そのトークンは 410 を返す
+  receipt_share_revoked_at TEXT,
+  -- 参加者が最初にリンクを開いた日時（被害範囲の把握に使う）
+  receipt_share_opened_at TEXT,
+  -- LINE で送信した日時。NULL = 未送信（二重送信の防止）
+  receipt_sent_at TEXT,
   -- 領収書の宛名（任意入力）。NULL のときは name（LINEの表示名）にフォールバックする。
   -- ⚠️ この列は ALTER TABLE ADD COLUMN で追加したため、実 DB では物理的に**末尾**
   --    （created_at / updated_at より後ろ）にある。このファイルの並びとは一致しない。
@@ -731,6 +750,13 @@ CREATE TABLE IF NOT EXISTS event_bookings (
 
 CREATE INDEX IF NOT EXISTS idx_event_bookings_event_id ON event_bookings(event_id);
 CREATE INDEX IF NOT EXISTS idx_event_bookings_status ON event_bookings(status);
+-- ⚠️ 取り違え対策の第1層（#47）。同じ共有リンクを2人に登録できないようにする。
+--    「A のリンクをコピー → A に貼る → B でコピーし直すのを忘れて同じものを貼る」を DB で止める。
+--    イベント単位ではなく全体で一意（過去イベントのリンクも弾く）。
+CREATE UNIQUE INDEX IF NOT EXISTS idx_event_bookings_receipt_share_url
+  ON event_bookings (receipt_share_url) WHERE receipt_share_url IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_event_bookings_receipt_share_token
+  ON event_bookings (receipt_share_token) WHERE receipt_share_token IS NOT NULL;
 
 -- ============================================================
 -- Salon booking (menus / staff / shifts / bookings)

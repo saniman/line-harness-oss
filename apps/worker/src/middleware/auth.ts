@@ -38,7 +38,11 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
     path === '/api/events/public' ||                              // Public: LIFF event list
     path.match(/^\/api\/events\/\d+\/join$/) !== null ||          // Public: LIFF event join
     path.match(/^\/api\/events\/\d+\/checkout-session$/) !== null || // Public: LIFF Stripe checkout
-    path.match(/^\/api\/events\/bookings\/\d+\/cancel$/) !== null    // Public: LIFF event cancel
+    path.match(/^\/api\/events\/bookings\/\d+\/cancel$/) !== null ||  // Public: LIFF event cancel
+    // 参加者が LINE から領収書を開く導線（#47）。参加者は管理画面のトークンを持たないので公開。
+    // URL を知っている＝本人、という capability URL として扱う（推測不能なトークン・noindex）。
+    // ⚠️ 貼付・送信・無効化の API は**公開しない**。公開すると第三者が任意の参加者へ送信を起こせる。
+    path.match(/^\/receipt\/[^/]+$/) !== null
   ) {
     return next();
   }
