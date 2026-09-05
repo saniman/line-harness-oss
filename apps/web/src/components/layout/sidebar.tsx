@@ -253,6 +253,8 @@ export default function Sidebar() {
             )}
             {section.items.filter((item) => {
               if (item.href === '/staff' && staffRole !== 'owner') return false
+              // freee 連携は閲覧・操作とも owner 限定（routes/freee.ts の requireRole と揃える）
+              if (item.href === '/integrations/freee' && staffRole !== 'owner') return false
               if (item.href === '/accounts' && staffRole === 'staff') return false
               return true
             }).map((item) => {

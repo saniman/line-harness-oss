@@ -196,7 +196,9 @@ freee.get('/api/integrations/freee/callback', async (c) => {
  * ⚠️ トークン列は絶対に返さない。管理画面に出す＝ブラウザに渡るため、
  *    漏れると連携を乗っ取られる。列追加で事故らないよう `SELECT *` を使わず明示する。
  */
-freee.get('/api/integrations/freee', async (c) => {
+// 操作（有効化・削除）が owner 限定なので、閲覧も揃える。
+// 事業所名/IDは「どの会社と連携しているか」という経営情報でもある。
+freee.get('/api/integrations/freee', requireRole('owner'), async (c) => {
   try {
     const rows = await c.env.DB.prepare(
       `SELECT id, company_id, company_name, is_active, token_expires_at, created_at, updated_at

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { api, type FreeeConnection } from '@/lib/api'
-import { buildConnectionLabel, sanitizeCompanyName } from '@/lib/freee-label'
+import { buildConnectionLabel, sanitizeCompanyName, needsReauth } from '@/lib/freee-label'
 import { formatJSTWithYear } from '@/lib/format-jst'
 import Header from '@/components/layout/header'
 
@@ -21,9 +21,18 @@ export default function FreeePage() {
   const [connecting, setConnecting] = useState(false)
   const [busyId, setBusyId] = useState('')
 
-  const load = useCallback(async () => {
+  /**
+   * 一覧を読み直す。
+   *
+   * ⚠️ `clearError: false` を渡せる形にしてあるのは、呼び出し側の catch で立てた
+   *    エラーをここが消してしまうため。`setError(...)` と `setError('')` の間に
+   *    await が挟まらないと React の自動バッチングで同じコミットに合流し、
+   *    後勝ちで空文字が採用されてエラーが一度も表示されない。
+   */
+  const load = useCallback(async (opts: { clearError?: boolean } = {}) => {
+    const { clearError = true } = opts
     setLoading(true)
-    setError('')
+    if (clearError) setError('')
     try {
       const res = await api.freee.list()
       if (res.success) {
@@ -76,7 +85,8 @@ export default function FreeePage() {
       // 403（権限不足）や 404（既に消えている）も例外で来る
       setError('有効化できませんでした。権限があるか、接続が残っているかご確認ください。')
     }
-    await load()
+    // 一覧は最新に合わせ直すが、上で立てたエラーは消さない
+    await load({ clearError: false })
     setBusyId('')
   }
 
@@ -96,8 +106,8 @@ export default function FreeePage() {
       // ——「古いタブ」対策として 404 を返した意味が無くなる。
       setError('削除できませんでした。最新の状態を読み込みます。')
     }
-    // 成否にかかわらず、サーバーの状態に合わせ直す
-    await load()
+    // 成否にかかわらずサーバーの状態に合わせ直す（エラーは消さない）
+    await load({ clearError: false })
     setBusyId('')
   }
 
@@ -160,7 +170,12 @@ export default function FreeePage() {
                   <tr key={conn.id} className="border-t border-gray-100">
                     <td className="px-4 py-3">
                       {conn.isActive ? (
-                        <span className="px-2 py-1 rounded text-xs bg-green-100 text-green-700">✅ 有効</span>
+                        needsReauth(conn.tokenExpiresAt) ? (
+                          // 失効しても is_active は落とさない設計なので、期限で判断する
+                          <span className="px-2 py-1 rounded text-xs bg-red-100 text-red-700">⚠️ 要再連携</span>
+                        ) : (
+                          <span className="px-2 py-1 rounded text-xs bg-green-100 text-green-700">✅ 有効</span>
+                        )
                       ) : (
                         <span className="px-2 py-1 rounded text-xs bg-amber-100 text-amber-700">⏸ 保留</span>
                       )}
@@ -200,8 +215,9 @@ export default function FreeePage() {
         )}
 
         <p className="mt-4 text-xs text-gray-500">
-          freee のリフレッシュトークンは有効期限が 90 日です。長期間使わないと失効するため、
-          その場合は「freee と連携する」からやり直してください。
+          freee のリフレッシュトークンは有効期限が 90 日です。長期間使わないと失効します。
+          <strong>⚠️ 要再連携</strong> と出ている接続は、上の「freee と連携する」からやり直してください
+          （有効／保留の設定はそのまま保たれます）。
         </p>
       </div>
     </div>

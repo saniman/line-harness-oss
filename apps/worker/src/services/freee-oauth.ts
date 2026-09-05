@@ -201,6 +201,19 @@ export async function verifyOAuthState(
 }
 
 // ── トークンの自動リフレッシュ ──────────────────────────────────────────────
+//
+// ⚠️ 設計上の約束：**このモジュールは freee_accounts.is_active を絶対に書かない。**
+//
+//    is_active は「管理者がどの事業所を使うと決めたか」を表す列で、
+//    書き手は管理画面（有効化・無効化・新規は保留で挿入）だけに限る。
+//
+//    かつてリフレッシュ処理からも書いていたが、書き手が競合して2つのレースを生んだ:
+//      1. 同時リフレッシュに負けた側が、勝った側の接続を保留に落とす
+//      2. 飛行中のリフレッシュが、管理者の切り替え（A→B）を巻き戻す
+//    片方を塞ぐともう片方が復活する構造だったため、書き手を1つに減らして解消した。
+//
+//    失効の可視化は is_active ではなく **token_expires_at が過去であること**で行う
+//    （管理画面が「⚠️ 要再連携」を表示する）。
 
 /**
  * リフレッシュの失敗種別。
@@ -260,8 +273,13 @@ export async function refreshFreeeTokens(
   }
 
   const data = await res.json<Partial<FreeeTokens>>();
-  if (typeof data.access_token !== 'string' || typeof data.refresh_token !== 'string') {
-    throw new Error('freee refresh response: access_token / refresh_token がありません');
+  // 空文字も弾く。通してしまうと CAS UPDATE が成立し、
+  // 有効な refresh_token を空で上書きして再認可以外に復旧手段が無くなる。
+  if (!data.access_token || typeof data.access_token !== 'string') {
+    throw new Error('freee refresh response: access_token がありません');
+  }
+  if (!data.refresh_token || typeof data.refresh_token !== 'string') {
+    throw new Error('freee refresh response: refresh_token がありません');
   }
   if (typeof data.expires_in !== 'number' || !Number.isFinite(data.expires_in)) {
     throw new Error('freee refresh response: expires_in が数値ではありません');
@@ -330,31 +348,21 @@ export async function getValidAccessTokenFreee(
 
     // ⚠️ 恒久的失敗に見えても「同時実行に負けただけ」の可能性がある。
     //    freee は refresh_token を回転させるため、負けた側は必ず invalid_grant になる。
-    //    ここで無条件に保留へ落とすと、勝った側が正常にリフレッシュしたばかりの接続を
-    //    道連れにしてしまう（同時アクセス2本で連携が止まる）。
-    //    そこで保留化にも CAS ガードを付け、不一致なら勝者のトークンを使う。
-    const demoted = await db
-      .prepare('UPDATE freee_accounts SET is_active = 0, updated_at = ? WHERE id = ? AND refresh_token = ?')
-      .bind(jstNow(), conn.id, conn.refresh_token)
-      .run();
-
-    if (demoted.meta.changes) {
-      console.error('[freee] リフレッシュに失敗したため接続を保留に戻しました:', conn.id, err);
-      throw new Error('REAUTH_REQUIRED');
-    }
-
-    // CAS 不一致＝別のリクエストが先に refresh_token を回した。
-    // ここは保留化していないので、そう記録する（していないことを「した」と書かない）。
+    //    refresh_token が読んだ値から変わっていれば、誰かが先に回した＝勝者がいる。
     const fresh = await db
       .prepare('SELECT * FROM freee_accounts WHERE id = ?')
       .bind(conn.id)
       .first<FreeeAccountRow>();
-    if (fresh?.access_token && fresh.is_active) {
+
+    const someoneElseRotated = !!fresh && fresh.refresh_token !== conn.refresh_token;
+    if (someoneElseRotated && fresh.access_token && fresh.is_active) {
       console.warn('[freee] 同時リフレッシュに負けたため勝った側のトークンを使います:', conn.id);
       return { accessToken: fresh.access_token, companyId: fresh.company_id, connectionId: fresh.id };
     }
 
-    console.error('[freee] リフレッシュに失敗し、接続も有効ではありません（保留化はしていません）:', conn.id, err);
+    // ⚠️ ここで is_active を落とさない（上部コメント参照）。
+    //    失効は token_expires_at が過去のままであることで管理画面に表れる。
+    console.error('[freee] リフレッシュに失敗しました。再認可が必要です:', conn.id, err);
     throw new Error('REAUTH_REQUIRED');
   }
 
@@ -364,13 +372,10 @@ export async function getValidAccessTokenFreee(
   const expiresAt = toJstString(new Date(Date.now() + tokens.expires_in * 1000));
   const result = await db
     .prepare(
-      // ⚠️ is_active = 1 を毎回宣言する。
-      //    負けた側のエラー応答が、勝った側の書き込みより先に届くことがある。
-      //    そのとき負けた側の CAS はまだ一致してしまい is_active = 0 に落ちるため、
-      //    ここで宣言し直さないと「有効なトークンを持ったまま保留で固まる」。
+      // ⚠️ is_active は書かない（このモジュールは一切触らない。上部コメント参照）。
+      //    書くと、飛行中のリフレッシュが管理者の切り替えを巻き戻す。
       `UPDATE freee_accounts
-          SET access_token = ?, refresh_token = ?, token_expires_at = ?,
-              is_active = 1, updated_at = ?
+          SET access_token = ?, refresh_token = ?, token_expires_at = ?, updated_at = ?
         WHERE id = ? AND refresh_token = ?`,
     )
     .bind(tokens.access_token, tokens.refresh_token, expiresAt, jstNow(), conn.id, conn.refresh_token)

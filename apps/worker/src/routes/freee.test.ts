@@ -438,6 +438,17 @@ describe('GET /api/integrations/freee（接続一覧）', () => {
     expect(sql).not.toContain('refresh_token')
   })
 
+  it('staff 権限では一覧を閲覧できない（操作が owner 限定なので揃える）', async () => {
+    const { env, db } = makeListApp([ROW])
+    const staffApp = makeAppWithRole('staff')
+
+    const res = await staffApp.request('/api/integrations/freee', {}, env)
+
+    expect(res.status).toBe(403)
+    // 認可で弾かれるので DB にも触れない
+    expect(db.prepare).not.toHaveBeenCalled()
+  })
+
   it('見分けに必要な company_id / company_name を返す', async () => {
     const { app, env } = makeListApp([ROW])
     const res = await app.request('/api/integrations/freee', {}, env)

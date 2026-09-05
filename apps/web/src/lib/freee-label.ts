@@ -22,11 +22,19 @@ const MAX_NAME_LENGTH = 40
 function isControlChar(ch: string): boolean {
   const code = ch.codePointAt(0) ?? 0
   return (
-    code < 0x20 ||             // C0（\n \t \r 等）
-    code === 0x7f ||           // DEL
-    (code >= 0x80 && code <= 0x9f) || // C1
-    code === 0x2028 ||         // LINE SEPARATOR
-    code === 0x2029            // PARAGRAPH SEPARATOR
+    code < 0x20 ||                      // C0（改行・タブ等）
+    code === 0x7f ||                    // DEL
+    (code >= 0x80 && code <= 0x9f) ||   // C1
+    // ゼロ幅（ZWSP/ZWNJ/ZWJ）と BIDI マーク（LRM/RLM）。
+    // 見えない文字で「見た目が同じ別名」を作られる。
+    (code >= 0x200b && code <= 0x200f) ||
+    // BIDI 埋め込み・オーバーライド（LRE/RLE/PDF/LRO/RLO）。
+    // 特に RLO は後続の描画順を反転させ、併記した事業所IDを別の数字に見せかけられる。
+    (code >= 0x202a && code <= 0x202e) ||
+    (code >= 0x2066 && code <= 0x2069) || // BIDI アイソレート
+    code === 0xfeff ||                  // BOM / ZWNBSP
+    code === 0x2028 ||                  // LINE SEPARATOR
+    code === 0x2029                     // PARAGRAPH SEPARATOR
   )
 }
 
@@ -42,9 +50,26 @@ export function sanitizeCompanyName(name: string | null): string | null {
   const collapsed = flattened.replace(/\s+/g, ' ').trim()
   if (!collapsed) return null
 
-  return collapsed.length > MAX_NAME_LENGTH
-    ? `${collapsed.slice(0, MAX_NAME_LENGTH)}…`
+  // slice は UTF-16 コードユニット単位なので、絵文字や補助漢字の途中で切ると
+  // サロゲートが片割れだけ残って壊れ字（U+FFFD）になる。コードポイントで切る。
+  const chars = Array.from(collapsed)
+  return chars.length > MAX_NAME_LENGTH
+    ? `${chars.slice(0, MAX_NAME_LENGTH).join('')}…`
     : collapsed
+}
+
+/**
+ * トークンの期限が切れているか（＝再連携が必要か）。
+ *
+ * 失効を is_active では表さない設計にしたため（services/freee-oauth.ts 参照）、
+ * 管理画面はこの判定で「⚠️ 要再連携」を出す。
+ * 解釈できない値は「切れている」側に倒す（黙って正常に見せない）。
+ */
+export function needsReauth(tokenExpiresAt: string | null, now: Date = new Date()): boolean {
+  if (!tokenExpiresAt) return true
+  const at = new Date(tokenExpiresAt).getTime()
+  if (Number.isNaN(at)) return true
+  return at <= now.getTime()
 }
 
 /**

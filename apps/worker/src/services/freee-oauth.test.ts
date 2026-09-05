@@ -400,6 +400,28 @@ describe('getValidAccessTokenFreee', () => {
     expect(updateSql).toContain('token_expires_at');
   });
 
+  it('空文字のトークンが返ったら例外にする（有効な値を空で上書きしない）', async () => {
+    // CAS UPDATE が通ってしまうと、有効な refresh_token が空になり
+    // 再認可以外に復旧手段が無くなる。exchangeCodeForTokens と挙動を揃える。
+    fetchMock.mockResolvedValue(tokenResponse({
+      access_token: '', refresh_token: 'rt-new', expires_in: 21600,
+    }));
+    const { db, sqls } = makeDb(makeStmt(activeConn({ token_expires_at: '2020-01-01T00:00:00.000+09:00' })));
+
+    await expect(getValidAccessTokenFreee(ENV, db)).rejects.toThrow();
+    expect(sqls.some((q) => q.includes('UPDATE freee_accounts'))).toBe(false);
+  });
+
+  it('空文字の refresh_token も弾く', async () => {
+    fetchMock.mockResolvedValue(tokenResponse({
+      access_token: 'at-new', refresh_token: '', expires_in: 21600,
+    }));
+    const { db, sqls } = makeDb(makeStmt(activeConn({ token_expires_at: '2020-01-01T00:00:00.000+09:00' })));
+
+    await expect(getValidAccessTokenFreee(ENV, db)).rejects.toThrow();
+    expect(sqls.some((q) => q.includes('UPDATE freee_accounts'))).toBe(false);
+  });
+
   it('保存する期限は JST(+09:00) にする（文字列比較でずれないため）', async () => {
     fetchMock.mockResolvedValue(tokenResponse({
       access_token: 'at-new', refresh_token: 'rt-new', expires_in: 21600,
@@ -414,11 +436,10 @@ describe('getValidAccessTokenFreee', () => {
     expect(bound.some((v) => typeof v === 'string' && /Z$/.test(v))).toBe(false);
   });
 
-  it('【HIGH】成功時に is_active = 1 を再宣言する（順序が逆でも保留で固まらない）', async () => {
-    // 負けた側のエラー応答が勝った側の書き込みより先に届くと、
-    // 負けた側の CAS がまだ一致してしまい is_active = 0 に落ちる。
-    // そのあと勝った側が新トークンを書いても is_active は 0 のまま固まる。
-    // 成功側で毎回 is_active = 1 を宣言すれば、どちらの順序でも有効に戻る。
+  it('【設計】リフレッシュ成功時に is_active を書き換えない', async () => {
+    // is_active は「管理者の意思」を表す列で、書き手は管理画面だけ。
+    // ここで書くと、飛行中のリフレッシュが管理者の切り替えを巻き戻す
+    // （A のリフレッシュ中に B へ切り替える → A が復活して有効が2本になる）。
     fetchMock.mockResolvedValue(tokenResponse({
       access_token: 'at-new', refresh_token: 'rt-new', expires_in: 21600,
     }));
@@ -427,7 +448,7 @@ describe('getValidAccessTokenFreee', () => {
     await getValidAccessTokenFreee(ENV, db);
 
     const updateSql = sqls.find((q) => q.includes('UPDATE freee_accounts')) ?? '';
-    expect(updateSql).toContain('is_active = 1');
+    expect(updateSql).not.toContain('is_active');
   });
 
   it('古い refresh_token を条件にした UPDATE にする（同時リフレッシュ対策）', async () => {
@@ -477,9 +498,9 @@ describe('getValidAccessTokenFreee', () => {
     expect(result.accessToken).toBe('at-winner');
   });
 
-  it('失効（401）なら接続を保留に戻して REAUTH_REQUIRED を投げる', async () => {
-    // 90日超過や refresh_token の使い回しで失効した場合。
-    // is_active=1 のままだと管理画面で「連携済み」に見えて原因に気づけない。
+  it('失効（invalid_grant）でも is_active は書き換えず REAUTH_REQUIRED を投げる', async () => {
+    // 自動で保留に落とすと、同時リフレッシュの敗者が勝者を巻き添えにする。
+    // 失効の可視化は token_expires_at が過去であることで行う（管理画面が ⚠️ を出す）。
     fetchMock.mockResolvedValue({
       ok: false, status: 401,
       text: async () => '{"error":"invalid_grant"}',
@@ -489,7 +510,9 @@ describe('getValidAccessTokenFreee', () => {
 
     await expect(getValidAccessTokenFreee(ENV, db)).rejects.toThrow('REAUTH_REQUIRED');
 
-    expect(sqls.some((q) => q.includes('is_active = 0'))).toBe(true);
+    // 読み取り（WHERE is_active = 1）は当然あるので、書き込み文だけを見る
+    const writes = sqls.filter((q) => q.includes('UPDATE') || q.includes('INSERT'));
+    expect(writes.some((q) => q.includes('is_active'))).toBe(false);
   });
 
   // ── 一時的な失敗で接続を落とさない（レビュー②）─────────────────────────
@@ -536,14 +559,17 @@ describe('getValidAccessTokenFreee', () => {
     expect(sqls.some((q) => q.includes('is_active = 0'))).toBe(false);
   });
 
-  it('400 invalid_grant は失効扱いにする', async () => {
+  it('400 invalid_grant は REAUTH_REQUIRED（一時障害と区別する）', async () => {
     fetchMock.mockResolvedValue({
       ok: false, status: 400, text: async () => '{"error":"invalid_grant"}',
     });
     const { db, sqls } = makeDb(makeStmt(activeConn({ token_expires_at: '2020-01-01T00:00:00.000+09:00' })));
 
     await expect(getValidAccessTokenFreee(ENV, db)).rejects.toThrow('REAUTH_REQUIRED');
-    expect(sqls.some((q) => q.includes('is_active = 0'))).toBe(true);
+
+    // 失効と判定しても is_active は書き換えない（可視化は token_expires_at で行う）
+    const writes = sqls.filter((q) => q.includes('UPDATE') || q.includes('INSERT'));
+    expect(writes.some((q) => q.includes('is_active'))).toBe(false);
   });
 
   it('JSON として読めないエラー本文は失効扱いにしない（判断がつかないなら壊さない）', async () => {
@@ -572,31 +598,15 @@ describe('getValidAccessTokenFreee', () => {
 
   // ── 同時リフレッシュで道連れにしない（レビュー①・HIGH）──────────────────
 
-  it('【HIGH】保留に戻す UPDATE にも CAS ガードを付ける', async () => {
-    // ガードが無いと、同時実行に負けた側（invalid_grant で失敗する）が、
-    // 勝った側が正常にリフレッシュしたばかりの接続を保留に落としてしまう。
+  it('同時リフレッシュに負けただけなら、勝った側のトークンを使う', async () => {
+    // freee は refresh_token を回すので、負けた側は必ず invalid_grant になる。
+    // ここで諦めると、同時アクセス2本だけで領収書の発行が失敗する。
+    // refresh_token が読んだ値から変わっていれば「誰かが先に回した」と分かる。
     fetchMock.mockResolvedValue({
       ok: false, status: 401, text: async () => '{"error":"invalid_grant"}',
     });
-    const { db, sqls } = makeDb(makeStmt(activeConn({ token_expires_at: '2020-01-01T00:00:00.000+09:00' })));
-
-    await expect(getValidAccessTokenFreee(ENV, db)).rejects.toThrow('REAUTH_REQUIRED');
-
-    const demote = sqls.find((q) => q.includes('is_active = 0')) ?? '';
-    expect(demote).toMatch(/refresh_token = \?/);
-  });
-
-  it('【HIGH】同時リフレッシュに負けただけなら、勝った側のトークンを使う', async () => {
-    // 負けた側は必ず invalid_grant になる。ここで諦めると、
-    // 同時アクセス2本だけで連携が止まってしまう。
-    fetchMock.mockResolvedValue({
-      ok: false, status: 401, text: async () => '{"error":"invalid_grant"}',
-    });
-    const demoteLost = makeStmt();
-    demoteLost.run.mockResolvedValue({ meta: { changes: 0 } }); // CAS 不一致＝勝者が更新済み
     const { db } = makeDb(
       makeStmt(activeConn({ token_expires_at: '2020-01-01T00:00:00.000+09:00' })),
-      demoteLost,
       makeStmt(activeConn({ access_token: 'at-winner', refresh_token: 'rt-winner', is_active: 1 })),
     );
 
@@ -605,40 +615,25 @@ describe('getValidAccessTokenFreee', () => {
     expect(result.accessToken).toBe('at-winner');
   });
 
-  it('実際に保留化していないときは「保留に戻しました」と記録しない', async () => {
-    // 障害対応で「保留になった」と読んで別の場所を見に行くことになる
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    try {
-      fetchMock.mockResolvedValue({
-        ok: false, status: 400, text: async () => '{"error":"invalid_grant"}',
-      });
-      const demoteLost = makeStmt();
-      demoteLost.run.mockResolvedValue({ meta: { changes: 0 } });
-      const { db } = makeDb(
-        makeStmt(activeConn({ token_expires_at: '2020-01-01T00:00:00.000+09:00' })),
-        demoteLost,
-        makeStmt(activeConn({ access_token: 'at-x', is_active: 0 })),
-      );
-
-      await expect(getValidAccessTokenFreee(ENV, db)).rejects.toThrow('REAUTH_REQUIRED');
-
-      const logged = errorSpy.mock.calls.flat().join(' ');
-      expect(logged).not.toContain('保留に戻しました');
-    } finally {
-      errorSpy.mockRestore();
-    }
-  });
-
-  it('CAS 不一致でも接続が保留になっていれば REAUTH_REQUIRED', async () => {
+  it('refresh_token が変わっていなければ（本当に失効）REAUTH_REQUIRED', async () => {
     fetchMock.mockResolvedValue({
       ok: false, status: 401, text: async () => '{"error":"invalid_grant"}',
     });
-    const demoteLost = makeStmt();
-    demoteLost.run.mockResolvedValue({ meta: { changes: 0 } });
     const { db } = makeDb(
       makeStmt(activeConn({ token_expires_at: '2020-01-01T00:00:00.000+09:00' })),
-      demoteLost,
-      makeStmt(activeConn({ access_token: 'at-x', is_active: 0 })),
+      makeStmt(activeConn()), // refresh_token は rt-old のまま
+    );
+
+    await expect(getValidAccessTokenFreee(ENV, db)).rejects.toThrow('REAUTH_REQUIRED');
+  });
+
+  it('勝者の行が保留なら、そのトークンは使わない', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false, status: 401, text: async () => '{"error":"invalid_grant"}',
+    });
+    const { db } = makeDb(
+      makeStmt(activeConn({ token_expires_at: '2020-01-01T00:00:00.000+09:00' })),
+      makeStmt(activeConn({ access_token: 'at-x', refresh_token: 'rt-other', is_active: 0 })),
     );
 
     await expect(getValidAccessTokenFreee(ENV, db)).rejects.toThrow('REAUTH_REQUIRED');
