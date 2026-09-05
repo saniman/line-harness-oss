@@ -38,6 +38,20 @@ function normalizeDbDatetime(value: string): string {
 }
 
 /**
+ * DB の日時文字列を epoch ミリ秒にする。解釈できなければ NaN。
+ *
+ * **日時の比較・計算は必ずこの関数を通すこと。`Date.parse()` / `new Date()` を
+ * 直接使ってはいけない。** オフセット表記の無い値をローカル時刻として解釈するため、
+ * JST の開発機では偶然通り、UTC の本番（Workers）と CI で 9 時間ズレる。
+ * 表示側（formatJST）だけ正規化されていると、同じ値から出した「日付」と「時刻」が
+ * 食い違うメッセージが出来上がる（#67 のレビューで検出）。
+ */
+export function parseDbDatetime(value: string | null | undefined): number {
+  if (!value) return NaN
+  return new Date(normalizeDbDatetime(value)).getTime()
+}
+
+/**
  * D1 に保存された ISO 8601 日時（UTC）を JST の「MM/DD(曜) HH:mm」に変換する。
  *
  * DB の値をそのまま人目に触れる場所へ出すと `2026-06-13T05:00:00.000Z` のように
@@ -45,10 +59,9 @@ function normalizeDbDatetime(value: string): string {
  * （`.claude/rules/api-coding.md` の「日時フォーマット」）
  */
 export function formatJST(iso: string): string {
-  if (!iso) return INVALID_LABEL
-  const d = new Date(normalizeDbDatetime(iso))
-  if (Number.isNaN(d.getTime())) return INVALID_LABEL
-  const jst = new Date(d.getTime() + 9 * 60 * 60 * 1000)
+  const ms = parseDbDatetime(iso)
+  if (Number.isNaN(ms)) return INVALID_LABEL
+  const jst = new Date(ms + 9 * 60 * 60 * 1000)
   const mm = String(jst.getUTCMonth() + 1).padStart(2, '0')
   const dd = String(jst.getUTCDate()).padStart(2, '0')
   const hh = String(jst.getUTCHours()).padStart(2, '0')
