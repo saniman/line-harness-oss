@@ -497,10 +497,14 @@ export function resolveReceiptName(
   //
   // ⚠️ どれも無ければ **null** を返す。'' を返すと領収書発行（#46）が
   //    空欄のまま発行してしまう。発行するかどうかは呼び出し側に判断させる。
+  // ⚠️ どの候補も sanitizeReceiptName を通す。
+  //    receipt_name だけを入口で守っても、/join が無検証で保存する name に
+  //    細工を入れれば迂回できた（receiptName を送らないだけでよかった）。
+  //    入口が増えても漏れないよう、出口のここで一括して正規化する。
   const candidates = [booking.receipt_name, booking.name, booking.friend_display_name]
   for (const c of candidates) {
-    const trimmed = c?.trim()
-    if (trimmed) return trimmed
+    const safe = sanitizeReceiptName(c)
+    if (safe) return safe
   }
   return null
 }

@@ -187,3 +187,43 @@ describe('sanitizeReceiptName（切り詰めと入力量）', () => {
     expect(Date.now() - started).toBeLessThan(500);
   });
 });
+
+describe('sanitizeReceiptName（入力量の制限が壊さないこと）', () => {
+  it('走査上限の境界でサロゲートペアを割らない', () => {
+    // コードユニット単位で切ると片割れが残り、壊れ字（U+FFFD）になる
+    const ZWSP = String.fromCharCode(0x200b);
+    const input = 'AAA' + ZWSP.repeat(236) + '😀' + 'BBB';
+    const result = sanitizeReceiptName(input)!;
+    expect(result).not.toContain(String.fromCharCode(0xfffd));
+    // 孤立サロゲートが残っていないこと（往復して壊れない）
+    expect([...result].every((ch) => {
+      const c = ch.codePointAt(0)!;
+      return c < 0xd800 || c > 0xdfff;
+    })).toBe(true);
+  });
+
+  it('先頭が空白だらけでも、後ろの正当な宛名を落とさない', () => {
+    // 走査上限を空白で食い潰されると、実在する宛名が黙って消える
+    const input = ' '.repeat(250) + '株式会社サンプル';
+    expect(sanitizeReceiptName(input)).toBe('株式会社サンプル');
+  });
+
+  it('不可視文字で埋めても後ろの宛名を落とさない', () => {
+    const ZWSP = String.fromCharCode(0x200b);
+    expect(sanitizeReceiptName(ZWSP.repeat(300) + '株式会社サンプル')).toBe('株式会社サンプル');
+  });
+
+  it('極端に長い入力でも走査量を抑える（CPU 時間の保護）', () => {
+    const huge = 'あ'.repeat(500_000);
+    const started = Date.now();
+    const result = sanitizeReceiptName(huge)!;
+    expect(Array.from(result).length).toBe(RECEIPT_NAME_MAX_LENGTH);
+    expect(Date.now() - started).toBeLessThan(500);
+  });
+
+  it('空白で極端に長い入力もCPUを食い潰さない', () => {
+    const started = Date.now();
+    expect(sanitizeReceiptName(' '.repeat(500_000))).toBeNull();
+    expect(Date.now() - started).toBeLessThan(500);
+  });
+});

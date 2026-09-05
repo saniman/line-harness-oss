@@ -29,13 +29,23 @@
 export const RECEIPT_NAME_MAX_LENGTH = 60;
 
 /**
- * 走査に入る前に切り落とす上限（UTF-16 コードユニット）。
+ * 拾う「中身のある文字」の上限（コードポイント）。
+ * これだけ集めれば、あとで最大長に切り詰めるのに足りる。
+ */
+const KEEP_LIMIT = RECEIPT_NAME_MAX_LENGTH * 4;
+
+/**
+ * 走査そのものの上限（コードポイント）。CPU 時間の保護。
  *
  * `bodyLimit` ミドルウェアが無いため receiptName はメガバイト級を投げられる。
- * 1文字ずつ走査すると Workers の CPU 時間を食い潰すので、先に切る。
- * サロゲートペアを考慮して最大長の 4 倍を確保しておく。
+ *
+ * ⚠️ `slice()` で先に切ってはいけない。UTF-16 コードユニット単位なので
+ *    境界がサロゲートペアの途中だと孤立サロゲートが残り、
+ *    制御文字判定にも可視文字判定にも引っかからないまま保存される。
+ * ⚠️ 空白を予算に数えてもいけない。先頭に空白を並べられると、
+ *    その後ろにある正当な宛名が黙って消える。
  */
-const SCAN_LIMIT = RECEIPT_NAME_MAX_LENGTH * 4;
+const SCAN_LIMIT = 10_000;
 
 /**
  * 空白に畳む文字。
@@ -79,11 +89,20 @@ const MEANINGFUL = /[\p{L}\p{N}\p{P}]/u;
 export function sanitizeReceiptName(input: string | null | undefined): string | null {
   if (typeof input !== 'string') return null;
 
-  // 走査前に切る（CPU 時間の保護）
-  const bounded = input.length > SCAN_LIMIT ? input.slice(0, SCAN_LIMIT) : input;
-
+  // コードポイント単位で走査する（イテレータなので全体を配列化しない）。
+  // 中身のある文字が KEEP_LIMIT 集まるか、走査が SCAN_LIMIT に達したら打ち切る。
   let flattened = '';
-  for (const ch of bounded) flattened += isBlankLike(ch) ? ' ' : ch;
+  let kept = 0;
+  let scanned = 0;
+  for (const ch of input) {
+    if (scanned >= SCAN_LIMIT || kept >= KEEP_LIMIT) break;
+    scanned++;
+    const blank = isBlankLike(ch);
+    // 空白は予算に数えない。半角スペース（Zs）は isBlankLike の対象外なので、
+    // ここで見ないと「先頭に空白を並べるだけで後ろの宛名が消える」ことになる。
+    if (!blank && !/\s/.test(ch)) kept++;
+    flattened += blank ? ' ' : ch;
+  }
 
   const collapsed = flattened.replace(/\s+/g, ' ').trim();
 

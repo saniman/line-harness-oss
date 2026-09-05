@@ -834,6 +834,37 @@ describe('resolveReceiptName', () => {
     })).toBeNull()
   })
 
+  it('【重要】name 経由でもサニタイズを迂回できない', () => {
+    // receiptName を送らず name に細工を入れる、という抜け道があった。
+    // /join は body.name ?? '' を無検証で保存するため、入口で守っても漏れる。
+    // 出口（この関数）で必ず通す。
+    const RLO = String.fromCharCode(0x202e)
+    expect(resolveReceiptName({
+      receipt_name: null, name: `正規${RLO}\n偽装`,
+    })).toBe('正規 偽装')
+  })
+
+  it('name 経由の長すぎる宛名も切り詰める', () => {
+    const long = 'あ'.repeat(200)
+    const result = resolveReceiptName({ receipt_name: null, name: long })!
+    expect(Array.from(result).length).toBe(60)
+  })
+
+  it('friend_display_name 経由でもサニタイズされる', () => {
+    const ZWSP = String.fromCharCode(0x200b)
+    expect(resolveReceiptName({
+      receipt_name: null, name: '', friend_display_name: `あき${ZWSP}ひさ`,
+    })).toBe('あき ひさ')
+  })
+
+  it('name が不可視文字だけなら次の候補へ進む', () => {
+    expect(resolveReceiptName({
+      receipt_name: null,
+      name: String.fromCodePoint(0x2800).repeat(3),
+      friend_display_name: 'あきひさ',
+    })).toBe('あきひさ')
+  })
+
   it('友だちの表示名が空白のみでも null になる', () => {
     expect(resolveReceiptName({
       receipt_name: null, name: '  ', friend_display_name: '   ',

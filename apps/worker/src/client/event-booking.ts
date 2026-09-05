@@ -95,7 +95,7 @@ export function buildEventDetailHtml(event: EventPublic, displayName?: string): 
   // 「これで領収書が出ると困る」とその場で気づける。
   const receiptNameHtml = isPaid
     ? `<div class="receipt-name-field">
-        <label for="receipt-name-input">領収書の宛名（任意・当日現金でお支払いの方のみ）</label>
+        <label for="receipt-name-input">領収書の宛名（任意・当日現金でお支払いの方のみ・60文字まで）</label>
         <!-- maxlength は UTF-16 コードユニット単位。サーバーは60コードポイントで切るので、
              サロゲートペアでも手前で切られないよう 4 倍を確保する（実際の上限はサーバー側） -->
         <input id="receipt-name-input" type="text" maxlength="240"
