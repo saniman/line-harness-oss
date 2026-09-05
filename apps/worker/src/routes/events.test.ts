@@ -1461,3 +1461,121 @@ describe('領収書の共有リンク（#47）', () => {
     expect(res.status).toBe(401)
   })
 })
+
+describe('運営者による予約の取り消し（#65）', () => {
+  const PATH = '/api/events/1/bookings/5/admin-cancel'
+  const ENV = { DB: mockDb, STRIPE_SECRET_KEY: 'sk_test', LINE_CHANNEL_ACCESS_TOKEN: 't' }
+
+  beforeEach(() => {
+    vi.mocked(eventsService.cancelEventBooking).mockReset()
+    vi.mocked(eventsService.cancelEventBooking).mockResolvedValue({
+      success: true, refunded: false, eventId: 1,
+    })
+    mockRevokeShare.mockReset()
+    mockRevokeShare.mockResolvedValue({ ok: true })
+  })
+
+  it('運営者としてキャンセルする（byAdmin を渡す）', async () => {
+    const res = await app.request(PATH, { method: 'POST' }, ENV)
+
+    expect(res.status).toBe(200)
+    expect(eventsService.cancelEventBooking).toHaveBeenCalledWith(
+      expect.anything(), 5, null, expect.anything(), { byAdmin: true },
+    )
+  })
+
+  it('【重要】管理画面は本人確認を持たないので friendId に null を渡す', async () => {
+    await app.request(PATH, { method: 'POST' }, ENV)
+
+    expect(vi.mocked(eventsService.cancelEventBooking).mock.calls[0][2]).toBe(null)
+  })
+
+  it('【重要】キャンセルできたら領収書の共有リンクを無効化する', async () => {
+    // 返金したのに参加者が領収書を持ち続ける状態にしない
+    const res = await app.request(PATH, { method: 'POST' }, ENV)
+
+    expect(mockRevokeShare).toHaveBeenCalledWith(expect.anything(), 1, 5)
+    const body = await res.json() as { data: { receiptRevoked: boolean } }
+    expect(body.data.receiptRevoked).toBe(true)
+  })
+
+  it('【重要】キャンセルに失敗したらリンクを無効化しない', async () => {
+    // 順序を逆にすると、キャンセルできていないのに参加者が領収書を開けなくなる
+    vi.mocked(eventsService.cancelEventBooking).mockResolvedValue({
+      success: false, refunded: false, code: 'already_cancelled', error: 'すでにキャンセル済みです。',
+    })
+
+    const res = await app.request(PATH, { method: 'POST' }, ENV)
+
+    expect(res.status).toBe(409)
+    expect(mockRevokeShare).not.toHaveBeenCalled()
+  })
+
+  it('共有リンクが未登録でもキャンセルは成功する', async () => {
+    // 現金はもう返している。無効化できないことでキャンセルまで失敗にしない
+    mockRevokeShare.mockResolvedValue({ ok: false, error: '対象が見つかりませんでした。' })
+
+    const res = await app.request(PATH, { method: 'POST' }, ENV)
+
+    expect(res.status).toBe(200)
+    const body = await res.json() as { data: { receiptRevoked: boolean } }
+    expect(body.data.receiptRevoked).toBe(false)
+  })
+
+  it('無効化が例外を投げてもキャンセルは成功する', async () => {
+    mockRevokeShare.mockRejectedValue(new Error('boom'))
+
+    const res = await app.request(PATH, { method: 'POST' }, ENV)
+
+    expect(res.status).toBe(200)
+  })
+
+  it('存在しない予約なら 404', async () => {
+    vi.mocked(eventsService.cancelEventBooking).mockResolvedValue({
+      success: false, refunded: false, code: 'not_found', error: '予約が見つかりませんでした。',
+    })
+
+    expect((await app.request(PATH, { method: 'POST' }, ENV)).status).toBe(404)
+  })
+
+  it('イベントIDが数値でなければ 400（DBに触らない）', async () => {
+    const res = await app.request('/api/events/abc/bookings/5/admin-cancel', { method: 'POST' }, ENV)
+
+    expect(res.status).toBe(400)
+    expect(eventsService.cancelEventBooking).not.toHaveBeenCalled()
+  })
+
+  it('【重要】認証必須（スキップリストに入れない）', async () => {
+    // 公開すると第三者が他人の予約を取り消せる
+    const { authMiddleware } = await import('../middleware/auth.js')
+    const guarded = new Hono()
+    guarded.use('*', authMiddleware as never)
+    guarded.route('/', events)
+
+    const res = await guarded.request(PATH, { method: 'POST' }, ENV)
+
+    expect(res.status).toBe(401)
+  })
+})
+
+describe('参加者からのキャンセル（#65 の断り）', () => {
+  const PATH = '/api/events/bookings/5/cancel'
+
+  it('【重要】現金受領済みなら理由コードを返す（LIFF が案内を変えられる）', async () => {
+    vi.mocked(eventsService.cancelEventBooking).mockResolvedValue({
+      success: false,
+      refunded: false,
+      code: 'cash_received',
+      error: 'お支払い済みのため、こちらからは取り消せません。主催者までご連絡ください。',
+    })
+
+    const res = await app.request(PATH, {
+      method: 'POST', headers: LIFF_HEADERS, body: JSON.stringify({}),
+    }, { DB: mockDb, STRIPE_SECRET_KEY: 'sk_test' })
+
+    expect(res.status).toBe(400)
+    const body = await res.json() as { code: string; error: string }
+    expect(body.code).toBe('cash_received')
+    expect(body.error).toContain('主催者')
+  })
+})

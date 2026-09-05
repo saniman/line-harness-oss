@@ -888,3 +888,123 @@ describe('getEventBookingsAdmin（宛名の解決）', () => {
     expect(rows[2].receipt_payee).toBe(null)
   })
 })
+
+describe('cancelEventBooking（現金受領後のキャンセル・#65）', () => {
+  const stripe = {
+    checkout: { sessions: { retrieve: vi.fn() } },
+    refunds: { create: vi.fn() },
+  }
+
+  function cashBooking(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 5,
+      event_id: 1,
+      friend_id: 'f1',
+      name: 'あきひさ',
+      status: 'confirmed',
+      payment_status: 'cash',
+      stripe_session_id: null,
+      amount: 100,
+      cash_received_at: '2026-09-06 05:00:00',
+      ...overrides,
+    }
+  }
+
+  function makeDb(row: Record<string, unknown> | null) {
+    const sqls: string[] = []
+    const db = {
+      prepare: vi.fn().mockImplementation((sql: string) => {
+        sqls.push(sql)
+        return {
+          bind: vi.fn().mockReturnThis(),
+          first: vi.fn().mockResolvedValue(sql.includes('FROM events') ? { start_at: '2099-01-01' } : row),
+          run: vi.fn().mockResolvedValue({ meta: { changes: 1 } }),
+        }
+      }),
+    } as unknown as D1Database
+    return { db, sqls }
+  }
+
+  beforeEach(() => { vi.clearAllMocks() })
+
+  // ── 回帰確認: 既存の導線を壊していないこと（ここが最重要） ──
+
+  it('【回帰】未受領の予約は従来どおり参加者がキャンセルできる', async () => {
+    const { db } = makeDb(cashBooking({ cash_received_at: null }))
+
+    const res = await cancelEventBooking(db, 5, 'f1', stripe)
+
+    expect(res.success).toBe(true)
+  })
+
+  it('【回帰】無料予約は従来どおりキャンセルできる', async () => {
+    const { db } = makeDb(cashBooking({ payment_status: 'unpaid', amount: null, cash_received_at: null }))
+
+    const res = await cancelEventBooking(db, 5, 'f1', stripe)
+
+    expect(res.success).toBe(true)
+  })
+
+  it('【回帰】Stripe 決済済みは従来どおり返金される', async () => {
+    stripe.checkout.sessions.retrieve.mockResolvedValue({ payment_intent: 'pi_1' })
+    stripe.refunds.create.mockResolvedValue({ id: 're_1', status: 'succeeded' })
+    const { db } = makeDb(cashBooking({
+      payment_status: 'paid', stripe_session_id: 'cs_1', cash_received_at: null,
+    }))
+
+    const res = await cancelEventBooking(db, 5, 'f1', stripe)
+
+    expect(res.success).toBe(true)
+    expect(res.refunded).toBe(true)
+  })
+
+  // ── #65 の新しい振る舞い ──
+
+  it('【重要】現金受領済みは参加者からキャンセルできない', async () => {
+    // 現金の返金は対面でしかできない。システムだけ進むと
+    // 「受け取ったのに記録はキャンセル」になり、いくら返すか分からなくなる
+    const { db, sqls } = makeDb(cashBooking())
+
+    const res = await cancelEventBooking(db, 5, 'f1', stripe)
+
+    expect(res.success).toBe(false)
+    expect(res.code).toBe('cash_received')
+    expect(sqls.some((q) => q.includes("status = 'cancelled'"))).toBe(false)
+  })
+
+  it('断るときは主催者へ誘導する（参加者が詰まらないように）', async () => {
+    const { db } = makeDb(cashBooking())
+
+    const res = await cancelEventBooking(db, 5, 'f1', stripe)
+
+    expect(res.error).toContain('主催者')
+  })
+
+  it('【重要】運営者からならキャンセルできる', async () => {
+    // 現金を返したうえで運営者が取り消す、という導線
+    const { db, sqls } = makeDb(cashBooking())
+
+    const res = await cancelEventBooking(db, 5, null, stripe, { byAdmin: true })
+
+    expect(res.success).toBe(true)
+    expect(sqls.some((q) => q.includes("status = 'cancelled'"))).toBe(true)
+  })
+
+  it('運営者は friend_id の一致を求められない', async () => {
+    // 管理画面には friendId が無い。参加者向けの本人確認を運営者に課さない
+    const { db } = makeDb(cashBooking({ friend_id: 'someone-else' }))
+
+    const res = await cancelEventBooking(db, 5, null, stripe, { byAdmin: true })
+
+    expect(res.success).toBe(true)
+  })
+
+  it('【重要】参加者からのキャンセルでは本人確認を維持する', async () => {
+    // byAdmin を足したことで、参加者側の本人確認が緩まないこと
+    const { db } = makeDb(cashBooking({ friend_id: 'someone-else', cash_received_at: null }))
+
+    const res = await cancelEventBooking(db, 5, 'f1', stripe)
+
+    expect(res.success).toBe(false)
+  })
+})

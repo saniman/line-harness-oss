@@ -302,21 +302,60 @@ export async function getEventBookingById(db: D1Database, id: number): Promise<E
   return row ?? null
 }
 
+export interface CancelBookingOptions {
+  /**
+   * 運営者（管理画面）からの取り消しか。
+   *
+   * 参加者からの取り消しには無い権限を2つ与える:
+   *   - 現金受領済みでも取り消せる（現金を返したうえで運営者が記録する）
+   *   - friend_id の一致を求めない（管理画面に friendId は無い）
+   */
+  byAdmin?: boolean
+}
+
+export type CancelBookingCode = 'not_found' | 'already_cancelled' | 'cash_received'
+
 export async function cancelEventBooking(
   db: D1Database,
   bookingId: number,
   friendId: string | null,
   stripe: StripeRefundClient,
-): Promise<{ success: boolean; refunded: boolean; refundId?: string; eventId?: number; error?: string }> {
+  options: CancelBookingOptions = {},
+): Promise<{
+  success: boolean
+  refunded: boolean
+  refundId?: string
+  eventId?: number
+  code?: CancelBookingCode
+  error?: string
+}> {
   const booking = await getEventBookingById(db, bookingId)
-  if (!booking) return { success: false, refunded: false, error: '予約が見つかりませんでした。' }
+  if (!booking) {
+    return { success: false, refunded: false, code: 'not_found', error: '予約が見つかりませんでした。' }
+  }
 
-  if (booking.friend_id !== null && booking.friend_id !== friendId) {
-    return { success: false, refunded: false, error: '予約が見つかりませんでした。' }
+  // ⚠️ 本人確認。運営者は管理画面から操作するので friendId を持たない。
+  //    byAdmin のときだけ免除する（参加者側の確認は今までどおり効かせる）
+  if (!options.byAdmin && booking.friend_id !== null && booking.friend_id !== friendId) {
+    return { success: false, refunded: false, code: 'not_found', error: '予約が見つかりませんでした。' }
   }
 
   if (booking.status === 'cancelled') {
-    return { success: false, refunded: false, error: 'すでにキャンセル済みです。' }
+    return { success: false, refunded: false, code: 'already_cancelled', error: 'すでにキャンセル済みです。' }
+  }
+
+  // ⚠️ **現金を受け取ったあとは、参加者から取り消させない**（Issue #65）。
+  //    現金の返金は対面でしかできないのに、システムだけキャンセルまで進むと
+  //    「受け取ったはずなのに記録はキャンセル」になり、いくら返すか分からなくなる。
+  //    さらに発行済みの領収書が有効なまま残る。
+  //    運営者が現金を返したうえで管理画面から取り消す導線に寄せる。
+  if (!options.byAdmin && booking.cash_received_at) {
+    return {
+      success: false,
+      refunded: false,
+      code: 'cash_received',
+      error: 'お支払い済みのため、こちらからは取り消せません。主催者までご連絡ください。',
+    }
   }
 
   let refunded = false

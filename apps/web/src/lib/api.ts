@@ -680,6 +680,17 @@ export const api = {
         { method: 'POST', body: JSON.stringify({ confirmed }) },
       ),
 
+    /**
+     * 運営者が予約を取り消す（#65）。
+     * 現金受領済みの予約は参加者から取り消せないので、その誘導先。
+     * キャンセルできたら領収書の共有リンクも自動で無効化される。
+     */
+    adminCancel: (eventId: number, bookingId: number) =>
+      fetchApi<ApiResponse<{ refunded: boolean; receiptRevoked: boolean }>>(
+        `/api/events/${eventId}/bookings/${bookingId}/admin-cancel`,
+        { method: 'POST' },
+      ),
+
     /** 誤配に気づいたときに共有リンクを無効化する */
     revokeReceipt: (eventId: number, bookingId: number) =>
       fetchApi<ApiResponse<Record<string, never>>>(
