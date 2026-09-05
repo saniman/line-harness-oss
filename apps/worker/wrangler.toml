@@ -49,6 +49,13 @@ head_sampling_rate = 1
 [vars]
 LIFF_BASE_URL = "https://liff.line.me/1661159603-5qlDj5wV"
 
+# Worker 自身の公開 URL。参加者に送るリンク（領収書・トラッキング）の組み立てに使う。
+# 秘密情報ではないのでここに書く。
+# ⚠️ 未設定だと、リンク追跡（broadcast の track_links）が黙って無効になる。
+#    コード側はリクエストの origin にフォールバックするが、cron から呼ばれる処理には
+#    リクエストが無いため、明示的に設定しておく必要がある。
+WORKER_URL = "https://api.walover-co.work"
+
 # Stripe シークレット（wrangler secret put で設定する）
 # STRIPE_SECRET_KEY        - Stripe ダッシュボード > APIキー
 # STRIPE_WEBHOOK_SECRET    - Stripe ダッシュボード > Webhook > エンドポイントの署名シークレット

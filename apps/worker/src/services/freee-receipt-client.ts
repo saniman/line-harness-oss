@@ -77,6 +77,11 @@ export interface FreeeReceiptParams {
 export interface FreeeReceiptResult {
   /** freee 上の領収書ID */
   receiptId: number | null;
+  /**
+   * freee が採番した領収書番号（例: REC-0000000008）。
+   * 共有リンクが「その予約の領収書か」を照合するのに使う（#47 第4層）。
+   */
+  receiptNumber: string | null;
   /** 帳票詳細ページの URL（freee の report_url） */
   receiptUrl: string;
 }
@@ -246,11 +251,14 @@ export const freeeReceiptIssuer: FreeeReceiptIssuer = {
       );
     }
 
-    const receipt = (parsed as { receipt?: { id?: number; report_url?: string } } | null)?.receipt;
+    const receipt = (
+      parsed as { receipt?: { id?: number; receipt_number?: string; report_url?: string } } | null
+    )?.receipt;
     const receiptUrl = typeof receipt?.report_url === 'string' ? receipt.report_url : '';
 
     return {
       receiptId: typeof receipt?.id === 'number' ? receipt.id : null,
+      receiptNumber: typeof receipt?.receipt_number === 'string' ? receipt.receipt_number : null,
       receiptUrl,
     };
   },

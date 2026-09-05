@@ -20,6 +20,9 @@ vi.mock('@line-crm/line-sdk', () => ({
 
 const mockMarkCashReceived = vi.hoisted(() => vi.fn())
 const mockIssueReceipt = vi.hoisted(() => vi.fn())
+const mockSaveShare = vi.hoisted(() => vi.fn())
+const mockSendReceipt = vi.hoisted(() => vi.fn())
+const mockRevokeShare = vi.hoisted(() => vi.fn())
 
 vi.mock('../services/events.js', () => ({
   createEvent: vi.fn(),
@@ -50,6 +53,17 @@ vi.mock('../services/event-followup.js', () => ({
 
 vi.mock('../services/freee-receipt.js', () => ({
   issueReceiptForBooking: mockIssueReceipt,
+}))
+
+vi.mock('../services/receipt-share.js', () => ({
+  saveReceiptShareUrl: mockSaveShare,
+  // ⚠️ 実装が export する関数はすべてモックに載せる。抜けると undefined になり、
+  //    将来テストを足したとき「関数でない」で落ちて本来の検証に辿り着けない
+  revokeReceiptShare: mockRevokeShare,
+}))
+
+vi.mock('../services/receipt-notify.js', () => ({
+  sendReceiptToParticipant: mockSendReceipt,
 }))
 
 vi.mock('../services/liff-identity.js', () => ({
@@ -112,6 +126,9 @@ const BOOKING1 = {
   payment_status: 'unpaid', stripe_session_id: null, paid_at: null, amount: null,
   stripe_refund_id: null, refund_status: null,
   cash_received_at: null, receipt_name: null, receipt_url: null, receipt_issued_at: null,
+  receipt_number: null, receipt_share_url: null, receipt_share_expires_at: null,
+  receipt_share_verified_at: null, receipt_share_token: null,
+  receipt_share_revoked_at: null, receipt_share_opened_at: null, receipt_sent_at: null,
   cancel_reason: null,
   created_at: '', updated_at: '',
 }
@@ -121,6 +138,9 @@ const PENDING_BOOKING = {
   stripe_session_id: null, paid_at: null, amount: null,
   stripe_refund_id: null, refund_status: null,
   cash_received_at: null, receipt_name: null, receipt_url: null, receipt_issued_at: null,
+  receipt_number: null, receipt_share_url: null, receipt_share_expires_at: null,
+  receipt_share_verified_at: null, receipt_share_token: null,
+  receipt_share_revoked_at: null, receipt_share_opened_at: null, receipt_sent_at: null,
   cancel_reason: null,
   created_at: '', updated_at: '',
 }
@@ -1259,5 +1279,185 @@ describe('POST /api/events/:id/bookings/:bookingId/cash-received', () => {
 
     expect(res.status).toBe(401)
     expect(mockMarkCashReceived).not.toHaveBeenCalled()
+  })
+})
+
+describe('領収書の共有リンク（#47）', () => {
+  const SHARE = 'https://invoice.secure.freee.co.jp/ivex/dl/d03d03bd-204b-4a5f-bb48-03d5f13bef50'
+  const PUT_PATH = '/api/events/1/bookings/5/receipt-share'
+  const SEND_PATH = '/api/events/1/bookings/5/send-receipt'
+  const REVOKE_PATH = '/api/events/1/bookings/5/revoke-receipt'
+  const ENV = { DB: mockDb, LINE_CHANNEL_ACCESS_TOKEN: 't', WORKER_URL: 'https://api.example.test' }
+
+  const put = (url: unknown) =>
+    app.request(PUT_PATH, { method: 'PUT', body: JSON.stringify({ url }) }, ENV)
+
+  beforeEach(() => {
+    mockSaveShare.mockReset()
+    mockSendReceipt.mockReset()
+    mockSaveShare.mockResolvedValue({ ok: true, token: 'tok', verified: true })
+    mockSendReceipt.mockResolvedValue({ ok: true })
+    mockRevokeShare.mockReset()
+    mockRevokeShare.mockResolvedValue({ ok: true })
+  })
+
+  it('共有リンクを登録できる', async () => {
+    const res = await put(SHARE)
+
+    expect(res.status).toBe(200)
+    expect(mockSaveShare).toHaveBeenCalledWith(expect.anything(), 1, 5, SHARE)
+  })
+
+  it('照合済みかどうかを返す（管理画面で区別するため）', async () => {
+    mockSaveShare.mockResolvedValue({ ok: true, token: 'tok', verified: false })
+
+    const res = await put(SHARE)
+
+    const body = await res.json() as { data: { verified: boolean } }
+    expect(body.data.verified).toBe(false)
+  })
+
+  it('url が文字列でなければ 400（DBに触らない）', async () => {
+    const res = await put(123)
+
+    expect(res.status).toBe(400)
+    expect(mockSaveShare).not.toHaveBeenCalled()
+  })
+
+  it('【重要】同じリンクの重複は 409 で返す', async () => {
+    // 通信エラーと混ぜない。運営者が「押しても直らない」と分かるようにする
+    mockSaveShare.mockResolvedValue({
+      ok: false, code: 'duplicate', error: 'このリンクは既にたろうさんに登録されています。',
+    })
+
+    const res = await put(SHARE)
+
+    expect(res.status).toBe(409)
+    const body = await res.json() as { error: string }
+    expect(body.error).toContain('たろう')
+  })
+
+  it('別の人の領収書なら 400 で理由を返す', async () => {
+    mockSaveShare.mockResolvedValue({
+      ok: false, code: 'receipt_mismatch', error: 'このリンクは別の方の領収書です（REC-12）。',
+    })
+
+    const res = await put(SHARE)
+
+    expect(res.status).toBe(400)
+    const body = await res.json() as { code: string }
+    expect(body.code).toBe('receipt_mismatch')
+  })
+
+  it('存在しない予約なら 404', async () => {
+    mockSaveShare.mockResolvedValue({ ok: false, code: 'not_found', error: '予約が見つかりません。' })
+
+    expect((await put(SHARE)).status).toBe(404)
+  })
+
+  it('【重要】WORKER_URL が未設定でもリクエストの origin にフォールバックする', async () => {
+    // 本番で WORKER_URL は未設定だった。無いと undefined.replace で 500 になり、
+    // 運営者には原因不明のエラーしか出ない（送信機能が丸ごと動かない）
+    const noUrl = { DB: mockDb, LINE_CHANNEL_ACCESS_TOKEN: 't' }
+
+    const res = await app.request(SEND_PATH, { method: 'POST' }, noUrl)
+
+    expect(res.status).toBe(200)
+    const passedUrl = mockSendReceipt.mock.calls[0][2] as string
+    expect(passedUrl).toMatch(/^https?:\/\/[^/]+$/)
+    expect(passedUrl).not.toContain('undefined')
+  })
+
+  it('LINE で送信できる', async () => {
+    const res = await app.request(SEND_PATH, { method: 'POST' }, ENV)
+
+    expect(res.status).toBe(200)
+    expect(mockSendReceipt).toHaveBeenCalledWith(
+      expect.anything(), expect.anything(), 'https://api.example.test', 1, 5, false,
+    )
+  })
+
+  it('送信済みなら 409', async () => {
+    mockSendReceipt.mockResolvedValue({ ok: false, code: 'already_sent', error: '既に送信済みです。' })
+
+    expect((await app.request(SEND_PATH, { method: 'POST' }, ENV)).status).toBe(409)
+  })
+
+  it('LINE 側の失敗は 502（設定ミスと区別する）', async () => {
+    mockSendReceipt.mockResolvedValue({ ok: false, code: 'send_failed', error: '送信できませんでした。' })
+
+    expect((await app.request(SEND_PATH, { method: 'POST' }, ENV)).status).toBe(502)
+  })
+
+  it('友だち未紐付けは 400 で理由を返す', async () => {
+    mockSendReceipt.mockResolvedValue({
+      ok: false, code: 'no_friend', error: 'LINE の友だちが紐づいていないため送信できません。',
+    })
+
+    const res = await app.request(SEND_PATH, { method: 'POST' }, ENV)
+
+    expect(res.status).toBe(400)
+    const body = await res.json() as { error: string }
+    expect(body.error).toContain('友だち')
+  })
+
+  it('【重要】確認のフラグをサービスに渡す（未照合の送信を止める判断に使う）', async () => {
+    await app.request(SEND_PATH, { method: 'POST', body: JSON.stringify({ confirmed: true }) }, ENV)
+
+    expect(mockSendReceipt.mock.calls[0][5]).toBe(true)
+  })
+
+  it('確認のフラグが無ければ false として扱う（既定で厳しい側に倒す）', async () => {
+    await app.request(SEND_PATH, { method: 'POST' }, ENV)
+
+    expect(mockSendReceipt.mock.calls[0][5]).toBe(false)
+  })
+
+  it('【重要】confirmed: true 以外は確認とみなさない', async () => {
+    // 'true' や 1 を通すと、意図しない値で確認済み扱いになる
+    await app.request(SEND_PATH, { method: 'POST', body: JSON.stringify({ confirmed: 'true' }) }, ENV)
+
+    expect(mockSendReceipt.mock.calls[0][5]).toBe(false)
+  })
+
+  it('未照合で確認も無ければ 400 で理由を返す', async () => {
+    mockSendReceipt.mockResolvedValue({
+      ok: false, code: 'unverified', error: 'freee と照合できていないリンクです。',
+    })
+
+    const res = await app.request(SEND_PATH, { method: 'POST' }, ENV)
+
+    expect(res.status).toBe(400)
+    const body = await res.json() as { code: string }
+    expect(body.code).toBe('unverified')
+  })
+
+  it('無効化できる', async () => {
+    const res = await app.request(REVOKE_PATH, { method: 'POST' }, ENV)
+
+    expect(res.status).toBe(200)
+    expect(mockRevokeShare).toHaveBeenCalledWith(expect.anything(), 1, 5)
+  })
+
+  it('無効化の対象が無ければ 404', async () => {
+    mockRevokeShare.mockResolvedValue({ ok: false, error: '対象が見つかりませんでした。' })
+
+    expect((await app.request(REVOKE_PATH, { method: 'POST' }, ENV)).status).toBe(404)
+  })
+
+  it.each([
+    ['共有リンクの登録', PUT_PATH, 'PUT'],
+    ['LINE 送信', SEND_PATH, 'POST'],
+    ['無効化', REVOKE_PATH, 'POST'],
+  ])('【重要】%s は認証必須（スキップリストに入れない）', async (_label, path, method) => {
+    // 公開されると第三者が任意の参加者へ任意の URL を送れてしまう
+    const { authMiddleware } = await import('../middleware/auth.js')
+    const guarded = new Hono()
+    guarded.use('*', authMiddleware as never)
+    guarded.route('/', events)
+
+    const res = await guarded.request(path, { method, body: JSON.stringify({ url: SHARE }) }, ENV)
+
+    expect(res.status).toBe(401)
   })
 })

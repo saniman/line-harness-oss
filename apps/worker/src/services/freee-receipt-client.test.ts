@@ -23,7 +23,11 @@ function okResponse(body: unknown) {
 }
 
 const SUCCESS = {
-  receipt: { id: 987, report_url: 'https://invoice.secure.freee.co.jp/ivex/dl/abc' },
+  receipt: {
+    id: 987,
+    receipt_number: 'REC-0000000008',
+    report_url: 'https://invoice.secure.freee.co.jp/ivex/dl/abc',
+  },
 };
 
 let fetchMock: ReturnType<typeof vi.fn>;
@@ -196,6 +200,8 @@ describe('freeeReceiptIssuer.createReceipt（レスポンス）', () => {
 
     expect(res).toEqual({
       receiptId: 987,
+      // 共有リンクの照合（#47 第4層）に使うので必ず持ち帰る
+      receiptNumber: 'REC-0000000008',
       receiptUrl: 'https://invoice.secure.freee.co.jp/ivex/dl/abc',
     });
   });
@@ -380,5 +386,21 @@ describe('宛名の伏せ字（短い宛名の誤爆）', () => {
     expect(err.message).not.toContain('山田太郎');
     expect(err.message).toContain('（宛名）');
     expect(err.message).toContain('不正な値');
+  });
+});
+
+describe('freeeReceiptIssuer.createReceipt（領収書番号）', () => {
+  it('【重要】領収書番号を持ち帰る（共有リンクの照合に使う）', async () => {
+    const res = await freeeReceiptIssuer.createReceipt(BASE_PARAMS);
+
+    expect(res.receiptNumber).toBe('REC-0000000008');
+  });
+
+  it('番号が無ければ null（例外にしない）', async () => {
+    fetchMock.mockResolvedValue(okResponse({ receipt: { id: 1, report_url: 'u' } }));
+
+    const res = await freeeReceiptIssuer.createReceipt(BASE_PARAMS);
+
+    expect(res.receiptNumber).toBe(null);
   });
 });

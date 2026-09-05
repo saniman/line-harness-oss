@@ -17,27 +17,10 @@ interface EventWithCount extends EventRow {
   participant_count: number
 }
 
-interface EventBookingRow {
-  id: number
-  event_id: number
-  friend_id: string | null
-  name: string
-  email: string
-  status: string
-  payment_status: string
-  stripe_session_id: string | null
-  paid_at: string | null
-  amount: number | null
-  stripe_refund_id: string | null
-  refund_status: string | null
-  cash_received_at: string | null
-  receipt_name: string | null
-  receipt_url: string | null
-  receipt_issued_at: string | null
-  cancel_reason: string | null
-  created_at: string
-  updated_at: string
-}
+// ⚠️ 型をここで再定義しない。本体と二重管理になり、列を1つ足すたびに
+// このファイルだけ取り残されて CI が落ちる（.claude/rules/api-coding.md の
+// 「D1テーブルにカラムを追加したらテスト fixture も全件更新する」）。
+type EventBookingRow = EventBookingRowType
 
 vi.mock('./event-followup.js', () => ({
   switchToCancelledFollowup: vi.fn().mockResolvedValue({ stopped: 0, enrolled: 0 }),
@@ -76,7 +59,9 @@ import {
   failCheckoutBooking,
   markCashReceived,
   resolveReceiptName,
+  getEventBookingsAdmin,
 } from './events.js'
+import type { EventBookingRow as EventBookingRowType } from './events.js'
 
 const mockSwitchToCancelled = vi.mocked(switchToCancelledFollowup)
 
@@ -93,6 +78,9 @@ const BOOKING1: EventBookingRow = {
   payment_status: 'unpaid', stripe_session_id: null, paid_at: null, amount: null,
   stripe_refund_id: null, refund_status: null,
   cash_received_at: null, receipt_name: null, receipt_url: null, receipt_issued_at: null,
+  receipt_number: null, receipt_share_url: null, receipt_share_expires_at: null,
+  receipt_share_verified_at: null, receipt_share_token: null,
+  receipt_share_revoked_at: null, receipt_share_opened_at: null, receipt_sent_at: null,
   cancel_reason: null,
   created_at: '', updated_at: '',
 }
@@ -869,5 +857,34 @@ describe('resolveReceiptName', () => {
     expect(resolveReceiptName({
       receipt_name: null, name: '  ', friend_display_name: '   ',
     })).toBeNull()
+  })
+})
+
+describe('getEventBookingsAdmin（宛名の解決）', () => {
+  it('【重要】実際に領収書へ載る宛名をサーバーで解決して返す', async () => {
+    // 管理画面が receipt_name || name と組み立て直すと、サニタイズ・切り詰め・
+    // 空欄のフォールバックが効かず、運営者が確認する値と実物が食い違う（#47）
+    const db = {
+      prepare: () => ({
+        bind: () => ({
+          all: async () => ({
+            results: [
+              { id: 1, receipt_name: '  テスト株式会社  ', name: 'あきひさ' },
+              { id: 2, receipt_name: null, name: 'たろう' },
+              { id: 3, receipt_name: null, name: '' },
+            ],
+          }),
+        }),
+      }),
+    } as unknown as D1Database
+
+    const rows = await getEventBookingsAdmin(db, 1)
+
+    // 前後の空白は落とされる（サニタイズを通っている証拠）
+    expect(rows[0].receipt_payee).toBe('テスト株式会社')
+    // 宛名未指定なら申込者名
+    expect(rows[1].receipt_payee).toBe('たろう')
+    // どれも空なら null（「決められない」と分かる）
+    expect(rows[2].receipt_payee).toBe(null)
   })
 })

@@ -243,7 +243,7 @@ export async function issueReceiptForBooking(
     partnerCode: env.FREEE_PARTNER_CODE || undefined,
   };
 
-  let result: { receiptId: number | null; receiptUrl: string };
+  let result: { receiptId: number | null; receiptNumber: string | null; receiptUrl: string };
   try {
     result = await issueWithReauthRetry(env, db, issuer, params, bookingId);
   } catch (err) {
@@ -331,13 +331,14 @@ export async function issueReceiptForBooking(
     .prepare(
       `UPDATE event_bookings
           SET receipt_url = ?,
+              receipt_number = ?,
               receipt_issued_at = datetime('now'),
               updated_at = datetime('now')
         WHERE id = ?
           AND receipt_url IS NULL
       RETURNING receipt_url`,
     )
-    .bind(result.receiptUrl, bookingId)
+    .bind(result.receiptUrl, result.receiptNumber, bookingId)
     .first<{ receipt_url: string }>();
 
   // 発行権を持っていたので通常ここは通らない。通ったなら claim の期限切れ等で
@@ -419,7 +420,7 @@ async function issueWithReauthRetry(
   issuer: FreeeReceiptIssuer,
   params: Omit<Parameters<FreeeReceiptIssuer['createReceipt']>[0], 'accessToken' | 'companyId'>,
   bookingId: number,
-): Promise<{ receiptId: number | null; receiptUrl: string }> {
+): Promise<{ receiptId: number | null; receiptNumber: string | null; receiptUrl: string }> {
   const getToken = async (forceRefresh: boolean) => {
     try {
       return await getValidAccessTokenFreee(env, db, forceRefresh);
