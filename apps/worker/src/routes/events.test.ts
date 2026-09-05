@@ -22,6 +22,7 @@ const mockMarkCashReceived = vi.hoisted(() => vi.fn())
 const mockIssueReceipt = vi.hoisted(() => vi.fn())
 const mockSaveShare = vi.hoisted(() => vi.fn())
 const mockSendReceipt = vi.hoisted(() => vi.fn())
+const mockRevokeShare = vi.hoisted(() => vi.fn())
 
 vi.mock('../services/events.js', () => ({
   createEvent: vi.fn(),
@@ -56,6 +57,9 @@ vi.mock('../services/freee-receipt.js', () => ({
 
 vi.mock('../services/receipt-share.js', () => ({
   saveReceiptShareUrl: mockSaveShare,
+  // ⚠️ 実装が export する関数はすべてモックに載せる。抜けると undefined になり、
+  //    将来テストを足したとき「関数でない」で落ちて本来の検証に辿り着けない
+  revokeReceiptShare: mockRevokeShare,
 }))
 
 vi.mock('../services/receipt-notify.js', () => ({
@@ -1275,6 +1279,8 @@ describe('領収書の共有リンク（#47）', () => {
     mockSendReceipt.mockReset()
     mockSaveShare.mockResolvedValue({ ok: true, token: 'tok', verified: true })
     mockSendReceipt.mockResolvedValue({ ok: true })
+    mockRevokeShare.mockReset()
+    mockRevokeShare.mockResolvedValue({ ok: true })
   })
 
   it('共有リンクを登録できる', async () => {
@@ -1349,7 +1355,7 @@ describe('領収書の共有リンク（#47）', () => {
 
     expect(res.status).toBe(200)
     expect(mockSendReceipt).toHaveBeenCalledWith(
-      expect.anything(), expect.anything(), 'https://api.example.test', 1, 5,
+      expect.anything(), expect.anything(), 'https://api.example.test', 1, 5, false,
     )
   })
 
@@ -1375,6 +1381,50 @@ describe('領収書の共有リンク（#47）', () => {
     expect(res.status).toBe(400)
     const body = await res.json() as { error: string }
     expect(body.error).toContain('友だち')
+  })
+
+  it('【重要】確認のフラグをサービスに渡す（未照合の送信を止める判断に使う）', async () => {
+    await app.request(SEND_PATH, { method: 'POST', body: JSON.stringify({ confirmed: true }) }, ENV)
+
+    expect(mockSendReceipt.mock.calls[0][5]).toBe(true)
+  })
+
+  it('確認のフラグが無ければ false として扱う（既定で厳しい側に倒す）', async () => {
+    await app.request(SEND_PATH, { method: 'POST' }, ENV)
+
+    expect(mockSendReceipt.mock.calls[0][5]).toBe(false)
+  })
+
+  it('【重要】confirmed: true 以外は確認とみなさない', async () => {
+    // 'true' や 1 を通すと、意図しない値で確認済み扱いになる
+    await app.request(SEND_PATH, { method: 'POST', body: JSON.stringify({ confirmed: 'true' }) }, ENV)
+
+    expect(mockSendReceipt.mock.calls[0][5]).toBe(false)
+  })
+
+  it('未照合で確認も無ければ 400 で理由を返す', async () => {
+    mockSendReceipt.mockResolvedValue({
+      ok: false, code: 'unverified', error: 'freee と照合できていないリンクです。',
+    })
+
+    const res = await app.request(SEND_PATH, { method: 'POST' }, ENV)
+
+    expect(res.status).toBe(400)
+    const body = await res.json() as { code: string }
+    expect(body.code).toBe('unverified')
+  })
+
+  it('無効化できる', async () => {
+    const res = await app.request(REVOKE_PATH, { method: 'POST' }, ENV)
+
+    expect(res.status).toBe(200)
+    expect(mockRevokeShare).toHaveBeenCalledWith(expect.anything(), 1, 5)
+  })
+
+  it('無効化の対象が無ければ 404', async () => {
+    mockRevokeShare.mockResolvedValue({ ok: false, error: '対象が見つかりませんでした。' })
+
+    expect((await app.request(REVOKE_PATH, { method: 'POST' }, ENV)).status).toBe(404)
   })
 
   it.each([

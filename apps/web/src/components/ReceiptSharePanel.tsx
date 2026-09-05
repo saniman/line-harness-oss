@@ -36,6 +36,8 @@ export interface ReceiptShareBooking {
   receipt_share_expires_at: string | null
   receipt_share_verified_at: string | null
   receipt_share_revoked_at: string | null
+  /** 参加者が最初に開いた日時。誤配時に「開かれる前か」を判断するのに使う */
+  receipt_share_opened_at: string | null
   receipt_sent_at: string | null
 }
 
@@ -149,6 +151,16 @@ export default function ReceiptSharePanel({ eventId, booking, displayName, onDon
               ダウンロード期限: {formatJST(booking.receipt_share_expires_at)}
             </p>
           )}
+          {/* ⚠️ 誤配に気づいたとき、「開かれる前か」で打てる手が変わる。
+              開かれていなければ無効化で完全に止められる（手順書もそう案内している） */}
+          {booking.receipt_share_opened_at ? (
+            <p className="text-amber-800 mt-0.5">
+              ⚠️ 参加者が開封済み（{formatJST(booking.receipt_share_opened_at)}）
+              — 無効化しても内容は見られています
+            </p>
+          ) : sent ? (
+            <p className="text-gray-500 mt-0.5">未開封 — 無効化すれば止められます</p>
+          ) : null}
         </div>
       )}
 
@@ -175,7 +187,7 @@ export default function ReceiptSharePanel({ eventId, booking, displayName, onDon
           </span>
         ) : (
           <button
-            onClick={() => run(() => api.eventBookings.sendReceipt(eventId, booking.id))}
+            onClick={() => run(() => api.eventBookings.sendReceipt(eventId, booking.id, confirmed))}
             disabled={busy || !canSend}
             className="px-3 py-1 rounded text-xs text-white bg-green-600 disabled:opacity-50"
           >

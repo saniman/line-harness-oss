@@ -33,13 +33,18 @@ export interface ReceiptMessageParams {
   expiresAt: string | null;
 }
 
-/** 期限を「11月5日」の形にする。ISO をそのまま出すと読めない */
+/**
+ * 期限の表示。
+ *
+ * ⚠️ **日付だけにしない。** 期限は UTC の瞬間なので、JST の暦日だけを出すと
+ *    最大1日長く見える（例: 11-05 16:00 UTC は JST で 11/06 01:00。
+ *    「11月6日を過ぎると」と書くと、11/6 の日中に開いた人が 410 を食らう）。
+ *    時刻まで出せば、いつまで使えるかが正確に伝わる。
+ */
 function formatExpiry(expiresAt: string): string | null {
-  // formatJST は「MM/DD(曜) HH:mm」を返す。日付部分だけ取り出して和文にする
   const jst = formatJST(expiresAt);
-  const hit = /^(\d{2})\/(\d{2})/.exec(jst);
-  if (!hit) return null;
-  return `${Number(hit[1])}月${Number(hit[2])}日`;
+  // formatJST は解釈できない値に '—' を返す。その文字列を案内に出さない
+  return jst === '—' ? null : jst;
 }
 
 /**
@@ -64,7 +69,7 @@ export function buildReceiptMessage(params: ReceiptMessageParams): string {
 
   const expiry = params.expiresAt ? formatExpiry(params.expiresAt) : null;
   if (expiry) {
-    lines.push('', `※${expiry}を過ぎるとダウンロードできなくなります`);
+    lines.push('', `※${expiry} を過ぎるとダウンロードできなくなります`);
   }
 
   return lines.join('\n');
@@ -80,6 +85,7 @@ export type SendReceiptCode =
   | 'already_sent'
   | 'no_friend'
   | 'no_payee'
+  | 'unverified'
   | 'send_failed';
 
 export interface SendReceiptResult {
@@ -99,6 +105,7 @@ interface BookingRow {
   receipt_share_token: string | null;
   receipt_share_expires_at: string | null;
   receipt_share_revoked_at: string | null;
+  receipt_share_verified_at: string | null;
   receipt_sent_at: string | null;
 }
 
@@ -116,12 +123,17 @@ export async function sendReceiptToParticipant(
   workerBaseUrl: string,
   eventId: number,
   bookingId: number,
+  /**
+   * 運営者が「リンクを開いて宛名を確認した」と明示したか。
+   * freee との照合が通っていない（receipt_share_verified_at が null）ときに必須。
+   */
+  confirmedUnverified = false,
 ): Promise<SendReceiptResult> {
   const booking = await db
     .prepare(
       `SELECT b.id, b.event_id, b.friend_id, b.name, b.receipt_name, b.status,
               b.receipt_share_url, b.receipt_share_token, b.receipt_share_expires_at,
-              b.receipt_share_revoked_at, b.receipt_sent_at,
+              b.receipt_share_revoked_at, b.receipt_share_verified_at, b.receipt_sent_at,
               f.display_name AS friend_display_name
          FROM event_bookings b
          LEFT JOIN friends f ON f.id = b.friend_id
@@ -171,6 +183,20 @@ export async function sendReceiptToParticipant(
       ok: false,
       code: 'no_friend',
       error: 'LINE の友だちが紐づいていないため送信できません。先に友だちを紐付けてください。',
+    };
+  }
+
+  // ⚠️ **未照合のまま送らせない。サーバー側で止める。**
+  //    取り違え対策の他の層（一意制約・freee 照合・無効化）はすべてサーバー側なのに、
+  //    「開いて確認した」だけが画面の state だった。古いタブ・別のスタッフ・
+  //    API の直叩きで迂回でき、しかも LINE の送信は取り消せない。
+  if (!booking.receipt_share_verified_at && !confirmedUnverified) {
+    return {
+      ok: false,
+      code: 'unverified',
+      error:
+        'freee と照合できていないリンクです。'
+        + 'リンクを開いて宛名を確認し、確認欄にチェックしてから送信してください。',
     };
   }
 

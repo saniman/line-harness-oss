@@ -669,11 +669,15 @@ export const api = {
         { method: 'PUT', body: JSON.stringify({ url }) },
       ),
 
-    /** 登録済みの共有リンクを LINE で参加者に送る */
-    sendReceipt: (eventId: number, bookingId: number) =>
+    /**
+     * 登録済みの共有リンクを LINE で参加者に送る。
+     * @param confirmed freee と照合できていないとき、運営者が目視で確認した旨。
+     *                  サーバー側で必須チェックされる（画面の state だけに頼らない）
+     */
+    sendReceipt: (eventId: number, bookingId: number, confirmed = false) =>
       fetchApi<ApiResponse<Record<string, never>>>(
         `/api/events/${eventId}/bookings/${bookingId}/send-receipt`,
-        { method: 'POST' },
+        { method: 'POST', body: JSON.stringify({ confirmed }) },
       ),
 
     /** 誤配に気づいたときに共有リンクを無効化する */

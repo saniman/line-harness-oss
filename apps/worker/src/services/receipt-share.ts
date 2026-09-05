@@ -186,8 +186,10 @@ export async function saveReceiptShareUrl(
                   WHEN receipt_share_revoked_at IS NULL THEN receipt_sent_at
                   ELSE NULL
                 END,
+                -- ⚠️ URL が変わったら開封の記録も捨てる。残すと「いつ開かれたか」が
+                --    **どのリンクの話か分からなくなり**、被害範囲の記録として使えない
                 receipt_share_opened_at = CASE
-                  WHEN receipt_share_revoked_at IS NULL THEN receipt_share_opened_at
+                  WHEN receipt_share_url = ? THEN receipt_share_opened_at
                   ELSE NULL
                 END,
                 receipt_share_revoked_at = NULL,
@@ -195,7 +197,13 @@ export async function saveReceiptShareUrl(
           WHERE id = ?
         RETURNING id, receipt_share_token`,
       )
-      .bind(parsed.url, parsed.url, `+${SHARE_EXPIRY_DAYS} days`, token, token, bookingId)
+      .bind(
+        parsed.url,
+        parsed.url, `+${SHARE_EXPIRY_DAYS} days`,  // expires_at の CASE
+        token, token,                              // token の CASE
+        parsed.url,                                // opened_at の CASE
+        bookingId,
+      )
       .first<{ id: number; receipt_share_token: string }>();
 
     if (!saved) return { ok: false, code: 'save_failed', error: '保存できませんでした。' };
@@ -250,6 +258,15 @@ export async function revokeReceiptShare(
           SET receipt_share_revoked_at = datetime('now'),
               receipt_share_url = NULL,
               receipt_share_verified_at = NULL,
+              -- ⚠️ 送信済みも解除する。残すと管理画面が「🧾 送信済み」と表示し、
+              --    ヘッダーのカウンタも 5/5 と緑になる。実際その参加者は 410 の
+              --    死んだリンクしか持っていないので、**対応漏れを見つけるための
+              --    カウンタが、逆に見落とさせる**ことになる
+              receipt_sent_at = NULL,
+              -- 開封の記録は、無効化した URL に対するもの。次のリンクに引き継がない
+              receipt_share_opened_at = NULL,
+              -- 期限も無効化した URL のもの。残すと次の判定に紛れる
+              receipt_share_expires_at = NULL,
               updated_at = datetime('now')
         WHERE id = ? AND event_id = ? AND receipt_share_token IS NOT NULL
       RETURNING id`,

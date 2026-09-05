@@ -620,6 +620,14 @@ events.post('/api/events/:id/bookings/:bookingId/send-receipt', async (c) => {
       return c.json({ success: false, error: 'Invalid id' }, 400);
     }
 
+    // 未照合のまま送るには、運営者の明示的な確認が要る（サーバー側で検査する）
+    const body = await c.req
+      .json<{ confirmed?: unknown }>()
+      .catch(() => ({} as { confirmed?: unknown }));
+    // ⚠️ 厳密に true だけを確認とみなす。'true' や 1 を通すと、
+    //    意図しない値で「運営者が確認済み」扱いになる
+    const confirmed = body.confirmed === true;
+
     const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
     const result = await sendReceiptToParticipant(
       c.env.DB,
@@ -630,6 +638,7 @@ events.post('/api/events/:id/bookings/:bookingId/send-receipt', async (c) => {
       c.env.WORKER_URL || new URL(c.req.url).origin,
       eventId,
       bookingId,
+      confirmed,
     );
 
     if (!result.ok) {

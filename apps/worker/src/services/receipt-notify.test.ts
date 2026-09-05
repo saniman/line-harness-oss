@@ -20,7 +20,7 @@ describe('buildReceiptMessage（文面）', () => {
       + '宛名：テスト株式会社\n'
       + 'https://api.walover-co.work/receipt/tok-abc\n'
       + '\n'
-      + '※11月5日を過ぎるとダウンロードできなくなります',
+      + '※11/05(木) 18:00 を過ぎるとダウンロードできなくなります',
     );
   });
 
@@ -34,9 +34,25 @@ describe('buildReceiptMessage（文面）', () => {
     // DB は UTC。そのまま出すと「2026-11-05T00:00:00.000Z」になって読めない
     const msg = buildReceiptMessage({ ...base, expiresAt: '2026-11-04 16:00:00' });
     // UTC 16:00 = JST 翌日 01:00
-    expect(msg).toContain('11月5日');
-    expect(msg).not.toContain('T');
+    expect(msg).toContain('11/05(木) 01:00');
     expect(msg).not.toContain('Z');
+  });
+
+  it('【重要】期限を日付だけにしない（最大1日長く見えてしまう）', () => {
+    // 11-05 16:00 UTC は JST で 11/06 01:00。日付だけ出して「11月6日を過ぎると」と
+    // 書くと、11/6 の日中に開いた人が 410 を食らう
+    const msg = buildReceiptMessage({ ...base, expiresAt: '2026-11-05 16:00:00' });
+
+    expect(msg).toContain('01:00');
+    expect(msg).not.toMatch(/※\d+月\d+日を過ぎると/);
+  });
+
+  it('解釈できない期限は案内に出さない', () => {
+    // '—' がそのまま参加者に届く壊れ方を防ぐ
+    const msg = buildReceiptMessage({ ...base, expiresAt: 'not a date' });
+
+    expect(msg).not.toContain('—');
+    expect(msg).not.toContain('ダウンロードできなくなります');
   });
 
   it('イベント名が無くても文が壊れない', () => {
@@ -79,6 +95,7 @@ function booking(overrides: Record<string, unknown> = {}) {
     receipt_share_token: SHARE_TOKEN,
     receipt_share_expires_at: '2099-01-01 00:00:00',
     receipt_share_revoked_at: null,
+    receipt_share_verified_at: '2026-09-06 05:00:00',
     receipt_sent_at: null,
     ...overrides,
   };
@@ -317,5 +334,40 @@ describe('sendReceiptToParticipant（同時押しと状態変化）', () => {
 
     expect(res.code).toBe('cancelled');
     expect(line.pushMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe('sendReceiptToParticipant（未照合の送信をサーバーで止める）', () => {
+  it('【重要】照合できていないリンクは、確認なしでは送れない', async () => {
+    // 取り違え対策の他の層はすべてサーバー側なのに、「開いて確認した」だけが
+    // 画面の state だった。古いタブ・別のスタッフ・API 直叩きで迂回できてしまう
+    const { db } = makeDb({ booking: booking({ receipt_share_verified_at: null }) });
+    const line = makeLine();
+
+    const res = await sendReceiptToParticipant(db, line, WORKER_URL, 1, 5);
+
+    expect(res.ok).toBe(false);
+    expect(res.code).toBe('unverified');
+    expect(line.pushMessage).not.toHaveBeenCalled();
+  });
+
+  it('運営者が確認したと明示すれば送れる', async () => {
+    const { db } = makeDb({ booking: booking({ receipt_share_verified_at: null }) });
+    const line = makeLine();
+
+    const res = await sendReceiptToParticipant(db, line, WORKER_URL, 1, 5, true);
+
+    expect(res.ok).toBe(true);
+    expect(line.pushMessage).toHaveBeenCalled();
+  });
+
+  it('照合済みなら確認は要らない', async () => {
+    // 機械で照合できたのに人にも確認させると、慣れて素通しするようになる
+    const { db } = makeDb();
+    const line = makeLine();
+
+    const res = await sendReceiptToParticipant(db, line, WORKER_URL, 1, 5);
+
+    expect(res.ok).toBe(true);
   });
 });

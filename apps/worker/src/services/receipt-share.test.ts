@@ -240,6 +240,28 @@ describe('無効化と、事故からの復旧（#47 第2層）', () => {
     expect(sql).toContain('receipt_share_url = NULL');
   });
 
+  it('【重要】無効化したら送信済みも解除する', async () => {
+    // 残すと管理画面が「🧾 送信済み」と表示し、カウンタも 5/5 と緑になる。
+    // 実際その参加者は 410 の死んだリンクしか持っていないので、
+    // **対応漏れを見つけるためのカウンタが、逆に見落とさせる**
+    const { db, sqls } = makeDb();
+
+    await revokeReceiptShare(db, 1, 5);
+
+    const sql = norm(sqls.find((q) => q.includes('receipt_share_revoked_at = ')) ?? '');
+    expect(sql).toContain('receipt_sent_at = NULL');
+  });
+
+  it('無効化したら開封日時と期限も消す（次のリンクに引き継がない）', async () => {
+    const { db, sqls } = makeDb();
+
+    await revokeReceiptShare(db, 1, 5);
+
+    const sql = norm(sqls.find((q) => q.includes('receipt_share_revoked_at = ')) ?? '');
+    expect(sql).toContain('receipt_share_opened_at = NULL');
+    expect(sql).toContain('receipt_share_expires_at = NULL');
+  });
+
   it('無効化してもトークンは残す（410 を出すため）', async () => {
     // 消すと 404「見つかりません」になり、参加者に何が起きたか伝わらない
     const { db, sqls } = makeDb();
@@ -358,6 +380,23 @@ describe('送信済みのリンクを差し替えるとき（#47 レビュー2�
       'receipt_share_expires_at = CASE'
       + ' WHEN receipt_share_url = ? THEN receipt_share_expires_at'
       + " ELSE datetime('now', ?) END",
+    );
+  });
+});
+
+describe('リンクを差し替えたときの開封記録（#47 レビュー3周目）', () => {
+  it('【重要】URL が変わったら開封日時を捨てる', async () => {
+    // 残すと「いつ開かれたか」が**どのリンクの話か分からなくなり**、
+    // 被害範囲の記録として使えない
+    const { db, sqls } = makeDb();
+
+    await saveReceiptShareUrl(db, 1, 5, SHARE);
+
+    const sql = norm(sqls.find((q) => q.includes('receipt_share_opened_at = ')) ?? '');
+    expect(sql).toContain(
+      'receipt_share_opened_at = CASE'
+      + ' WHEN receipt_share_url = ? THEN receipt_share_opened_at'
+      + ' ELSE NULL END',
     );
   });
 });
