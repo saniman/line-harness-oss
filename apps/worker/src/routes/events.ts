@@ -584,9 +584,12 @@ events.post('/api/events/:id/bookings/:bookingId/cash-received', async (c) => {
     const result = await markCashReceived(c.env.DB, eventId, bookingId);
 
     if (!result.success) {
-      // 見つからない/対象外を区別する（UI が「消えた」と「押せない」を出し分けられる）
-      const notFound = result.error?.includes('見つかりません');
-      return c.json({ success: false, error: result.error }, notFound ? 404 : 400);
+      // ⚠️ 日本語の文言で分岐しない。文言を直した瞬間にステータスが変わってしまう。
+      //    404 = そもそも無い / 409 = 状態が変わって記録できない / 400 = 対象外
+      const status = result.code === 'not_found' ? 404
+        : result.code === 'state_changed' ? 409
+        : 400;
+      return c.json({ success: false, error: result.error, code: result.code }, status);
     }
 
     console.log('[events] 現金受領を記録:', bookingId, result.alreadyReceived ? '(既に受領済み)' : '');

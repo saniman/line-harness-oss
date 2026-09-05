@@ -1039,7 +1039,7 @@ describe('POST /api/events/:id/bookings/:bookingId/cash-received', () => {
 
   it('存在しない予約なら 404', async () => {
     mockMarkCashReceived.mockResolvedValue({
-      success: false, alreadyReceived: false, error: '予約が見つかりませんでした。',
+      success: false, alreadyReceived: false, code: 'not_found', error: '予約が見つかりませんでした。',
     })
     const res = await app.request(PATH, { method: 'POST' }, { DB: mockDb })
     expect(res.status).toBe(404)
@@ -1047,7 +1047,7 @@ describe('POST /api/events/:id/bookings/:bookingId/cash-received', () => {
 
   it('現金以外・キャンセル済みなどは 400 で理由を返す', async () => {
     mockMarkCashReceived.mockResolvedValue({
-      success: false, alreadyReceived: false, error: 'キャンセル済みの予約です。',
+      success: false, alreadyReceived: false, code: 'cancelled', error: 'キャンセル済みの予約です。',
     })
     const res = await app.request(PATH, { method: 'POST' }, { DB: mockDb })
     expect(res.status).toBe(400)
@@ -1059,6 +1059,25 @@ describe('POST /api/events/:id/bookings/:bookingId/cash-received', () => {
     const res = await app.request('/api/events/abc/bookings/5/cash-received', { method: 'POST' }, { DB: mockDb })
     expect(res.status).toBe(400)
     expect(mockMarkCashReceived).not.toHaveBeenCalled()
+  })
+
+  it('404 判定は日本語の文言ではなく code で行う', async () => {
+    // 文言を直したらステータスが変わる、という壊れ方を防ぐ
+    mockMarkCashReceived.mockResolvedValue({
+      success: false, alreadyReceived: false, code: 'not_found', error: '（文言を変えても404のまま）',
+    })
+    const res = await app.request(PATH, { method: 'POST' }, { DB: mockDb })
+    expect(res.status).toBe(404)
+  })
+
+  it('状態が変わって記録できなかった場合は 409 で返す', async () => {
+    // 「押しても成功しない」を運営者に伝える。通信エラーと混ぜない
+    mockMarkCashReceived.mockResolvedValue({
+      success: false, alreadyReceived: false, code: 'state_changed',
+      error: '受領を記録できませんでした。予約の状態が変わった可能性があります。',
+    })
+    const res = await app.request(PATH, { method: 'POST' }, { DB: mockDb })
+    expect(res.status).toBe(409)
   })
 
   it('bookingId が数値でなければ 400（DBに触らない）', async () => {

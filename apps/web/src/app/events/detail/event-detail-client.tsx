@@ -164,6 +164,8 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
       const status = err instanceof ApiError ? err.status : 0
       if (status === 404) {
         setCashError('この申込は見つかりませんでした。ほかの端末で取り消された可能性があります。')
+      } else if (status === 409) {
+        setCashError('記録できませんでした。操作の途中で申込の状態が変わったようです。最新の状態を読み込みました。')
       } else if (status === 400) {
         setCashError('この申込は受領できません（キャンセル済み・現金以外など）。最新の状態を読み込みました。')
       } else {
@@ -328,6 +330,13 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
               </span>
             </div>
 
+            {/* ⚠️ エラーは分岐の外に出す。「他の端末で取り消された」ケースでは
+                再読込後に active が空になることがあり、else 側に置くと
+                まさにエラーを出したい場面で表示が消える */}
+            {cashError && (
+              <div className="mx-4 mt-3 p-3 rounded-lg bg-red-50 text-red-700 text-sm">{cashError}</div>
+            )}
+
             {/* 表に出すのは active。判定を bookings.length にすると、
                 離脱行しか無いイベントで見出しだけ出て中身ゼロになる */}
             {active.length === 0 ? (
@@ -336,9 +345,6 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
               </div>
             ) : (
               <>
-                {cashError && (
-                  <div className="mx-4 mt-3 p-3 rounded-lg bg-red-50 text-red-700 text-sm">{cashError}</div>
-                )}
                 <div className="hidden sm:grid sm:grid-cols-[1fr_100px_100px_80px_140px] gap-4 px-4 py-2 bg-gray-50 border-b border-gray-100 text-xs font-semibold text-gray-500 uppercase tracking-wider">
                   <span>参加者</span>
                   <span>ステータス</span>
@@ -403,7 +409,10 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
                           && !b.cash_received_at && (
                           <button
                             onClick={() => handleCashReceived(b)}
-                            disabled={cashBusyId === b.id}
+                            /* 処理中は全行を止める。単一の cashBusyId では、別の行を押すと
+                               前の行の「記録中...」が解除され、同時に走った load() が
+                               互いの結果を上書きする */
+                            disabled={cashBusyId !== null}
                             className="mt-1 block px-2 py-0.5 rounded text-xs text-white bg-amber-600 disabled:opacity-50"
                           >
                             {cashBusyId === b.id ? '記録中...' : '現金受領'}

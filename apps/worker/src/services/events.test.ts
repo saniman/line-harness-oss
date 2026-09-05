@@ -615,6 +615,25 @@ describe('markCashReceived', () => {
 
   // ── 更新結果を見る（レビュー③）────────────────────────────
 
+  it('【重要】0行更新でも、記録されていなければ失敗として返す', async () => {
+    // WHERE に status/payment_status を足したので、0行更新の意味が2通りに増えた:
+    //   ① 誰かが先に記録した → 受領済みで正しい
+    //   ② 間にキャンセルされた → 受領できていない
+    // ②を「受領済み」と答えると、現物の現金を受け取ったのに記録が残らず、
+    // 画面にもエラーが出ない。
+    const cancelled: EventBookingRow = { ...CASH, status: 'cancelled' }
+    const db = makeDb(
+      makeStmt(CASH),        // SELECT: このときは確定・未受領に見えた
+      makeStmt(null),        // UPDATE: 0行
+      makeStmt(cancelled),   // 読み直し: cash_received_at は null のまま
+    )
+
+    const res = await markCashReceived(db, 1, 1)
+
+    expect(res.success).toBe(false)
+    expect(res.code).toBe('state_changed')
+  })
+
   it('【重要】0行更新なら成功と偽らず alreadyReceived として返す', async () => {
     // 別のスタッフが一瞬先に押した場合。更新結果を見ないと、
     // 保存されていない日時を「今記録した」と返してしまう。
@@ -652,6 +671,61 @@ describe('markCashReceived', () => {
     const sql = (db.prepare as ReturnType<typeof vi.fn>).mock.calls
       .map((c) => c[0] as string).find((q) => q.includes('UPDATE')) ?? ''
     expect(sql).toContain("cash_received_at = datetime('now')")
+  })
+
+  // ── 受け取った金額を残す（レビューB）──────────────────────
+
+  it('受領時に amount を焼き込む（未設定なら）', async () => {
+    // amount は Stripe の webhook でしか入らないため現金申込は常に null。
+    // 領収書（#46）が載せる金額を読み出せるよう、受領時に確定させる。
+    const db = makeDb(makeStmt(CASH), makeStmt({ cash_received_at: 'x' }))
+    await markCashReceived(db, 1, 1)
+    const sql = (db.prepare as ReturnType<typeof vi.fn>).mock.calls
+      .map((c) => c[0] as string).find((q) => q.includes('UPDATE')) ?? ''
+    expect(sql).toContain('amount = COALESCE(amount,')
+  })
+
+  it('金額はサーバー側で events.price から引く（クライアントから受け取らない）', async () => {
+    // ブラウザから金額を送れると、領収書の金額を改ざんできてしまう
+    const db = makeDb(makeStmt(CASH), makeStmt({ cash_received_at: 'x' }))
+    await markCashReceived(db, 1, 1)
+    const sql = (db.prepare as ReturnType<typeof vi.fn>).mock.calls
+      .map((c) => c[0] as string).find((q) => q.includes('UPDATE')) ?? ''
+    expect(sql).toContain('SELECT price FROM events')
+  })
+
+  it('既に amount があれば上書きしない（COALESCE）', async () => {
+    const db = makeDb(makeStmt(CASH), makeStmt({ cash_received_at: 'x' }))
+    await markCashReceived(db, 1, 1)
+    const sql = (db.prepare as ReturnType<typeof vi.fn>).mock.calls
+      .map((c) => c[0] as string).find((q) => q.includes('UPDATE')) ?? ''
+    // COALESCE の第1引数が既存の amount であること
+    expect(sql).toMatch(/amount = COALESCE\(amount,/)
+  })
+
+  // ── 機械可読なエラーコード（レビューC）────────────────────
+
+  it('エラーを日本語の文言でなく code で見分けられる', async () => {
+    // ルートが 404/400 を「見つかりません」の部分一致で判定していると、
+    // 文言を直した瞬間にステータスが変わる
+    const db = makeDb(makeStmt(null))
+    const res = await markCashReceived(db, 1, 999)
+    expect(res.code).toBe('not_found')
+  })
+
+  it('キャンセル済みは code=cancelled', async () => {
+    const db = makeDb(makeStmt({ ...CASH, status: 'cancelled' }))
+    expect((await markCashReceived(db, 1, 1)).code).toBe('cancelled')
+  })
+
+  it('現金以外は code=not_cash', async () => {
+    const db = makeDb(makeStmt({ ...CASH, payment_status: 'paid' }))
+    expect((await markCashReceived(db, 1, 1)).code).toBe('not_cash')
+  })
+
+  it('イベント不一致は code=event_mismatch', async () => {
+    const db = makeDb(makeStmt({ ...CASH, event_id: 99 }))
+    expect((await markCashReceived(db, 1, 1)).code).toBe('event_mismatch')
   })
 
   // ── イベントIDの突き合わせ（レビュー⑤）────────────────────
