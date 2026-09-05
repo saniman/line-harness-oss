@@ -71,8 +71,11 @@ LIFF_BASE_URL = "https://liff.line.me/1661159603-5qlDj5wV"
 # 領収書の宛名は partner_display_name で1件ずつ上書きされる。
 # 取引先の作り方: docs/setup/freee-setup.md
 #
-# FREEE_PARTNER_CODE = "EVENT"   # freee の取引先コード
-# FREEE_PARTNER_ID   = "12345"   # コードの代わりにIDでも可（両方あればIDを優先）
+# ⚠️ freee請求書の取引先フォームには「取引先コード」欄が無いため、ID を使う。
+#    ID は取引先の詳細ページの URL 末尾の数字
+#    （https://settings.secure.freee.co.jp/partners/<ここ>）。
+FREEE_PARTNER_ID = "123325147"   # 「イベント参加者」
+# FREEE_PARTNER_CODE = "EVENT"   # コードを使う場合はこちら（両方あればIDを優先）
 
 # ═══════════════════════════════════════════════════════════════
 # 本番環境 (aiagent.mini@)
