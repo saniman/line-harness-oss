@@ -11,7 +11,7 @@ import {
   partitionBookings,
   getDropoutReasonLabel,
 } from '@/lib/booking-display'
-import { formatJST } from '@/lib/format-jst'
+import { formatJST, toJstDatetimeLocal, jstDatetimeLocalToIso } from '@/lib/format-jst'
 import Header from '@/components/layout/header'
 
 const FIELD_CLASS = 'text-sm border border-gray-300 rounded-lg px-3 py-2 w-full focus:outline-none focus:ring-2 focus:ring-green-500'
@@ -25,12 +25,6 @@ function getFriendLinkBadge(b: EventBookingItem): { label: string; cls: string }
   if (!b.friend_id) return { label: '友だち未連携', cls: 'bg-gray-100 text-gray-600' }
   if (b.friend_is_following === 0) return { label: '未フォロー', cls: 'bg-amber-100 text-amber-700' }
   return null
-}
-
-function isoToDatetimeLocal(iso: string): string {
-  const d = new Date(iso)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
 export default function EventDetailClient({ eventId }: { eventId: number }) {
@@ -186,8 +180,8 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
     setEditForm({
       title: event.title,
       description: event.description ?? '',
-      start_at: isoToDatetimeLocal(event.start_at),
-      end_at: isoToDatetimeLocal(event.end_at),
+      start_at: toJstDatetimeLocal(event.start_at),
+      end_at: toJstDatetimeLocal(event.end_at),
       capacity: event.capacity,
       price: event.price != null && event.price > 0 ? String(event.price) : '',
       is_published: event.is_published === 1,
@@ -211,8 +205,8 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
       await api.events.update(eventId, {
         title: editForm.title.trim(),
         description: editForm.description.trim() || undefined,
-        start_at: new Date(editForm.start_at).toISOString(),
-        end_at: new Date(editForm.end_at).toISOString(),
+        start_at: jstDatetimeLocalToIso(editForm.start_at),
+        end_at: jstDatetimeLocalToIso(editForm.end_at),
         capacity: cap,
         price: priceVal != null && priceVal > 0 ? priceVal : null,
         is_published: editForm.is_published ? 1 : 0,

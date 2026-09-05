@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { fetchApi } from '@/lib/api'
-import { formatJST, getBookingName, canCancel, STATUS_LABEL, STATUS_CLASS } from '@/lib/bookings'
+import { getBookingName, canCancel, STATUS_LABEL, STATUS_CLASS } from '@/lib/bookings'
+import { formatJSTWithYear as formatJST, formatJSTTime } from '@/lib/format-jst'
 import type { Booking, BookingStatus } from '@/lib/bookings'
 import Header from '@/components/layout/header'
 
@@ -145,7 +146,7 @@ export default function ReservationsPage() {
                 {/* 予約日時 */}
                 <div className="hidden sm:block">
                   <p className="text-sm text-gray-700">{formatJST(booking.startAt)}</p>
-                  <p className="text-xs text-gray-400">〜{formatJST(booking.endAt).slice(11)}</p>
+                  <p className="text-xs text-gray-400">〜{formatJSTTime(booking.endAt)}</p>
                 </div>
 
                 {/* メールアドレス */}

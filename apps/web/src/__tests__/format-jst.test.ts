@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest'
-import { normalizeDbDatetime, formatJST, formatJSTWithYear } from '../lib/format-jst'
+import {
+  normalizeDbDatetime,
+  formatJST,
+  formatJSTWithYear,
+  formatJSTTime,
+  toJstDatetimeLocal,
+  jstDatetimeLocalToIso,
+} from '../lib/format-jst'
 
 // D1 に入っている実際の形式。schema.sql に 2 系統が混在している（Issue #58）
 const UTC_SPACE = '2026-09-01 01:50:08'        // datetime('now') … UTC・スペース区切り
@@ -26,6 +33,52 @@ describe('DB 日時の正規化', () => {
   it('想定外の文字列はそのまま返す（勝手に補正しない）', () => {
     expect(normalizeDbDatetime('not a date')).toBe('not a date')
     expect(normalizeDbDatetime('')).toBe('')
+  })
+
+  it('秒の小数部が付いていても取りこぼさない', () => {
+    // 完全一致の正規表現だと素通りして「ローカル時刻として解釈」に戻ってしまう。
+    // 失敗が無音なので、桁のゆらぎは受け止める
+    expect(normalizeDbDatetime('2026-09-01 01:50:08.123')).toBe('2026-09-01T01:50:08.123Z')
+    expect(normalizeDbDatetime('2026-09-01T10:50:08.123')).toBe('2026-09-01T10:50:08.123+09:00')
+  })
+
+  it('秒が省略されていても取りこぼさない', () => {
+    expect(normalizeDbDatetime('2026-09-01 01:50')).toBe('2026-09-01T01:50Z')
+    expect(normalizeDbDatetime('2026-09-01T10:50')).toBe('2026-09-01T10:50+09:00')
+  })
+})
+
+describe('時刻だけの表示（HH:mm）', () => {
+  it('JST の時刻を返す', () => {
+    expect(formatJSTTime(UTC_SPACE)).toBe('10:50')
+    expect(formatJSTTime(ISO_Z)).toBe('10:50')
+  })
+
+  it('解釈できない値でも桁を頼りにさせない', () => {
+    // 以前は formatJSTWithYear(...).slice(11) で時刻を切り出しており、
+    // 不正値のとき '—'.slice(11) が空文字になって「〜」だけが残っていた
+    expect(formatJSTTime('')).toBe('—')
+  })
+})
+
+describe('編集フォーム（datetime-local）との往復', () => {
+  it('JST の壁時計を datetime-local の値にする', () => {
+    // 閲覧環境のタイムゾーンに関係なく、一覧の表示と同じ時刻を出す
+    expect(toJstDatetimeLocal(ISO_Z)).toBe('2026-09-01T10:50')
+  })
+
+  it('datetime-local の値を JST として ISO に戻す', () => {
+    expect(jstDatetimeLocalToIso('2026-09-01T10:50')).toBe('2026-09-01T01:50:00.000Z')
+  })
+
+  it('往復しても同じ瞬間を指す（表示だけ直して保存側を直さないとズレる）', () => {
+    const original = '2026-09-10T10:00:00.000Z'
+    expect(jstDatetimeLocalToIso(toJstDatetimeLocal(original))).toBe(original)
+  })
+
+  it('解釈できない値は空文字にする（フォームに Invalid を入れない）', () => {
+    expect(toJstDatetimeLocal('')).toBe('')
+    expect(jstDatetimeLocalToIso('')).toBe('')
   })
 })
 
@@ -59,10 +112,8 @@ describe('予約一覧などの日時表示（YYYY/MM/DD HH:mm）', () => {
     expect(formatJSTWithYear(UTC_SPACE)).toBe('2026/09/01 10:50')
   })
 
-  it('11 文字目以降が時刻になる（reservations が slice(11) で切り出している）', () => {
-    // apps/web/src/app/reservations/page.tsx が formatJST(...).slice(11) で
-    // 終了時刻だけを表示している。桁を変えるとその表示が壊れる
-    expect(formatJSTWithYear(ISO_Z).slice(11)).toBe('10:50')
+  it('日付と時刻をスペースで区切る（一覧の桁揃えが崩れないように）', () => {
+    expect(formatJSTWithYear(ISO_Z)).toMatch(/^\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}$/)
   })
 
   it('解釈できない値は Invalid Date を画面に出さない', () => {
