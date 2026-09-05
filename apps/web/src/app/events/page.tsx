@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation'
 import { api } from '@/lib/api'
 import type { EventItem } from '@/lib/api'
 import Header from '@/components/layout/header'
-import { formatJST } from '@/lib/format-jst'
+import { formatJST, jstDatetimeLocalToIso } from '@/lib/format-jst'
 
 function validateForm(data: { title: string; start_at: string; end_at: string; capacity: number; price: number | null }): string | null {
   if (!data.title.trim()) return 'タイトルを入力してください'
@@ -65,8 +65,11 @@ export default function EventsPage() {
       await api.events.create({
         title: title.trim(),
         description: description.trim() || undefined,
-        start_at: new Date(startAt).toISOString(),
-        end_at: new Date(endAt).toISOString(),
+        // datetime-local の入力は JST の壁時計として解釈する。
+        // 編集モーダル（event-detail-client.tsx）と規則を揃えないと、
+        // JST 以外の環境で「作成した時刻」と「編集で見える時刻」が食い違う
+        start_at: jstDatetimeLocalToIso(startAt),
+        end_at: jstDatetimeLocalToIso(endAt),
         capacity: cap,
         price: priceVal ?? undefined,
         is_published: isPublished ? 1 : 0,
