@@ -44,8 +44,17 @@ export interface IssueReceiptResult {
   alreadyIssued?: boolean;
   receiptUrl?: string | null;
   code?: ReceiptIssueCode;
-  /** 管理画面に出す説明（参加者には見せない） */
+  /** 発行できなかった理由。管理画面に出す（参加者には見せない） */
   error?: string;
+  /**
+   * 発行はできたが人の確認が要ること。
+   *
+   * ⚠️ `error` と分けてある。`issued: true` のときに `error` へ入れると、
+   *    「発行できたなら理由は不要」という素直な実装（`issued ? null : error`）で
+   *    黙って捨てられる。実際に1周目の修正でそうなり、二重発行の警告が
+   *    画面に出ていなかった。
+   */
+  warning?: string;
 }
 
 export interface IssueReceiptOptions {
@@ -131,10 +140,10 @@ export async function issueReceiptForBooking(
         WHERE id = ?
           AND receipt_url IS NULL
           AND (receipt_issued_at IS NULL OR receipt_issued_at < datetime('now', ?))
-      RETURNING id`,
+      RETURNING id, receipt_issued_at`,
     )
     .bind(bookingId, CLAIM_TIMEOUT)
-    .first<{ id: number }>();
+    .first<{ id: number; receipt_issued_at: string }>();
 
   if (!claimed) {
     // 取れなかった理由は2つ。読み直して見分ける。
@@ -152,7 +161,14 @@ export async function issueReceiptForBooking(
     };
   }
 
-  /** 発行権を返す。freee を呼べなかった／失敗したときに、次の試行を塞がないため */
+  /**
+   * 発行権を返す。freee を呼べなかった／失敗したときに、次の試行を塞がないため。
+   *
+   * ⚠️ **自分が立てた印のときだけ消す**（`receipt_issued_at = ?`）。
+   *    条件を `receipt_url IS NULL` だけにすると、期限切れで別のリクエストが
+   *    引き継いだ後に自分が release したとき、その相手の発行権まで消してしまい、
+   *    3本目が同時に走れるようになる（＝二重発行の窓が開く）。
+   */
   const releaseClaim = async () => {
     await db
       .prepare(
@@ -160,9 +176,10 @@ export async function issueReceiptForBooking(
             SET receipt_issued_at = NULL,
                 updated_at = datetime('now')
           WHERE id = ?
-            AND receipt_url IS NULL`,
+            AND receipt_url IS NULL
+            AND receipt_issued_at = ?`,
       )
-      .bind(bookingId)
+      .bind(bookingId, claimed.receipt_issued_at)
       .run();
   };
 
@@ -188,8 +205,8 @@ export async function issueReceiptForBooking(
     if (err instanceof TokenUnavailableError) {
       return {
         issued: false,
-        code: 'freee_unavailable',
-        error: 'freee に接続できませんでした。連携状態を確認してください。',
+        code: err.reauthRequired ? 'freee_reauth_required' : 'freee_unavailable',
+        error: err.adminMessage,
       };
     }
     // 401 は「期限内に見えるトークンが無効化された」＝再認可しないと直らない。
@@ -201,6 +218,18 @@ export async function issueReceiptForBooking(
         error: 'freee との連携が切れています。管理画面から連携し直してください。',
       };
     }
+    // ⚠️ freee のメッセージを固定文で潰さない。
+    //    取引先が未設定だと freee は「取引先を指定してください」と教えてくれるが、
+    //    これを捨てると運営者は原因に辿り着けない（デプロイ直後がまさにこの状態）。
+    //    宛名は describeError で伏せ済みなので、そのまま出してよい。
+    if (err instanceof FreeeReceiptApiError) {
+      return {
+        issued: false,
+        code: 'issue_failed',
+        error: `領収書を発行できませんでした。（${err.message}）`,
+      };
+    }
+    // freee 以外の失敗（通信断・タイムアウト）はメッセージに何が入るか読めないので出さない
     return { issued: false, code: 'issue_failed', error: '領収書を発行できませんでした。' };
   }
 
@@ -240,7 +269,8 @@ export async function issueReceiptForBooking(
       issued: true,
       alreadyIssued: true,
       receiptUrl: fresh?.receipt_url ?? null,
-      error: 'ほかの操作と重なりました。freee 側に領収書が重複していないか確認してください。',
+      warning:
+        'ほかの操作と重なり、領収書が2枚発行された可能性があります。freee 側を確認してください。',
     };
   }
 
@@ -248,8 +278,44 @@ export async function issueReceiptForBooking(
   return { issued: true, receiptUrl: result.receiptUrl };
 }
 
-/** トークンを取れなかった（未連携・要再認可・一時障害） */
-class TokenUnavailableError extends Error {}
+/**
+ * トークンを取れなかった。
+ *
+ * ⚠️ 理由を潰さないこと。freee 側で連携を解除されると **refresh の段階で
+ *    REAUTH_REQUIRED になる**（/receipts まで到達しないので 401 は返ってこない）。
+ *    一律で「一時的に接続できません」にすると、再認可の案内が永久に出ない。
+ */
+class TokenUnavailableError extends Error {
+  constructor(
+    /** 再認可しないと直らないか */
+    readonly reauthRequired: boolean,
+    /** 管理画面に出す案内 */
+    readonly adminMessage: string,
+  ) {
+    super('TOKEN_UNAVAILABLE');
+  }
+}
+
+/** getValidAccessTokenFreee が投げるエラーを、運営者向けの案内に翻訳する */
+function describeTokenFailure(err: unknown): TokenUnavailableError {
+  const reason = err instanceof Error ? err.message : '';
+  if (reason === 'REAUTH_REQUIRED') {
+    return new TokenUnavailableError(
+      true,
+      'freee との連携が切れています。管理画面から連携し直してください。',
+    );
+  }
+  if (reason === 'FREEE_NOT_CONNECTED') {
+    return new TokenUnavailableError(
+      false,
+      'freee と連携していません。管理画面から連携してください。',
+    );
+  }
+  return new TokenUnavailableError(
+    false,
+    'freee に一時的に接続できませんでした。少し待ってから再度お試しください。',
+  );
+}
 
 /**
  * トークンを取って発行する。401 なら一度だけ取り直して再試行する。
@@ -270,7 +336,7 @@ async function issueWithReauthRetry(
       return await getValidAccessTokenFreee(env, db, forceRefresh);
     } catch (err) {
       console.error('[freee] トークンを取得できませんでした:', bookingId, err);
-      throw new TokenUnavailableError();
+      throw describeTokenFailure(err);
     }
   };
 

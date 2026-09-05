@@ -167,6 +167,10 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
         setReceiptWarning(
           `受領は記録しました。領収書は発行できていません（${res.data.receiptError ?? '原因不明'}）。`,
         )
+      } else if (res.success && res.data.receiptWarning) {
+        // 発行はできたが人の確認が要るケース（二重発行の疑いなど）。
+        // 「発行できた＝何も出さない」にすると、freee 側の重複に誰も気づけない
+        setReceiptWarning(res.data.receiptWarning)
       }
     } catch (err) {
       // fetchApi は非2xxで throw する。ステータスで案内を分けないと、

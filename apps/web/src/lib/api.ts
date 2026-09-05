@@ -632,6 +632,8 @@ export const api = {
         receiptUrl: string | null
         /** 未発行の理由。運営者にだけ見せる（参加者には出さない） */
         receiptError: string | null
+        /** 発行はできたが人の確認が要ること（二重発行の疑いなど） */
+        receiptWarning: string | null
       }>>(
         `/api/events/${eventId}/bookings/${bookingId}/cash-received`,
         { method: 'POST' },

@@ -12,6 +12,8 @@ const mockToken = vi.mocked(getValidAccessTokenFreee);
 
 const ENV = {} as Parameters<typeof issueReceiptForBooking>[0];
 const ISSUED_URL = 'https://invoice.secure.freee.co.jp/ivex/dl/abc';
+/** claim が立てる印の時刻。release がこの値で照合できているかを見る */
+const CLAIMED_AT = '2026-09-06 09:05:00';
 
 /** 受領済み・領収書未発行の予約 */
 function booking(overrides: Record<string, unknown> = {}) {
@@ -49,6 +51,8 @@ interface DbOptions {
  */
 function makeDb(opts: DbOptions = {}) {
   const sqls: string[] = [];
+  /** release の UPDATE に渡された bind 引数 */
+  const released: unknown[][] = [];
   const calls = { select: 0, claim: 0, release: 0, save: 0 };
   const row = opts.booking === undefined ? booking() : opts.booking;
 
@@ -60,10 +64,17 @@ function makeDb(opts: DbOptions = {}) {
       const isRelease = sql.includes('receipt_issued_at = NULL');
       const isSave = sql.includes('receipt_url = ?');
 
+      let bound: unknown[] = [];
       return {
-        bind: vi.fn().mockReturnThis(),
+        bind: vi.fn().mockImplementation(function (this: unknown, ...args: unknown[]) {
+          bound = args;
+          return this;
+        }),
         run: vi.fn().mockImplementation(async () => {
-          if (isRelease) calls.release++;
+          if (isRelease) {
+            calls.release++;
+            released.push(bound);
+          }
           return { meta: { changes: 1 } };
         }),
         first: vi.fn().mockImplementation(async () => {
@@ -74,7 +85,7 @@ function makeDb(opts: DbOptions = {}) {
           }
           if (isClaim) {
             calls.claim++;
-            return opts.claim === false ? null : { id: 5 };
+            return opts.claim === false ? null : { id: 5, receipt_issued_at: CLAIMED_AT };
           }
           if (isSave) {
             calls.save++;
@@ -86,7 +97,7 @@ function makeDb(opts: DbOptions = {}) {
     }),
   } as unknown as D1Database;
 
-  return { db, sqls, calls };
+  return { db, sqls, calls, released };
 }
 
 /** 領収書を1件発行する最小の発行器 */
@@ -320,7 +331,36 @@ describe('issueReceiptForBooking（同時実行）', () => {
 
     const res = await issueReceiptForBooking(ENV, db, 1, 5, makeIssuer());
 
-    expect(res.error).toContain('重複');
+    // ⚠️ error ではなく warning に載せる。error に入れると呼び出し側の
+    //    `issued ? null : error` で黙って捨てられる（1周目で実際にそうなった）
+    expect(res.issued).toBe(true);
+    expect(res.warning).toContain('2枚');
+    expect(res.error).toBeUndefined();
+  });
+
+  it('【重要】発行権は自分が立てた印のときだけ返す', async () => {
+    // 条件が receipt_url IS NULL だけだと、期限切れで引き継いだ相手の発行権まで
+    // 消してしまい、3本目が同時に走れるようになる
+    const { db, sqls, released } = makeDb();
+    const issuer: FreeeReceiptIssuer = {
+      createReceipt: vi.fn().mockRejectedValue(new Error('freee 500')),
+    };
+
+    await issueReceiptForBooking(ENV, db, 1, 5, issuer);
+
+    const release = sqls.find((q) => q.includes('receipt_issued_at = NULL')) ?? '';
+    expect(release).toContain('receipt_issued_at = ?');
+    // claim で持ち帰った時刻をそのまま照合に使っているか（? があるだけでは足りない）
+    expect(released[0]).toContain(CLAIMED_AT);
+  });
+
+  it('発行権を取るときに時刻を持ち帰る（release の照合に使う）', async () => {
+    const { db, sqls } = makeDb();
+
+    await issueReceiptForBooking(ENV, db, 1, 5, makeIssuer());
+
+    const claim = sqls.find((q) => q.includes('RETURNING id')) ?? '';
+    expect(claim).toContain('RETURNING id, receipt_issued_at');
   });
 });
 
@@ -423,5 +463,63 @@ describe('issueReceiptForBooking（トークン失効）', () => {
 
     expect(createReceipt).toHaveBeenCalledTimes(1);
     expect(res.code).toBe('issue_failed');
+  });
+});
+
+describe('issueReceiptForBooking（運営者への案内）', () => {
+  it('【重要】freee のエラー内容を潰さずに伝える', async () => {
+    // 取引先が未設定だと freee が「取引先を指定してください」と教えてくれる。
+    // 固定文で上書きすると、デプロイ直後に原因不明で全件失敗する
+    const { db } = makeDb();
+    const createReceipt = vi
+      .fn()
+      .mockRejectedValue(new FreeeReceiptApiError('freee 400: 取引先を指定してください。', 400));
+
+    const res = await issueReceiptForBooking(ENV, db, 1, 5, { createReceipt });
+
+    expect(res.error).toContain('取引先を指定してください');
+  });
+
+  it('freee 以外の失敗（通信断など）は中身を出さない', async () => {
+    // 何が入るか読めないメッセージを管理画面に出さない
+    const { db } = makeDb();
+    const createReceipt = vi.fn().mockRejectedValue(new Error('fetch failed: 10.0.0.1:443'));
+
+    const res = await issueReceiptForBooking(ENV, db, 1, 5, { createReceipt });
+
+    expect(res.error).not.toContain('10.0.0.1');
+  });
+
+  it('【重要】連携が切れている（REAUTH_REQUIRED）なら再認可を案内する', async () => {
+    // freee 側で連携を解除すると refresh の段階で落ちる。
+    // /receipts まで届かないので 401 は返ってこない
+    mockToken.mockRejectedValue(new Error('REAUTH_REQUIRED'));
+    const { db } = makeDb();
+
+    const res = await issueReceiptForBooking(ENV, db, 1, 5, makeIssuer());
+
+    expect(res.code).toBe('freee_reauth_required');
+    expect(res.error).toContain('連携し直して');
+  });
+
+  it('まだ連携していない（FREEE_NOT_CONNECTED）なら連携を案内する', async () => {
+    mockToken.mockRejectedValue(new Error('FREEE_NOT_CONNECTED'));
+    const { db } = makeDb();
+
+    const res = await issueReceiptForBooking(ENV, db, 1, 5, makeIssuer());
+
+    expect(res.code).toBe('freee_unavailable');
+    expect(res.error).toContain('連携していません');
+  });
+
+  it('一時障害なら「少し待って」と案内する（再認可を促さない）', async () => {
+    // ここで「連携し直して」と出すと、直す必要のない再認可をさせてしまう
+    mockToken.mockRejectedValue(new Error('FREEE_TEMPORARILY_UNAVAILABLE'));
+    const { db } = makeDb();
+
+    const res = await issueReceiptForBooking(ENV, db, 1, 5, makeIssuer());
+
+    expect(res.code).toBe('freee_unavailable');
+    expect(res.error).toContain('少し待って');
   });
 });

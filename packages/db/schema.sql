@@ -705,10 +705,15 @@ CREATE TABLE IF NOT EXISTS event_bookings (
   stripe_refund_id TEXT,
   refund_status TEXT,
   -- 当日現金を受け取った日時。NULL = 未受領（payment_status='cash' と併せて判定する）
+  -- ⚠️ datetime('now') ＝ UTC・スペース区切り。JST ではない（下の receipt_issued_at 参照）
   cash_received_at TEXT,
   -- freee が発行した領収書の URL。NULL = 未発行
   receipt_url TEXT,
-  -- 領収書を発行した日時。NULL = 未発行
+  -- 領収書を発行した日時。NULL = 未発行。発行中の印としても使う（services/freee-receipt.ts）
+  -- ⚠️ 形式は datetime('now') ＝ **UTC・スペース区切り**（'YYYY-MM-DD HH:MM:SS'）。
+  --    発行権の期限判定が receipt_issued_at < datetime('now','-5 minutes') という
+  --    **文字列比較**なので、strftime(...,'+9 hours')（JST・T区切り）で書くと
+  --    比較が壊れて領収書の二重発行が復活する。書き込みは必ず datetime('now') で。
   receipt_issued_at TEXT,
   -- キャンセルの理由。NULL = 本人都合のキャンセル
   -- 'checkout_abandoned' = Stripe 決済画面から戻った / 'checkout_expired' = セッション期限切れ

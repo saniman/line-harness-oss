@@ -629,6 +629,8 @@ events.post('/api/events/:id/bookings/:bookingId/cash-received', async (c) => {
         receiptUrl: receipt.receiptUrl ?? null,
         // 未発行の理由は管理画面にだけ出す（参加者には見せない）
         receiptError: receipt.issued ? null : (receipt.error ?? null),
+        // ⚠️ 発行できたときも出す。二重発行の疑いはここでしか伝わらない
+        receiptWarning: receipt.warning ?? null,
       },
     });
   } catch (err) {
