@@ -373,7 +373,8 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
                         {/* 領収書の宛名。発行前に運営者が目視できるようにする
                             （参加者が自由に入れられる値なので、確認できることが大事） */}
                         {b.receipt_name && (
-                          <p className="text-xs text-gray-500 mt-0.5">
+                          <p className="text-xs text-gray-500 mt-0.5 truncate">
+                            {/* 60文字の連続文字列でも表を横に伸ばさない（メール行と同じ扱い） */}
                             領収書宛名: {b.receipt_name}
                           </p>
                         )}

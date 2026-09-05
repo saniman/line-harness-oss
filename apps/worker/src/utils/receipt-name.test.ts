@@ -96,3 +96,40 @@ describe('sanitizeReceiptName（\\s に該当しない不可視文字）', () =>
     expect(sanitizeReceiptName(junk)).toBeNull();
   });
 });
+
+describe('sanitizeReceiptName（列挙では追いきれない不可視文字）', () => {
+  // 1文字ずつ列挙していると必ず漏れる。実際 U+2060 を足したのに
+  // 隣の U+2061 が素通りしていた。Unicode カテゴリで弾く。
+  const MISSED_BY_ENUMERATION: Array<[string, number]> = [
+    ['U+2061 INVISIBLE TIMES', 0x2061],   // 追加した U+2060 の隣
+    ['U+2062 INVISIBLE TIMES', 0x2062],
+    ['U+2064 INVISIBLE PLUS', 0x2064],
+    ['U+180E MONGOLIAN VOWEL SEPARATOR', 0x180e],
+    ['U+FFF9 INTERLINEAR ANNOTATION ANCHOR', 0xfff9],
+    ['U+0600 ARABIC NUMBER SIGN', 0x0600],
+  ];
+
+  it.each(MISSED_BY_ENUMERATION)('%s だけなら null にする', (_name, code) => {
+    expect(sanitizeReceiptName(String.fromCodePoint(code))).toBeNull();
+  });
+
+  it('TAG 文字（U+E0020〜U+E007F）も畳む', () => {
+    // 絵文字の異体字セレクタ等に使われる。見た目には出ない
+    const tag = String.fromCodePoint(0xe0041);
+    expect(sanitizeReceiptName(`株式会社${tag}サンプル`)).toBe('株式会社 サンプル');
+  });
+
+  it('通常の文字・絵文字・全角スペースは誤検出しない', () => {
+    expect(sanitizeReceiptName('株式会社サンプル')).toBe('株式会社サンプル');
+    expect(sanitizeReceiptName('😀ラボ')).toBe('😀ラボ');
+    // 全角スペースは \s に該当するので1つの半角に畳まれる（消えはしない）
+    expect(sanitizeReceiptName('株式会社　サンプル')).toBe('株式会社 サンプル');
+  });
+
+  it('ハングルフィラー（Lo カテゴリ）も引き続き畳む', () => {
+    // Cf ではないのでカテゴリ判定だけでは拾えない。明示的に足す必要がある
+    for (const code of [0x3164, 0x115f, 0x1160, 0xffa0]) {
+      expect(sanitizeReceiptName(String.fromCodePoint(code))).toBeNull();
+    }
+  });
+});

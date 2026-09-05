@@ -714,9 +714,11 @@ CREATE TABLE IF NOT EXISTS event_bookings (
   -- 'checkout_abandoned' = Stripe 決済画面から戻った / 'checkout_expired' = セッション期限切れ
   cancel_reason TEXT,
   -- 領収書の宛名（任意入力）。NULL のときは name（LINEの表示名）にフォールバックする。
-  -- ⚠️ 位置は ALTER TABLE ADD COLUMN が実際に付ける末尾に合わせている。
-  --    このテーブルは将来テーブル再作成（INSERT INTO v2 SELECT ...）を行う可能性があり、
-  --    schema.sql と実 DDL の列順がずれていると移行で値が入れ違う。
+  -- ⚠️ この列は ALTER TABLE ADD COLUMN で追加したため、実 DB では物理的に**末尾**
+  --    （created_at / updated_at より後ろ）にある。このファイルの並びとは一致しない。
+  --    cash_received_at など他の ALTER 追加列も同じ扱い（読みやすさ優先の並び）。
+  --    テーブル再作成（INSERT INTO v2 SELECT * ...）を書くときは、このファイルの順ではなく
+  --    実 DB の PRAGMA table_info を見ること。信じると列がずれる。
   receipt_name TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
