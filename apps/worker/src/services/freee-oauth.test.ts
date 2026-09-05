@@ -7,6 +7,8 @@ import {
   verifyOAuthState,
   getValidAccessTokenFreee,
   fetchFreeeCompanyName,
+  refreshFreeeTokens,
+  TOKEN_TIMEOUT_MS,
 } from './freee-oauth.js';
 
 const ENV = {
@@ -695,5 +697,49 @@ describe('fetchFreeeCompanyName', () => {
   it('レスポンスの形が想定外でも null を返す', async () => {
     fetchMock.mockResolvedValue(ok({ unexpected: true }));
     expect(await fetchFreeeCompanyName('at-1', 1234567)).toBeNull();
+  });
+});
+
+describe('refreshFreeeTokens のタイムアウト', () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', fetchMock);
+    fetchMock.mockReset();
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({ access_token: 'a', refresh_token: 'r', expires_in: 3600 }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('【重要】タイムアウトを付けて呼ぶ', async () => {
+    // この呼び出しは現金受領ボタンの応答に同期でぶら下がっている。
+    // freee のトークン endpoint が固まると、現金を受け取った直後の運営者が
+    // 無反応のボタンを見続けることになる
+    await refreshFreeeTokens(ENV, 'refresh-token-1');
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('【重要】タイムアウトを短くしない（回転トークンを取り逃すため）', () => {
+    // freee は refresh_token を回転させる。レスポンスを受け取る前に中断すると、
+    // freee 側では回転済みなのに新しいトークンを保存できず、以降 invalid_grant で
+    // **再連携するまで領収書が止まる**（新しいトークンは二度と手に入らないので自動復旧不可）。
+    // 8秒にして事故りかけたため、下限をテストで固定する。
+    // AbortSignal.timeout はネイティブ実装でフェイクタイマーに反応しないので、値そのものを見る
+    expect(TOKEN_TIMEOUT_MS).toBeGreaterThanOrEqual(20_000);
+  });
+
+  it('タイムアウトは有限で、長すぎない（ボタンが無反応のままにしない）', () => {
+    // 現金受領ボタンの応答に同期でぶら下がっているので、無制限は許さない
+    expect(Number.isFinite(TOKEN_TIMEOUT_MS)).toBe(true);
+    expect(TOKEN_TIMEOUT_MS).toBeLessThanOrEqual(30_000);
   });
 });

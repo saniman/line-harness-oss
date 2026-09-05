@@ -56,3 +56,24 @@ export function formatJST(iso: string): string {
   const dow = WEEKDAYS_JA[jst.getUTCDay()]
   return `${mm}/${dd}(${dow}) ${hh}:${min}`
 }
+
+/**
+ * D1 の日時文字列を JST の暦日 `YYYY-MM-DD` にする。
+ *
+ * 領収書の「領収日」に使う。UTC のまま渡すと、JST の 09:00 より前に受領した分が
+ * 前日付の領収書になる（例: UTC 2026-09-06 16:30 は JST では 09-07）。
+ * 経理上は日付がずれた証憑になるので、必ずこの関数を通す。
+ *
+ * @returns 解釈できない値なら null（呼び出し側で発行を止められるようにする。
+ *          `formatJST` のように '—' を返すと、その文字列が領収日として送られてしまう）
+ */
+export function formatJstDate(iso: string): string | null {
+  if (!iso) return null
+  const d = new Date(normalizeDbDatetime(iso))
+  if (Number.isNaN(d.getTime())) return null
+  const jst = new Date(d.getTime() + 9 * 60 * 60 * 1000)
+  const yyyy = jst.getUTCFullYear()
+  const mm = String(jst.getUTCMonth() + 1).padStart(2, '0')
+  const dd = String(jst.getUTCDate()).padStart(2, '0')
+  return `${yyyy}-${mm}-${dd}`
+}

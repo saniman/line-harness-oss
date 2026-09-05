@@ -19,6 +19,7 @@ vi.mock('@line-crm/line-sdk', () => ({
 }))
 
 const mockMarkCashReceived = vi.hoisted(() => vi.fn())
+const mockIssueReceipt = vi.hoisted(() => vi.fn())
 
 vi.mock('../services/events.js', () => ({
   createEvent: vi.fn(),
@@ -45,6 +46,10 @@ vi.mock('../services/event-followup.js', () => ({
   enrollEventFollowupScenarios: vi.fn().mockResolvedValue(0),
   enrollEventParticipants: vi.fn(),
   switchToCancelledFollowup: vi.fn().mockResolvedValue({ stopped: 0, enrolled: 0 }),
+}))
+
+vi.mock('../services/freee-receipt.js', () => ({
+  issueReceiptForBooking: mockIssueReceipt,
 }))
 
 vi.mock('../services/liff-identity.js', () => ({
@@ -1055,6 +1060,8 @@ describe('POST /api/events/:id/bookings/:bookingId/cash-received', () => {
 
   beforeEach(() => {
     mockMarkCashReceived.mockReset()
+    mockIssueReceipt.mockReset()
+    mockIssueReceipt.mockResolvedValue({ issued: true, receiptUrl: 'https://freee.example/r/1' })
   })
 
   it('受領を記録して成功を返す', async () => {
@@ -1062,6 +1069,106 @@ describe('POST /api/events/:id/bookings/:bookingId/cash-received', () => {
     const res = await app.request(PATH, { method: 'POST' }, { DB: mockDb })
     expect(res.status).toBe(200)
     expect(mockMarkCashReceived).toHaveBeenCalledWith(expect.anything(), 1, 5)
+  })
+
+  it('受領を記録したら領収書の発行を呼ぶ', async () => {
+    mockMarkCashReceived.mockResolvedValue({ success: true, alreadyReceived: false })
+
+    await app.request(PATH, { method: 'POST' }, { DB: mockDb })
+
+    expect(mockIssueReceipt).toHaveBeenCalledWith(
+      expect.anything(), expect.anything(), 1, 5, undefined, expect.anything(),
+    )
+  })
+
+  it('領収書の但し書きに使うイベント名を渡す', async () => {
+    mockMarkCashReceived.mockResolvedValue({ success: true, alreadyReceived: false })
+    vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, title: '沖縄AI勉強会' })
+
+    await app.request(PATH, { method: 'POST' }, { DB: mockDb })
+
+    expect(mockIssueReceipt).toHaveBeenCalledWith(
+      expect.anything(), expect.anything(), 1, 5, undefined,
+      { eventTitle: '沖縄AI勉強会' },
+    )
+  })
+
+  it('発行できたら領収書のURLを返す', async () => {
+    mockMarkCashReceived.mockResolvedValue({ success: true, alreadyReceived: false })
+    mockIssueReceipt.mockResolvedValue({ issued: true, receiptUrl: 'https://freee.example/r/9' })
+
+    const res = await app.request(PATH, { method: 'POST' }, { DB: mockDb })
+
+    const body = await res.json() as { data: { receiptIssued: boolean; receiptUrl: string } }
+    expect(body.data.receiptIssued).toBe(true)
+    expect(body.data.receiptUrl).toBe('https://freee.example/r/9')
+  })
+
+  it('【重要】発行できていても警告があれば運営者に伝える', async () => {
+    // 二重発行の疑いはここでしか伝わらない。
+    // 「発行できた＝何も出さない」にすると freee 側の重複に誰も気づけない
+    mockMarkCashReceived.mockResolvedValue({ success: true, alreadyReceived: false })
+    mockIssueReceipt.mockResolvedValue({
+      issued: true,
+      receiptUrl: 'https://freee.example/r/1',
+      warning: 'ほかの操作と重なり、領収書が2枚発行された可能性があります。',
+    })
+
+    const res = await app.request(PATH, { method: 'POST' }, { DB: mockDb })
+
+    const body = await res.json() as { data: { receiptIssued: boolean; receiptWarning: string } }
+    expect(body.data.receiptIssued).toBe(true)
+    expect(body.data.receiptWarning).toContain('2枚')
+  })
+
+  it('警告が無ければ receiptWarning は null', async () => {
+    mockMarkCashReceived.mockResolvedValue({ success: true, alreadyReceived: false })
+
+    const res = await app.request(PATH, { method: 'POST' }, { DB: mockDb })
+
+    const body = await res.json() as { data: { receiptWarning: string | null } }
+    expect(body.data.receiptWarning).toBe(null)
+  })
+
+  it('【重要】領収書の発行に失敗しても現金受領は成功として返す', async () => {
+    // 現金は物理的に受け取っている。500 を返すと運営者が「記録されていない」と誤解し、
+    // 押し直す or 二重に受け取ることになる
+    mockMarkCashReceived.mockResolvedValue({ success: true, alreadyReceived: false })
+    mockIssueReceipt.mockResolvedValue({
+      issued: false, code: 'freee_unavailable', error: 'freee に接続できませんでした。',
+    })
+
+    const res = await app.request(PATH, { method: 'POST' }, { DB: mockDb })
+
+    expect(res.status).toBe(200)
+    const body = await res.json() as {
+      success: boolean
+      data: { cashReceivedAt: string | null; receiptIssued: boolean; receiptError: string }
+    }
+    expect(body.success).toBe(true)
+    expect(body.data.receiptIssued).toBe(false)
+    expect(body.data.receiptError).toContain('freee')
+  })
+
+  it('【重要】領収書の発行が例外を投げても現金受領は 500 にしない', async () => {
+    mockMarkCashReceived.mockResolvedValue({ success: true, alreadyReceived: false })
+    mockIssueReceipt.mockRejectedValue(new Error('boom'))
+
+    const res = await app.request(PATH, { method: 'POST' }, { DB: mockDb })
+
+    expect(res.status).toBe(200)
+    const body = await res.json() as { data: { receiptIssued: boolean } }
+    expect(body.data.receiptIssued).toBe(false)
+  })
+
+  it('受領できなかったときは領収書を発行しない', async () => {
+    mockMarkCashReceived.mockResolvedValue({
+      success: false, alreadyReceived: false, code: 'cancelled', error: 'キャンセル済みの予約です。',
+    })
+
+    await app.request(PATH, { method: 'POST' }, { DB: mockDb })
+
+    expect(mockIssueReceipt).not.toHaveBeenCalled()
   })
 
   it('既に受領済みでも成功として返す（冪等）', async () => {

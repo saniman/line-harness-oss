@@ -59,6 +59,21 @@ LIFF_BASE_URL = "https://liff.line.me/1661159603-5qlDj5wV"
 # FREEE_CLIENT_SECRET      - 同上
 # FREEE_REDIRECT_URI       - 省略可。既定は https://api.walover-co.work/api/integrations/freee/callback
 
+# freee 領収書の取引先（秘密情報ではないので [vars] に直接書く）
+#
+# ⚠️ **未設定だと領収書が1枚も発行されない。** freee は領収書を必ず取引先に
+#    紐づけるため、指定が無いと 400「取引先を指定してください」で毎回失敗する。
+#    ただし現金の受領記録は成功するので（発行はベストエフォート）、
+#    設定を忘れても画面はエラーにならない。管理画面の黄色い警告で気づくこと。
+#
+# 参加者ごとに取引先を作ると freee のマスタが人数分汚れるので、
+# 「イベント参加者」など固定の取引先を1件だけ作り、そのコードをここに書く。
+# 領収書の宛名は partner_display_name で1件ずつ上書きされる。
+# 取引先の作り方: docs/setup/freee-setup.md
+#
+# FREEE_PARTNER_CODE = "EVENT"   # freee の取引先コード
+# FREEE_PARTNER_ID   = "12345"   # コードの代わりにIDでも可（両方あればIDを優先）
+
 # ═══════════════════════════════════════════════════════════════
 # 本番環境 (aiagent.mini@)
 # 使い方: npx wrangler deploy --env production --name your-worker-name
