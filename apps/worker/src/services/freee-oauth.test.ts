@@ -8,6 +8,7 @@ import {
   getValidAccessTokenFreee,
   fetchFreeeCompanyName,
   refreshFreeeTokens,
+  TOKEN_TIMEOUT_MS,
 } from './freee-oauth.js';
 
 const ENV = {
@@ -727,13 +728,18 @@ describe('refreshFreeeTokens のタイムアウト', () => {
     expect(init.signal).toBeInstanceOf(AbortSignal);
   });
 
-  it('タイムアウトは無制限にしない（30秒以内）', async () => {
-    await refreshFreeeTokens(ENV, 'refresh-token-1');
+  it('【重要】タイムアウトを短くしない（回転トークンを取り逃すため）', () => {
+    // freee は refresh_token を回転させる。レスポンスを受け取る前に中断すると、
+    // freee 側では回転済みなのに新しいトークンを保存できず、以降 invalid_grant で
+    // **再連携するまで領収書が止まる**（新しいトークンは二度と手に入らないので自動復旧不可）。
+    // 8秒にして事故りかけたため、下限をテストで固定する。
+    // AbortSignal.timeout はネイティブ実装でフェイクタイマーに反応しないので、値そのものを見る
+    expect(TOKEN_TIMEOUT_MS).toBeGreaterThanOrEqual(20_000);
+  });
 
-    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    // AbortSignal.timeout() は abort 済みでない限り reason を持たない。
-    // 「signal はあるが実質無期限」を弾くため、実際に発火するまで待てる長さかを見る
-    expect(init.signal).toBeDefined();
-    expect(init.signal?.aborted).toBe(false);
+  it('タイムアウトは有限で、長すぎない（ボタンが無反応のままにしない）', () => {
+    // 現金受領ボタンの応答に同期でぶら下がっているので、無制限は許さない
+    expect(Number.isFinite(TOKEN_TIMEOUT_MS)).toBe(true);
+    expect(TOKEN_TIMEOUT_MS).toBeLessThanOrEqual(30_000);
   });
 });

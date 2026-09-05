@@ -13,7 +13,11 @@
 
 import type { Env } from '../index.js';
 import { getValidAccessTokenFreee } from './freee-oauth.js';
-import { getEventBookingById, resolveReceiptName } from './events.js';
+import {
+  getEventBookingById,
+  getEventBookingForReceipt,
+  resolveReceiptName,
+} from './events.js';
 import { formatJstDate } from '../utils/format-jst.js';
 import {
   freeeReceiptIssuer,
@@ -104,7 +108,9 @@ export async function issueReceiptForBooking(
   issuer: FreeeReceiptIssuer = freeeReceiptIssuer,
   options: IssueReceiptOptions = {},
 ): Promise<IssueReceiptResult> {
-  const booking = await getEventBookingById(db, bookingId);
+  // 友だちの表示名まで取る。宛名は「指定 → 申込時の氏名 → LINE の表示名」の3段で決まるが、
+  // SELECT * だと3段目が常に undefined になる（getEventBookingForReceipt のコメント参照）
+  const booking = await getEventBookingForReceipt(db, bookingId);
   if (!booking) {
     return { issued: false, code: 'not_found', error: '予約が見つかりませんでした。' };
   }

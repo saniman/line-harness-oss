@@ -138,7 +138,9 @@ function describeError(status: number, body: unknown, payeeName: string): string
   if (Array.isArray(errors) && errors.length > 0) {
     const messages = errors.flatMap((e) => e.messages ?? []).filter(Boolean);
     if (messages.length > 0) {
-      return `freee ${status}: ${redactPayee(messages.join(' / '), payeeName)}`;
+      const safe = redactPayee(messages.join(' / '), payeeName);
+      // 伏せられなかったときはメッセージを捨て、種別だけにフォールバックする
+      if (safe !== null) return `freee ${status}: ${safe}`;
     }
     const types = errors.map((e) => e.type).filter(Boolean);
     if (types.length > 0) return `freee ${status}: ${types.join(' / ')}`;
@@ -146,9 +148,27 @@ function describeError(status: number, body: unknown, payeeName: string): string
   return `freee ${status}`;
 }
 
-/** メッセージ中の宛名を伏せる。空文字で splitAll しないようガードする */
-function redactPayee(message: string, payeeName: string): string {
+/**
+ * 単純な文字列置換で安全に伏せられる宛名の最小長（コードポイント）。
+ *
+ * 宛名は1文字でも保存できる（「林」「李」など実在する姓）。1文字を置換すると
+ * freee のメッセージ中の**無関係な同じ文字まで**「（宛名）」になり、
+ * 原因究明のために残したはずのメッセージが読めなくなる。
+ */
+const MIN_REDACTABLE_LENGTH = 2;
+
+/**
+ * メッセージ中の宛名を伏せる。
+ *
+ * @returns 伏せた文字列。安全に伏せられないときは null（呼び出し側でメッセージ自体を諦める）
+ */
+function redactPayee(message: string, payeeName: string): string | null {
   if (!payeeName) return message;
+  // 短すぎる宛名は置換すると誤爆する。メッセージを出さない側に倒す
+  // （個人情報を漏らすくらいなら、原因が分からない方がまし）
+  if (Array.from(payeeName).length < MIN_REDACTABLE_LENGTH) {
+    return message.includes(payeeName) ? null : message;
+  }
   return message.split(payeeName).join('（宛名）');
 }
 

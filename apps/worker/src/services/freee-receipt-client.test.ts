@@ -323,3 +323,50 @@ describe('freeeReceiptIssuer.createReceipt（HTTP ステータス）', () => {
     expect(err.message).toContain('bad_request');
   });
 });
+
+describe('宛名の伏せ字（短い宛名の誤爆）', () => {
+  function errorResponse(status: number, messages: string[]) {
+    return new Response(
+      JSON.stringify({ status_code: status, errors: [{ type: 'bad_request', messages }] }),
+      { status },
+    );
+  }
+
+  it('【重要】1文字の宛名では freee のメッセージを載せない', async () => {
+    // 「林」で単純置換すると、メッセージ中の無関係な「林」まで（宛名）になり、
+    // 原因究明のために残したはずの文章が読めなくなる。
+    // 個人情報を漏らすくらいなら原因が分からない方がまし、という判断
+    fetchMock.mockResolvedValue(errorResponse(400, ['林業向けの品目は指定できません（林）。']));
+
+    const err = await captureError(
+      freeeReceiptIssuer.createReceipt({ ...BASE_PARAMS, payeeName: '林' }),
+    );
+
+    expect(err.message).not.toContain('（宛名）');
+    expect(err.message).not.toContain('林');
+    // 種別だけは残す
+    expect(err.message).toContain('bad_request');
+  });
+
+  it('1文字の宛名でも、メッセージに含まれていなければそのまま出す', async () => {
+    fetchMock.mockResolvedValue(errorResponse(400, ['取引先を指定してください。']));
+
+    const err = await captureError(
+      freeeReceiptIssuer.createReceipt({ ...BASE_PARAMS, payeeName: '林' }),
+    );
+
+    expect(err.message).toContain('取引先を指定してください');
+  });
+
+  it('2文字以上なら従来どおり伏せて残す', async () => {
+    fetchMock.mockResolvedValue(errorResponse(400, ['山田太郎 は不正な値です。']));
+
+    const err = await captureError(
+      freeeReceiptIssuer.createReceipt({ ...BASE_PARAMS, payeeName: '山田太郎' }),
+    );
+
+    expect(err.message).not.toContain('山田太郎');
+    expect(err.message).toContain('（宛名）');
+    expect(err.message).toContain('不正な値');
+  });
+});

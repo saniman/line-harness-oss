@@ -59,7 +59,8 @@ function makeDb(opts: DbOptions = {}) {
   const db = {
     prepare: vi.fn().mockImplementation((sql: string) => {
       sqls.push(sql);
-      const isSelect = sql.includes('SELECT * FROM event_bookings');
+      // 宛名解決用の SELECT（friends と LEFT JOIN）と、状態の読み直し（SELECT *）の両方
+      const isSelect = sql.includes('FROM event_bookings');
       const isClaim = sql.includes('RETURNING id');
       const isRelease = sql.includes('receipt_issued_at = NULL');
       const isSave = sql.includes('receipt_url = ?');
@@ -78,18 +79,21 @@ function makeDb(opts: DbOptions = {}) {
           return { meta: { changes: 1 } };
         }),
         first: vi.fn().mockImplementation(async () => {
+          if (isClaim || isRelease || isSave) {
+            if (isClaim) {
+              calls.claim++;
+              return opts.claim === false ? null : { id: 5, receipt_issued_at: CLAIMED_AT };
+            }
+            if (isSave) {
+              calls.save++;
+              return opts.save === false ? null : { receipt_url: ISSUED_URL };
+            }
+            return null;
+          }
           if (isSelect) {
             calls.select++;
             if (calls.select === 1) return row;
             return opts.fresh === undefined ? row : opts.fresh;
-          }
-          if (isClaim) {
-            calls.claim++;
-            return opts.claim === false ? null : { id: 5, receipt_issued_at: CLAIMED_AT };
-          }
-          if (isSave) {
-            calls.save++;
-            return opts.save === false ? null : { receipt_url: ISSUED_URL };
           }
           return null;
         }),
@@ -624,5 +628,56 @@ describe('issueReceiptForBooking（2xx なのに URL が無い）', () => {
     const res = await issueReceiptForBooking(ENV, db, 1, 5, issuer);
 
     expect(res.error).toContain('作成されました');
+  });
+});
+
+describe('issueReceiptForBooking（宛名のフォールバック）', () => {
+  it('【重要】名前が空でも友だちの表示名で発行する', async () => {
+    // LIFF の getProfile() が失敗すると name は空文字で保存される（/join は body.name ?? ''）。
+    // 管理画面には友だちの表示名が出ているのに領収書だけ出ない、という食い違いを防ぐ
+    const { db } = makeDb({
+      booking: booking({ receipt_name: null, name: '', friend_display_name: 'あきひさ' }),
+    });
+    const issuer = makeIssuer();
+
+    const res = await issueReceiptForBooking(ENV, db, 1, 5, issuer);
+
+    expect(res.issued).toBe(true);
+    const arg = vi.mocked(issuer.createReceipt).mock.calls[0][0];
+    expect(arg.payeeName).toBe('あきひさ');
+  });
+
+  it('友だちの表示名も無ければ発行しない', async () => {
+    const { db } = makeDb({
+      booking: booking({ receipt_name: null, name: '', friend_display_name: null }),
+    });
+    const issuer = makeIssuer();
+
+    const res = await issueReceiptForBooking(ENV, db, 1, 5, issuer);
+
+    expect(res.code).toBe('no_payee');
+    expect(issuer.createReceipt).not.toHaveBeenCalled();
+  });
+
+  it('【重要】友だちの表示名を取れる SELECT を使う（SELECT * だと3段目が効かない）', async () => {
+    const { db, sqls } = makeDb();
+
+    await issueReceiptForBooking(ENV, db, 1, 5, makeIssuer());
+
+    const select = sqls.find((q) => q.includes('FROM event_bookings b')) ?? '';
+    expect(select).toContain('LEFT JOIN friends');
+    expect(select).toContain('friend_display_name');
+  });
+
+  it('指定があれば友だちの表示名より優先する', async () => {
+    const { db } = makeDb({
+      booking: booking({ receipt_name: '株式会社サンプル', name: '', friend_display_name: 'あきひさ' }),
+    });
+    const issuer = makeIssuer();
+
+    await issueReceiptForBooking(ENV, db, 1, 5, issuer);
+
+    const arg = vi.mocked(issuer.createReceipt).mock.calls[0][0];
+    expect(arg.payeeName).toBe('株式会社サンプル');
   });
 });

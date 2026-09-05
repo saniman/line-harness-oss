@@ -27,8 +27,23 @@ import type { Env } from '../index.js';
 const FREEE_AUTHORIZE_URL = 'https://accounts.secure.freee.co.jp/public_api/authorize';
 const FREEE_TOKEN_URL = 'https://accounts.secure.freee.co.jp/public_api/token';
 
-/** トークン取得・更新のタイムアウト。ユーザー操作に同期でぶら下がるため短めにする。 */
-const TOKEN_TIMEOUT_MS = 8_000;
+/**
+ * トークン更新のタイムアウト。
+ *
+ * ⚠️ **短くしてはいけない。** freee は refresh_token を**回転**させる（使い捨て）。
+ *    レスポンスを受け取る前に中断すると、freee 側では既に回転が済んでいるのに
+ *    新しい refresh_token をこちらが保存できず、以降は死んだトークンを送り続けて
+ *    invalid_grant になる。**人間が再連携するまで領収書が止まる恒久障害**で、
+ *    しかも新しいトークンは二度と手に入らないので自動復旧もできない。
+ *
+ * 一方でこの呼び出しは現金受領ボタンの応答に同期でぶら下がっているため、
+ * 無制限に待つとボタンが無反応になる。
+ *
+ * 「無反応が最大 25 秒」と「再連携が必要な恒久障害」を比べて前者を選ぶ。
+ * タイムアウトは長いほど応答を受け取れる＝トークンを失いにくいので、
+ * **応答性のためにここを縮めない**こと（8 秒にして事故りかけた）。
+ */
+export const TOKEN_TIMEOUT_MS = 25_000;
 const DEFAULT_REDIRECT_URI = 'https://api.walover-co.work/api/integrations/freee/callback';
 
 export interface FreeeTokens {
@@ -252,9 +267,7 @@ export async function refreshFreeeTokens(
       client_secret: env.FREEE_CLIENT_SECRET,
       refresh_token: refreshToken,
     }).toString(),
-    // ⚠️ タイムアウト必須。この呼び出しは現金受領ボタンの応答に同期でぶら下がっており、
-    //    freee のトークン endpoint が固まると、現金を受け取った直後の運営者が
-    //    無反応のボタンを見続けることになる（fetchFreeeCompanyName と同じ扱い）。
+    // ⚠️ 中断すると回転済みの refresh_token を取り逃す。値の根拠は TOKEN_TIMEOUT_MS を読むこと
     signal: AbortSignal.timeout(TOKEN_TIMEOUT_MS),
   });
 
