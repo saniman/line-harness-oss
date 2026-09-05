@@ -34,6 +34,8 @@ export default function EventsPage() {
   const [capacity, setCapacity] = useState(10)
   const [price, setPrice] = useState<string>('')
   const [isPublished, setIsPublished] = useState(false)
+  const [reminderAt, setReminderAt] = useState('')
+  const [reminderMessage, setReminderMessage] = useState('')
   const [creating, setCreating] = useState(false)
   const [formError, setFormError] = useState('')
 
@@ -78,6 +80,9 @@ export default function EventsPage() {
         capacity: cap,
         price: priceVal ?? undefined,
         is_published: isPublished ? 1 : 0,
+        // 空欄ならリマインドを配信しない
+        reminder_at: reminderAt ? jstDatetimeLocalToIso(reminderAt) : null,
+        reminder_message_extra: reminderMessage.trim() || null,
       })
       setTitle('')
       setDescription('')
@@ -86,6 +91,8 @@ export default function EventsPage() {
       setCapacity(10)
       setPrice('')
       setIsPublished(false)
+      setReminderAt('')
+      setReminderMessage('')
       await load()
     } catch {
       setFormError('作成に失敗しました')
@@ -272,6 +279,37 @@ export default function EventsPage() {
                   className={FIELD_CLASS}
                 />
                 <p className="text-xs text-gray-400 mt-1">Stripe決済が必要な場合は金額を入力してください</p>
+              </div>
+
+              <div className="pt-3 border-t border-gray-100">
+                <label className="block text-xs font-medium text-gray-700 mb-1">
+                  当日リマインドの送信日時
+                </label>
+                <input
+                  type="datetime-local"
+                  value={reminderAt}
+                  onChange={(e) => setReminderAt(e.target.value)}
+                  className={FIELD_CLASS}
+                />
+                <p className="text-xs text-gray-400 mt-1">
+                  空欄ならリマインドを送りません。参加者（申込確定者）全員に届きます
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">
+                  当日リマインドの本文
+                </label>
+                <textarea
+                  value={reminderMessage}
+                  onChange={(e) => setReminderMessage(e.target.value)}
+                  rows={6}
+                  placeholder={'📍【会場名】レンタルスペース Eir\nhttps://maps.app.goo.gl/...\n💻 ノートパソコン・電源アダプタをお忘れなく'}
+                  className={FIELD_CLASS}
+                />
+                <p className="text-xs text-gray-400 mt-1">
+                  イベント名と開始時刻は自動で入ります。会場・地図URL・持ち物などをそのまま書いてください
+                </p>
               </div>
 
               <div className="flex items-center gap-3">

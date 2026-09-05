@@ -965,6 +965,10 @@ export type EventItem = {
   capacity: number
   price: number | null
   is_published: number
+  /** 当日リマインドの送信日時（UTC ISO）。null = 配信しない */
+  reminder_at: string | null
+  /** 当日リマインドの本文（自由文） */
+  reminder_message_extra: string | null
   participant_count: number
   remaining: number
   created_at: string
@@ -979,6 +983,10 @@ export type EventCreateInput = {
   capacity: number
   price?: number | null
   is_published?: number
+  /** 当日リマインドの送信日時（UTC ISO）。'' / null = 配信しない */
+  reminder_at?: string | null
+  /** 当日リマインドの本文（自由文） */
+  reminder_message_extra?: string | null
 }
 
 export type AiAssistantConfig = {
