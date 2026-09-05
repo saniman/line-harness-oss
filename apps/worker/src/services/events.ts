@@ -1,3 +1,4 @@
+import { jstNow } from '@line-crm/db'
 import { switchToCancelledFollowup } from './event-followup.js'
 
 export interface StripeRefundClient {
@@ -347,4 +348,54 @@ export async function confirmEventBooking(
   await db.prepare(
     "UPDATE event_bookings SET status = 'confirmed', payment_status = 'paid', paid_at = datetime('now'), amount = ?, name = COALESCE(?, name), email = COALESCE(?, email), cancel_reason = NULL, updated_at = datetime('now') WHERE id = ? AND stripe_refund_id IS NULL",
   ).bind(amountTotal, name ?? null, email ?? null, bookingId).run()
+}
+
+/**
+ * 当日現金の受領を記録する。
+ *
+ * 現金は「申し込んだ」と「実際に受け取った」が別物で、受け取りはデジタルな信号が無いため
+ * 人間が管理画面で押す。押した事実を `cash_received_at` に残し、
+ * これを起点に領収書を発行する（#46）。
+ *
+ * ⚠️ payment_status は書き換えない。'cash' のまま据え置くことで、
+ *    一覧で現金とカードを最後まで区別できる（#42 の設計）。
+ *
+ * 冪等にしてある。ボタン連打や再試行で受領日時が上書きされると、経理の突合がずれる。
+ */
+export async function markCashReceived(
+  db: D1Database,
+  bookingId: number,
+): Promise<{ success: boolean; alreadyReceived: boolean; error?: string; booking?: EventBookingRow }> {
+  const booking = await getEventBookingById(db, bookingId)
+  if (!booking) {
+    return { success: false, alreadyReceived: false, error: '予約が見つかりませんでした。' }
+  }
+
+  if (booking.status === 'cancelled') {
+    // キャンセルした人から現金は受け取らない。通すと領収書まで発行されてしまう
+    return { success: false, alreadyReceived: false, error: 'キャンセル済みの予約です。' }
+  }
+  if (booking.status !== 'confirmed') {
+    return { success: false, alreadyReceived: false, error: '確定していない予約です。' }
+  }
+  if (booking.payment_status !== 'cash') {
+    return { success: false, alreadyReceived: false, error: '当日現金の予約ではありません。' }
+  }
+
+  // 既に受領済みなら何もしない（日時を上書きしない）
+  if (booking.cash_received_at) {
+    return { success: true, alreadyReceived: true, booking }
+  }
+
+  const now = jstNow()
+  // 未受領のときだけ通す。同時に押されても受領日時は最初の1回で確定する
+  await db.prepare(
+    "UPDATE event_bookings SET cash_received_at = ?, updated_at = datetime('now') WHERE id = ? AND cash_received_at IS NULL",
+  ).bind(now, bookingId).run()
+
+  return {
+    success: true,
+    alreadyReceived: false,
+    booking: { ...booking, cash_received_at: now },
+  }
 }

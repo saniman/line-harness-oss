@@ -15,6 +15,7 @@ import {
   failCheckoutBooking,
   cancelEventBooking,
   linkBookingToFriend,
+  markCashReceived,
 } from '../services/events.js';
 import { enrollEventFollowupScenarios, enrollEventParticipants } from '../services/event-followup.js';
 import { resolveEventApplicant } from '../services/event-friend.js';
@@ -559,6 +560,44 @@ events.post('/api/events/bookings/:id/link-friend', async (c) => {
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('POST /api/events/bookings/:id/link-friend error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * 当日現金の受領を記録する（管理画面の「現金受領」ボタン）。
+ *
+ * 現金は受け取ったというデジタルな信号が無いので、人間が押す。
+ * ここで記録した cash_received_at を起点に領収書を発行する（#46）。
+ *
+ * ⚠️ 認証必須。公開すると第三者が勝手に受領済みにして領収書を発行させられる。
+ *    ロールは絞らない（受付での現金受領はスタッフの通常業務のため）。
+ */
+events.post('/api/events/:id/bookings/:bookingId/cash-received', async (c) => {
+  try {
+    const bookingId = Number(c.req.param('bookingId'));
+    if (!Number.isInteger(bookingId)) {
+      return c.json({ success: false, error: 'Invalid booking id' }, 400);
+    }
+
+    const result = await markCashReceived(c.env.DB, bookingId);
+
+    if (!result.success) {
+      // 見つからない/対象外を区別する（UI が「消えた」と「押せない」を出し分けられる）
+      const notFound = result.error?.includes('見つかりません');
+      return c.json({ success: false, error: result.error }, notFound ? 404 : 400);
+    }
+
+    console.log('[events] 現金受領を記録:', bookingId, result.alreadyReceived ? '(既に受領済み)' : '');
+    return c.json({
+      success: true,
+      data: {
+        alreadyReceived: result.alreadyReceived,
+        cashReceivedAt: result.booking?.cash_received_at ?? null,
+      },
+    });
+  } catch (err) {
+    console.error('POST /api/events/:id/bookings/:bookingId/cash-received error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

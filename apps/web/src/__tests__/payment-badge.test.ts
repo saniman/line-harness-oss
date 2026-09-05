@@ -55,3 +55,51 @@ describe('参加者の支払い方法バッジ', () => {
     expect(cash.cls).not.toBe(paid.cls)
   })
 })
+
+describe('現金の受領状態（#45）', () => {
+  it('現金で未受領なら「未受領」と分かる表示になる', () => {
+    const badge = getPaymentBadge({
+      status: 'confirmed', payment_status: 'cash', cash_received_at: null,
+    })
+    expect(badge.label).toContain('未受領')
+  })
+
+  it('現金を受領済みなら「受領済」になる', () => {
+    const badge = getPaymentBadge({
+      status: 'confirmed', payment_status: 'cash', cash_received_at: '2026-09-05T18:00:00.000+09:00',
+    })
+    expect(badge.label).toContain('受領済')
+    expect(badge.label).not.toContain('未受領')
+  })
+
+  it('未受領と受領済みが同じ表示にならない', () => {
+    const yet = getPaymentBadge({ status: 'confirmed', payment_status: 'cash', cash_received_at: null })
+    const done = getPaymentBadge({
+      status: 'confirmed', payment_status: 'cash', cash_received_at: '2026-09-05T18:00:00.000+09:00',
+    })
+    expect(yet.label).not.toBe(done.label)
+    expect(yet.cls).not.toBe(done.cls)
+  })
+
+  it('受領済みでも「決済済（カード）」とは区別できる', () => {
+    // どちらも入金済みだが、現金かカードかは経理で区別が要る
+    const cash = getPaymentBadge({
+      status: 'confirmed', payment_status: 'cash', cash_received_at: '2026-09-05T18:00:00.000+09:00',
+    })
+    const card = getPaymentBadge({ status: 'confirmed', payment_status: 'paid' })
+    expect(cash.label).not.toBe(card.label)
+  })
+
+  it('キャンセルは受領済みより優先される（返金済みを入金済みに見せない）', () => {
+    const badge = getPaymentBadge({
+      status: 'cancelled', payment_status: 'cash', cash_received_at: '2026-09-05T18:00:00.000+09:00',
+    })
+    expect(badge.label).toContain('キャンセル')
+  })
+
+  it('cash_received_at を渡さない既存の呼び出しは従来どおり動く', () => {
+    // 引数を足したことで既存箇所が壊れていないことの保証
+    const badge = getPaymentBadge({ status: 'confirmed', payment_status: 'cash' })
+    expect(badge.label).toContain('当日現金')
+  })
+})

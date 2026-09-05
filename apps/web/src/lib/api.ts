@@ -608,6 +608,14 @@ export const api = {
     delete: (id: string) =>
       fetchApi<ApiResponse<null>>(`/api/integrations/google-calendar/${id}`, { method: 'DELETE' }),
   },
+  eventBookings: {
+    /** 当日現金の受領を記録する（成功すると領収書の発行につながる） */
+    markCashReceived: (eventId: number, bookingId: number) =>
+      fetchApi<ApiResponse<{ alreadyReceived: boolean; cashReceivedAt: string | null }>>(
+        `/api/events/${eventId}/bookings/${bookingId}/cash-received`,
+        { method: 'POST' },
+      ),
+  },
   freee: {
     list: () =>
       fetchApi<ApiResponse<FreeeConnection[]>>('/api/integrations/freee'),
@@ -932,6 +940,10 @@ export type EventBookingItem = {
    * 'checkout_abandoned' = Stripe 決済画面から戻った / 'checkout_expired' = セッション期限切れ
    */
   cancel_reason: string | null
+  /** 当日現金を受け取った日時。null = 未受領（payment_status='cash' と併せて判定する） */
+  cash_received_at: string | null
+  /** freee が発行した領収書のURL。null = 未発行 */
+  receipt_url: string | null
 }
 
 export type BackfillFriendsResult = {

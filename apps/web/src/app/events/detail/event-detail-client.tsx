@@ -51,6 +51,10 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
   const [backfilling, setBackfilling] = useState(false)
   const [backfillResult, setBackfillResult] = useState('')
   // 手動紐付け（Stripe セッションを持たない無料/現金の申込用）
+  // 現金受領。エラーはページ全体の error とは別に持つ
+  // （load() が先頭で setError('') するため、そこへ入れると表示前に消える）
+  const [cashBusyId, setCashBusyId] = useState<number | null>(null)
+  const [cashError, setCashError] = useState('')
   const [linkingBookingId, setLinkingBookingId] = useState<number | null>(null)
   const [friendQuery, setFriendQuery] = useState('')
   const [friendCandidates, setFriendCandidates] = useState<FriendWithTags[]>([])
@@ -130,6 +134,32 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
     } finally {
       setBackfilling(false)
     }
+  }
+
+  /**
+   * 当日現金の受領を記録する。
+   *
+   * 受け取ったというデジタルな信号が無いので、運営者が受付で押す。
+   * これを起点に領収書が発行される（#46）ので、押し間違いを防ぐため金額を確認させる。
+   */
+  const handleCashReceived = async (b: EventBookingItem) => {
+    const amount = b.amount != null ? `¥${b.amount.toLocaleString()}` : '（金額未設定）'
+    if (!confirm(
+      `${participantDisplayName(b)} さんから ${amount} を受け取りましたか？\n\n` +
+      `記録すると領収書が発行されます。取り消しはできません。`
+    )) return
+
+    setCashBusyId(b.id)
+    setCashError('')
+    try {
+      const res = await api.eventBookings.markCashReceived(eventId, b.id)
+      if (!res.success) setCashError('受領を記録できませんでした。')
+    } catch {
+      setCashError('受領を記録できませんでした。通信状態を確認して、もう一度お試しください。')
+    }
+    // 成否にかかわらずサーバーの状態に合わせ直す（エラーは消さない）
+    await load()
+    setCashBusyId(null)
   }
 
   const handleSearchFriends = async (q: string) => {
@@ -293,6 +323,9 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
               </div>
             ) : (
               <>
+                {cashError && (
+                  <div className="mx-4 mt-3 p-3 rounded-lg bg-red-50 text-red-700 text-sm">{cashError}</div>
+                )}
                 <div className="hidden sm:grid sm:grid-cols-[1fr_100px_100px_80px_140px] gap-4 px-4 py-2 bg-gray-50 border-b border-gray-100 text-xs font-semibold text-gray-500 uppercase tracking-wider">
                   <span>参加者</span>
                   <span>ステータス</span>
@@ -346,9 +379,24 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
                       <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium w-fit self-center ${statusBadge.cls}`}>
                         {statusBadge.label}
                       </span>
-                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium w-fit self-center ${paymentBadge.cls}`}>
-                        {paymentBadge.label}
-                      </span>
+                      <div className="self-center">
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium w-fit ${paymentBadge.cls}`}>
+                          {paymentBadge.label}
+                        </span>
+                        {/* 当日現金で、まだ受け取っていない確定者にだけ出す。
+                            押すと領収書の発行につながるので、キャンセル・未確定には出さない */}
+                        {b.status === 'confirmed'
+                          && b.payment_status === 'cash'
+                          && !b.cash_received_at && (
+                          <button
+                            onClick={() => handleCashReceived(b)}
+                            disabled={cashBusyId === b.id}
+                            className="mt-1 block px-2 py-0.5 rounded text-xs text-white bg-amber-600 disabled:opacity-50"
+                          >
+                            {cashBusyId === b.id ? '記録中...' : '現金受領'}
+                          </button>
+                        )}
+                      </div>
                       <p className="text-sm text-gray-700 self-center">
                         {b.amount != null ? `¥${b.amount.toLocaleString()}` : '—'}
                       </p>
