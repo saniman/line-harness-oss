@@ -42,6 +42,40 @@ AI は実装・調査・提案を担う。**最終判断は人間**が行う。
 機能追加は Issue ベースのパイプラインに乗せる（詳細な SSoT は `docs/dev-workflow.md`）。
 計画の単一情報源は **GitHub Issue 本文**。独立 Issue が溜まったら **worktree 並列レーン**で消化する。
 
+### ⚠️ 並列レーンは worktree を必ず分ける（作業ツリーを共有しない）
+
+複数のセッション／エージェントが同時に作業するときは、**レーンごとに `git worktree` を作る**。
+同じ作業ツリーで `git switch` を取り合うと、次の事故が起きる（2026-09-05 に実際に発生）。
+
+| 起きたこと | 影響 |
+|---|---|
+| 別レーンが `git switch` した | こちらのファイル読み取りが**別ブランチの中身**を返し、「実装が無い」と誤判断した |
+| サブエージェント（`/code-review`）が作業ツリーで動く | **PR を指定したのに現在ブランチをレビュー**し、他レーンの指摘が返ってきた |
+| 採番スクリプトがローカルしか見ない | 両レーンが**同じマイグレーション番号**を採番した（→ Issue #69） |
+
+いずれも「読む対象」だけでなく **「コマンドが実行される文脈」** がずれるのが原因で、
+引数の渡し方（PR 番号 / URL）では直らない。**ツリーを分けるのが根本解決**。
+
+```bash
+# レーンを作る（<n> は Issue 番号）
+git worktree add ../wt-<n> -b feature/<n>-<slug> origin/main
+
+cd ../wt-<n>
+pnpm install --frozen-lockfile                                   # 約12秒
+pnpm --filter @line-crm/shared --filter @line-crm/line-sdk \
+     --filter @line-crm/db build                                 # 必須（未ビルドだと vitest が解決に失敗する）
+
+# 片付け（PR がマージされてから）
+git worktree remove ../wt-<n>
+```
+
+> `pnpm install` は pnpm のストアからハードリンクするので速い。
+> **パッケージのビルドを忘れると** `Failed to resolve entry for package "@line-crm/line-sdk"`
+> で vitest が起動しない（CI も同じ順序でビルドしている）。
+
+**レビューを回す前に、作業ツリーのブランチが対象 PR と一致しているか確認する。**
+一致していない状態で `/code-review` を回すと、別ブランチをレビューした結果が返る。
+
 ```
 計画      → 調査・計画して Issue 作成（本文=計画）。作成後は人間の確認待ちで停止
 実装      → feature/<n>-… ブランチ→TDD→vitest/tsc→commit
