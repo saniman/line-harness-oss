@@ -18,6 +18,8 @@ import {
   markCashReceived,
 } from '../services/events.js';
 import { enrollEventFollowupScenarios, enrollEventParticipants } from '../services/event-followup.js';
+import { issueReceiptForBooking } from '../services/freee-receipt.js';
+import type { IssueReceiptResult } from '../services/freee-receipt.js';
 import { resolveEventApplicant } from '../services/event-friend.js';
 import { isApplicationClosed } from '../services/event-deadline.js';
 import { backfillEventBookingFriends } from '../services/event-friend-backfill.js';
@@ -595,11 +597,38 @@ events.post('/api/events/:id/bookings/:bookingId/cash-received', async (c) => {
     }
 
     console.log('[events] 現金受領を記録:', bookingId, result.alreadyReceived ? '(既に受領済み)' : '');
+
+    // 領収書の発行はベストエフォート。ここで失敗しても現金受領は成功として返す。
+    // 現金は物理的に受け取っているので、記録を巻き戻すと経理が合わなくなる（#46）。
+    // 未発行分の再送は #48 で扱う。
+    //
+    // ⚠️ issueReceiptForBooking は「投げない」設計だが、ここでも囲う。
+    //    外側の catch に流すと 500 になり、記録済みの現金受領まで失敗として返ってしまう。
+    let receipt: IssueReceiptResult;
+    try {
+      const event = await getEventById(c.env.DB, eventId);
+      receipt = await issueReceiptForBooking(
+        c.env,
+        c.env.DB,
+        eventId,
+        bookingId,
+        undefined,
+        { eventTitle: event?.title },
+      );
+    } catch (err) {
+      console.error('[freee] 領収書の発行で想定外のエラー:', bookingId, err);
+      receipt = { issued: false, code: 'issue_failed', error: '領収書を発行できませんでした。' };
+    }
+
     return c.json({
       success: true,
       data: {
         alreadyReceived: result.alreadyReceived,
         cashReceivedAt: result.booking?.cash_received_at ?? null,
+        receiptIssued: receipt.issued,
+        receiptUrl: receipt.receiptUrl ?? null,
+        // 未発行の理由は管理画面にだけ出す（参加者には見せない）
+        receiptError: receipt.issued ? null : (receipt.error ?? null),
       },
     });
   } catch (err) {

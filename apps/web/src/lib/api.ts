@@ -625,7 +625,14 @@ export const api = {
   eventBookings: {
     /** 当日現金の受領を記録する（成功すると領収書の発行につながる） */
     markCashReceived: (eventId: number, bookingId: number) =>
-      fetchApi<ApiResponse<{ alreadyReceived: boolean; cashReceivedAt: string | null }>>(
+      fetchApi<ApiResponse<{
+        alreadyReceived: boolean
+        cashReceivedAt: string | null
+        receiptIssued: boolean
+        receiptUrl: string | null
+        /** 未発行の理由。運営者にだけ見せる（参加者には出さない） */
+        receiptError: string | null
+      }>>(
         `/api/events/${eventId}/bookings/${bookingId}/cash-received`,
         { method: 'POST' },
       ),

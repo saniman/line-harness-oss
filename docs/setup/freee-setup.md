@@ -147,3 +147,74 @@ Google Calendar 連携と**ここが決定的に違う**。
 - 実装: `apps/worker/src/services/freee-oauth.ts` / `apps/worker/src/routes/freee.ts`
 - テーブル: `packages/db/migrations/822_freee_accounts.sql`
 - Epic: [#41 現金決済領収書自動化](https://github.com/saniman/line-harness-oss/issues/41)
+
+---
+
+## 領収書の発行（#46）
+
+現金受領ボタンを押すと、freee請求書 API で領収書が作られる。
+
+### API 仕様の出典
+
+公開の OAS3 スキーマが唯一の一次情報（リファレンスサイトはログインが要る）。
+
+```
+https://raw.githubusercontent.com/freee/freee-api-schema/master/iv/open-api-3/api-schema.yml
+```
+
+- ベース URL: `https://api.freee.co.jp/iv`
+- 発行: `POST /receipts`
+
+> ⚠️ freee**会計**の `POST /api/1/receipts` は「受け取った領収書の画像をアップロードする」
+> 別の API。発行はできない。ベース URL（`/api/1` と `/iv`）で見分ける。
+
+### 取引先（partner）の設定が必要
+
+freee は領収書を**必ず取引先に紐づける**（レスポンスの `partner_id` が必須）。
+参加者ごとに取引先を作るとマスタが人数分汚れるので、**固定の取引先を1件**用意し、
+領収書の宛名だけ `partner_display_name` で上書きする。
+
+1. freee で取引先を1件作る（例: 名称「イベント参加者」、取引先コード `EVENT`）
+2. Worker に設定する（`wrangler.toml` の `[vars]`。秘密情報ではないので secret 不要）
+
+```toml
+[vars]
+FREEE_PARTNER_CODE = "EVENT"
+# または取引先ID（両方あればIDを優先）
+# FREEE_PARTNER_ID = "12345"
+```
+
+未設定でも API は呼ぶが、freee が 400 を返す可能性が高い。
+その場合は「受領は記録・領収書は未発行」となり、管理画面に理由が出る。
+
+### 領収書に載る内容
+
+| 項目 | 値 |
+|---|---|
+| 宛名 | 申込フォームの「領収書の宛名」→ 未入力なら申込者名 |
+| 敬称 | 法人・団体に見えれば「御中」、それ以外は「様」（自動判定） |
+| 領収日 | 現金を受領した日（**JST の暦日**） |
+| 金額 | `event_bookings.amount`（受領時に `events.price` から焼き込み済み）・**税込** |
+| 但し書き | 「〈イベント名〉 参加費として」 |
+| 消費税 | 10%（軽減税率対象外） |
+
+### 発行に失敗したときの挙動
+
+**現金の受領記録は必ず残す**。現金は物理的に受け取っているため、
+発行失敗で受領まで巻き戻すと「受け取ったのに記録が無い」状態になる。
+
+- API は 200 を返し、`receiptIssued: false` と理由を添える
+- 管理画面は黄色の警告で「受領は記録／領収書は未発行」と出す
+- 再発行は #48 で扱う
+
+### ⚠️ 未検証: `report_url` が参加者から開けるか
+
+`POST /receipts` が返す URL のフィールドは `report_url` で、スキーマ上の説明は
+**「帳票詳細ページのURL」**。freee にログインしないと開けない可能性がある。
+
+OAS3 を確認した限り、URL 共有（`invoice.secure.freee.co.jp/ivex/dl/<UUID>` の形式）の
+リンクを**返すフィールドも、発行する API も存在しない**（`/receipts` にあるのは
+index / templates / show / create / update / cancel / uncancel のみ）。
+
+→ 参加者へ LINE で送る #47 の前に、実際に1件発行して `report_url` を
+   ログアウト状態のブラウザで開いて確かめること。開けなければ #47 の設計を変える必要がある。
