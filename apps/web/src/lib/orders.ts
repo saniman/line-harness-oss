@@ -1,3 +1,4 @@
+import { normalizeDbDatetime } from './format-jst'
 // 厨房ディスプレイ（モバイルオーダー）の表示ロジック。
 // pure function に切り出して __tests__/orders.test.ts でカバーする。
 
@@ -116,14 +117,14 @@ export function canCheckoutTable(orders: { status: OrderStatus }[]): boolean {
   return open.every((o) => o.status === 'served')
 }
 
-// D1 の datetime('now') は "YYYY-MM-DD HH:MM:SS"（UTC・タイムゾーン無し）で入る。
-// JS Date が確実に UTC として解釈できる ISO 形式に正規化する。
+// D1 の日時を epoch ms にする。
+// 以前はここで独自に「オフセット無し＝UTC」と決めていたが、schema.sql には
+// JST・オフセット無しで保存する系統（strftime(… '+9 hours')）もあり、
+// 同じ文字列を 9 時間違う瞬間として読む関数が同居する状態だった（Issue #58）。
+// 解釈は lib/format-jst.ts の normalizeDbDatetime に一本化する。
 export function parsePlacedAt(s: string): number {
   if (!s) return NaN
-  let iso = s.includes('T') ? s : s.replace(' ', 'T')
-  // タイムゾーン指定が無ければ UTC とみなす
-  if (!/[zZ]|[+-]\d\d:?\d\d$/.test(iso)) iso += 'Z'
-  return new Date(iso).getTime()
+  return new Date(normalizeDbDatetime(s)).getTime()
 }
 
 // 経過時間を "m:ss" で返す（負値・不正値は "0:00"）。

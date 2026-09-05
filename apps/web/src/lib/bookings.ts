@@ -15,20 +15,15 @@ export interface Booking {
   displayName?: string | null
 }
 
-export function formatJST(iso: string): string {
-  const d = new Date(iso)
-  const jst = new Date(d.getTime())
-  // Use Intl for correct JST output regardless of host timezone
-  return new Intl.DateTimeFormat('ja-JP', {
-    timeZone: 'Asia/Tokyo',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).format(jst).replace(/\//g, '/').replace(',', '')
-}
+/**
+ * 予約日時の表示（`2026/09/01 10:50`）。
+ *
+ * 実体は `lib/format-jst.ts` に集約した。DB には UTC・スペース区切りと
+ * JST・オフセット無しの 2 系統が混在しており、素の `new Date()` では
+ * ローカル時刻として誤解釈されるため（Issue #58）。
+ * 呼び出し側の import を変えずに済むよう、この名前は再エクスポートで残す。
+ */
+export { formatJSTWithYear as formatJST } from './format-jst'
 
 export function getBookingName(booking: Pick<Booking, 'metadata' | 'displayName'>): string {
   return booking.metadata?.name || booking.displayName || '不明'

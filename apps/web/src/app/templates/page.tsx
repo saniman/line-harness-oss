@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { api } from '@/lib/api'
 import Header from '@/components/layout/header'
 import CcPromptButton from '@/components/cc-prompt-button'
+import { formatJSTWithYear } from '@/lib/format-jst'
 
 interface Template {
   id: string
@@ -28,15 +29,9 @@ interface CreateFormState {
   messageContent: string
 }
 
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleString('ja-JP', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
-}
+// message_templates.created_at は datetime('now')＝UTC・スペース区切り。
+// 素の new Date() ではローカル時刻として解釈され 9 時間ずれる（Issue #58）。
+const formatDate = formatJSTWithYear
 
 const ccPrompts = [
   {

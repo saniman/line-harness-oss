@@ -18,6 +18,7 @@ import {
   type TodaysSales,
 } from '@/lib/orders'
 import Header from '@/components/layout/header'
+import { formatJSTTime } from '@/lib/format-jst'
 
 const POLL_MS = 5000
 
@@ -430,11 +431,12 @@ function TablesPanel() {
 }
 
 // 伝票/売上の時刻フォーマット（UTC ISO → JST HH:MM）。
+// 独自の「オフセット無し＝UTC」規則を持っていたため、同じ placed_at を
+// parsePlacedAt と 9 時間違う瞬間として読む可能性があった（Issue #58）。
+// 解釈は lib/format-jst.ts に一本化する。
 function fmtSlipTime(iso: string): string {
-  const ms = iso.includes('T') ? Date.parse(iso) : Date.parse(iso.replace(' ', 'T') + 'Z')
-  if (Number.isNaN(ms)) return ''
-  const d = new Date(ms + 9 * 3600_000)
-  return `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`
+  const label = formatJSTTime(iso)
+  return label === '—' ? '' : label
 }
 
 // 本日（JST）の売上パネル。会計済み伝票の合計・件数・一覧を表示する。

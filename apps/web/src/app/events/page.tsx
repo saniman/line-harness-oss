@@ -5,18 +5,7 @@ import { useRouter } from 'next/navigation'
 import { api } from '@/lib/api'
 import type { EventItem } from '@/lib/api'
 import Header from '@/components/layout/header'
-
-function formatJST(iso: string): string {
-  const d = new Date(iso)
-  const jst = new Date(d.getTime() + 9 * 60 * 60 * 1000)
-  const mm = String(jst.getUTCMonth() + 1).padStart(2, '0')
-  const dd = String(jst.getUTCDate()).padStart(2, '0')
-  const hh = String(jst.getUTCHours()).padStart(2, '0')
-  const min = String(jst.getUTCMinutes()).padStart(2, '0')
-  const weekdays = ['日', '月', '火', '水', '木', '金', '土']
-  const dow = weekdays[jst.getUTCDay()]
-  return `${mm}/${dd}(${dow}) ${hh}:${min}`
-}
+import { formatJST, jstDatetimeLocalToIso } from '@/lib/format-jst'
 
 function validateForm(data: { title: string; start_at: string; end_at: string; capacity: number; price: number | null }): string | null {
   if (!data.title.trim()) return 'タイトルを入力してください'
@@ -70,14 +59,22 @@ export default function EventsPage() {
     const priceVal = price === '' ? null : Number(price)
     const err = validateForm({ title, start_at: startAt, end_at: endAt, capacity: cap, price: priceVal })
     if (err) { setFormError(err); return }
+    // 解釈できない日時は空文字になる。API は 400 で弾くが、利用者には
+    // 「作成に失敗しました」としか出ず原因が分からないので、ここで理由を示す
+    const startAtIso = jstDatetimeLocalToIso(startAt)
+    const endAtIso = jstDatetimeLocalToIso(endAt)
+    if (!startAtIso || !endAtIso) { setFormError('日時の形式が正しくありません'); return }
     setCreating(true)
     setFormError('')
     try {
       await api.events.create({
         title: title.trim(),
         description: description.trim() || undefined,
-        start_at: new Date(startAt).toISOString(),
-        end_at: new Date(endAt).toISOString(),
+        // datetime-local の入力は JST の壁時計として解釈する。
+        // 編集モーダル（event-detail-client.tsx）と規則を揃えないと、
+        // JST 以外の環境で「作成した時刻」と「編集で見える時刻」が食い違う
+        start_at: startAtIso,
+        end_at: endAtIso,
         capacity: cap,
         price: priceVal ?? undefined,
         is_published: isPublished ? 1 : 0,
