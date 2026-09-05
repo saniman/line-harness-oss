@@ -579,3 +579,73 @@ describe('payment routing', () => {
     expect(document.getElementById('app')?.innerHTML).toContain('キャンセル')
   })
 })
+
+describe('領収書の宛名欄（#66）', () => {
+  it('有料イベントには宛名の入力欄が出る', () => {
+    const html = buildEventDetailHtml(EVENT_PAID, 'あきひさ')
+    expect(html).toContain('receipt-name-input')
+    expect(html).toContain('領収書の宛名')
+  })
+
+  it('無料イベントには宛名の入力欄を出さない', () => {
+    // 領収書を出すのは当日現金の経路だけ。無料に置いても使い道が無く、
+    // 申込のハードルだけ上がる
+    const html = buildEventDetailHtml(EVENT_FREE, 'あきひさ')
+    expect(html).not.toContain('receipt-name-input')
+  })
+
+  it('入力は任意だと分かる表記になっている', () => {
+    const html = buildEventDetailHtml(EVENT_PAID, 'あきひさ')
+    expect(html).toContain('任意')
+  })
+
+  it('【重要】未入力時に何になるかを、実際の表示名で見せる', () => {
+    // 「LINEの表示名になります」だけでは自分の表示名を思い出せない。
+    // 実物を出せば、ニックネーム登録の人がその場で気づける。
+    const html = buildEventDetailHtml(EVENT_PAID, 'あきひさ')
+    expect(html).toContain('あきひさ')
+  })
+
+  it('表示名が取れないときは補足を出さない', () => {
+    const html = buildEventDetailHtml(EVENT_PAID, '')
+    expect(html).toContain('receipt-name-input')
+    expect(html).not.toContain('が宛名になります')
+  })
+
+  it('表示名を HTML エスケープする', () => {
+    // LINE の表示名は自由文字列。エスケープしないと画面が壊れる
+    const html = buildEventDetailHtml(EVENT_PAID, '<script>alert(1)</script>')
+    expect(html).not.toContain('<script>')
+    expect(html).toContain('&lt;script&gt;')
+  })
+
+  it('宛名を渡さない既存の呼び出しでも壊れない（後方互換）', () => {
+    const html = buildEventDetailHtml(EVENT_PAID)
+    expect(html).toContain('checkout-btn')
+  })
+})
+
+describe('joinCashEvent の宛名送信', () => {
+  const ID_TOKEN_FRESH = ID_TOKEN
+
+  it('宛名を渡すと receiptName として送る', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ success: true }) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await joinCashEvent(2, ID_TOKEN_FRESH, '山田太郎', '株式会社サンプル')
+
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
+    expect(body.receiptName).toBe('株式会社サンプル')
+    expect(body.paymentMethod).toBe('cash')
+  })
+
+  it('宛名を渡さなければ receiptName を送らない（後方互換）', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ success: true }) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await joinCashEvent(2, ID_TOKEN_FRESH, '山田太郎')
+
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
+    expect(body.receiptName).toBeUndefined()
+  })
+})

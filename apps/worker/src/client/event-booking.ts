@@ -69,7 +69,10 @@ export function buildEventListHtml(events: EventPublic[]): string {
   }).join('')
 }
 
-export function buildEventDetailHtml(event: EventPublic): string {
+/**
+ * @param displayName LINE の表示名。宛名を未入力のとき何になるかを見せるために使う
+ */
+export function buildEventDetailHtml(event: EventPublic, displayName?: string): string {
   const closed = event.application_closed === true
   const full = !event.available || event.remaining === 0
   // 締切なら有料の2経路（決済・当日現金）と無料申込の全てを止める。
@@ -80,6 +83,21 @@ export function buildEventDetailHtml(event: EventPublic): string {
     ? `<p class="event-price">参加費: ¥${event.price!.toLocaleString()}</p>`
     : `<p class="event-price">参加費: 無料</p>`
   const label = (normal: string) => (closed ? CLOSED_LABEL : full ? '満席' : normal)
+
+  // 領収書の宛名（任意）。有料イベントのときだけ出す——領収書を発行するのは
+  // 当日現金の経路だけで、そのボタン自体が有料にしか出ないため。
+  //
+  // 補足には「LINEの表示名になります」ではなく**実際の表示名**を埋める。
+  // 自分の表示名を覚えている人は少なく、ニックネーム登録の人ほど
+  // 「これで領収書が出ると困る」とその場で気づける。
+  const receiptNameHtml = isPaid
+    ? `<div class="receipt-name-field">
+        <label for="receipt-name-input">領収書の宛名（任意・当日現金でお支払いの方のみ）</label>
+        <input id="receipt-name-input" type="text" maxlength="60"
+               placeholder="例）株式会社サンプル" ${blocked ? 'disabled' : ''} />
+        ${displayName ? `<p class="receipt-name-hint">未入力の場合は「${escapeHtml(displayName)}」が宛名になります</p>` : ''}
+       </div>`
+    : ''
   const actionHtml = isPaid
     ? `<button id="checkout-btn" class="btn-pink" ${blocked ? 'disabled' : ''}>
         ${label('申込・決済へ進む 💳')}
@@ -97,6 +115,7 @@ export function buildEventDetailHtml(event: EventPublic): string {
       ${event.description ? `<p class="event-description">${escapeHtml(event.description)}</p>` : ''}
       ${closed ? `<p class="event-closed">${CLOSED_MESSAGE}</p>` : `<p class="event-remaining">残席: ${event.remaining}名</p>`}
       ${priceHtml}
+      ${receiptNameHtml}
       ${actionHtml}
     </div>
   `
@@ -199,6 +218,8 @@ export async function joinCashEvent(
   eventId: number,
   idToken: string,
   name: string,
+  /** 領収書の宛名（任意）。空なら送らず、サーバー側で name にフォールバックする */
+  receiptName?: string,
 ): Promise<EventActionResult> {
   const stale = checkTokenFreshness(idToken)
   if (stale) return stale
@@ -206,7 +227,11 @@ export async function joinCashEvent(
   const res = await fetch(`${API_BASE}/api/events/${eventId}/join`, {
     method: 'POST',
     headers: authHeaders(idToken),
-    body: JSON.stringify({ name, paymentMethod: 'cash' }),
+    body: JSON.stringify({
+      name,
+      paymentMethod: 'cash',
+      ...(receiptName ? { receiptName } : {}),
+    }),
   })
 
   if (!res.ok) return toActionError(res.status, await readErrorCode(res))
@@ -410,7 +435,7 @@ export async function initEventBooking(options: {
     app.innerHTML = `
       <div>
         <button id="back-btn">← 一覧に戻る</button>
-        ${buildEventDetailHtml(event)}
+        ${buildEventDetailHtml(event, displayName)}
       </div>
     `
     document.getElementById('back-btn')?.addEventListener('click', renderList)
@@ -437,7 +462,9 @@ export async function initEventBooking(options: {
       if (!cashBtn) return
       cashBtn.disabled = true
       cashBtn.textContent = '処理中...'
-      const result = await joinCashEvent(event.id, idToken ?? '', displayName ?? '')
+      const receiptInput = document.getElementById('receipt-name-input') as HTMLInputElement | null
+      const receiptName = receiptInput?.value.trim() || undefined
+      const result = await joinCashEvent(event.id, idToken ?? '', displayName ?? '', receiptName)
       if (result.success) {
         app.innerHTML = `
           <div class="done-card panel">

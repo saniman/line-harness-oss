@@ -104,7 +104,7 @@ const BOOKING1 = {
   email: 'yamada@example.com', status: 'confirmed',
   payment_status: 'unpaid', stripe_session_id: null, paid_at: null, amount: null,
   stripe_refund_id: null, refund_status: null,
-  cash_received_at: null, receipt_url: null, receipt_issued_at: null,
+  cash_received_at: null, receipt_name: null, receipt_url: null, receipt_issued_at: null,
   cancel_reason: null,
   created_at: '', updated_at: '',
 }
@@ -113,7 +113,7 @@ const PENDING_BOOKING = {
   status: 'pending', payment_status: 'unpaid',
   stripe_session_id: null, paid_at: null, amount: null,
   stripe_refund_id: null, refund_status: null,
-  cash_received_at: null, receipt_url: null, receipt_issued_at: null,
+  cash_received_at: null, receipt_name: null, receipt_url: null, receipt_issued_at: null,
   cancel_reason: null,
   created_at: '', updated_at: '',
 }

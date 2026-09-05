@@ -31,6 +31,7 @@ interface EventBookingRow {
   stripe_refund_id: string | null
   refund_status: string | null
   cash_received_at: string | null
+  receipt_name: string | null
   receipt_url: string | null
   receipt_issued_at: string | null
   cancel_reason: string | null
@@ -74,6 +75,7 @@ import {
   expireCheckoutBooking,
   failCheckoutBooking,
   markCashReceived,
+  resolveReceiptName,
 } from './events.js'
 
 const mockSwitchToCancelled = vi.mocked(switchToCancelledFollowup)
@@ -90,7 +92,7 @@ const BOOKING1: EventBookingRow = {
   email: 'yamada@example.com', status: 'confirmed',
   payment_status: 'unpaid', stripe_session_id: null, paid_at: null, amount: null,
   stripe_refund_id: null, refund_status: null,
-  cash_received_at: null, receipt_url: null, receipt_issued_at: null,
+  cash_received_at: null, receipt_name: null, receipt_url: null, receipt_issued_at: null,
   cancel_reason: null,
   created_at: '', updated_at: '',
 }
@@ -740,5 +742,59 @@ describe('markCashReceived', () => {
 
     expect(res.success).toBe(false)
     expect(res.error).toContain('イベント')
+  })
+})
+
+describe('createEventBooking の領収書宛名', () => {
+  it('宛名を渡すと INSERT に含める', async () => {
+    const db = makeDb(makeStmt(null), makeStmt(BOOKING1))
+    await createEventBooking(db, {
+      event_id: 1, name: '山田太郎', receipt_name: '株式会社サンプル',
+    })
+    const sql = (db.prepare as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
+    expect(sql).toContain('receipt_name')
+  })
+
+  it('【重要】宛名はサーバー側で正規化してから保存する', async () => {
+    // LIFF を経由せず API を直接叩けるので、クライアント検証だけでは守れない。
+    // 改行や双方向制御文字を残すと、管理画面や領収書で別の名前に見せかけられる。
+    const stmt = makeStmt(null)
+    const db = makeDb(stmt, makeStmt(BOOKING1))
+    await createEventBooking(db, {
+      event_id: 1, name: '山田太郎',
+      receipt_name: `  株式会社\n\nサンプル${String.fromCharCode(0x202e)}  `,
+    })
+    const bound = (stmt.bind as ReturnType<typeof vi.fn>).mock.calls.flat()
+    expect(bound).toContain('株式会社 サンプル')
+  })
+
+  it('宛名が空文字なら null で保存する（氏名へのフォールバックを効かせる）', async () => {
+    const stmt = makeStmt(null)
+    const db = makeDb(stmt, makeStmt(BOOKING1))
+    await createEventBooking(db, { event_id: 1, name: '山田太郎', receipt_name: '   ' })
+    const bound = (stmt.bind as ReturnType<typeof vi.fn>).mock.calls.flat()
+    expect(bound).toContain(null)
+    expect(bound).not.toContain('   ')
+  })
+
+  it('宛名を渡さない既存の呼び出しも動く（後方互換）', async () => {
+    const db = makeDb(makeStmt(null), makeStmt(BOOKING1))
+    const res = await createEventBooking(db, { event_id: 1, name: '山田太郎' })
+    expect(res).toBeTruthy()
+  })
+})
+
+describe('resolveReceiptName', () => {
+  it('宛名の指定があればそれを使う', () => {
+    expect(resolveReceiptName({ receipt_name: '株式会社サンプル', name: 'あきひさ' }))
+      .toBe('株式会社サンプル')
+  })
+
+  it('指定が無ければ申込時の氏名（LINEの表示名）を使う', () => {
+    expect(resolveReceiptName({ receipt_name: null, name: 'あきひさ' })).toBe('あきひさ')
+  })
+
+  it('どちらも無ければ空文字（発行側で判断できるように null にしない）', () => {
+    expect(resolveReceiptName({ receipt_name: null, name: '' })).toBe('')
   })
 })

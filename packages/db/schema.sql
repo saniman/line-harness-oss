@@ -706,6 +706,8 @@ CREATE TABLE IF NOT EXISTS event_bookings (
   refund_status TEXT,
   -- 当日現金を受け取った日時。NULL = 未受領（payment_status='cash' と併せて判定する）
   cash_received_at TEXT,
+  -- 領収書の宛名（任意入力）。NULL のときは name（LINEの表示名）にフォールバックする
+  receipt_name TEXT,
   -- freee が発行した領収書の URL。NULL = 未発行
   receipt_url TEXT,
   -- 領収書を発行した日時。NULL = 未発行
