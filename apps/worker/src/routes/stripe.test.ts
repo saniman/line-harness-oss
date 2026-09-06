@@ -82,7 +82,7 @@ const PENDING_BOOKING = {
   status: 'pending', payment_status: 'unpaid',
   stripe_session_id: 'cs_test_xxx', paid_at: null, amount: null,
   stripe_refund_id: null, refund_status: null,
-  cash_received_at: null, receipt_name: null, receipt_url: null, receipt_issued_at: null,
+  cash_received_at: null, receipt_name: null, receipt_requested: null, receipt_url: null, receipt_issued_at: null,
   receipt_number: null, receipt_share_url: null, receipt_share_expires_at: null,
   receipt_share_verified_at: null, receipt_share_token: null,
   receipt_share_revoked_at: null, receipt_share_opened_at: null, receipt_sent_at: null,

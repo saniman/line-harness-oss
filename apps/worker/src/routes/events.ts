@@ -203,8 +203,26 @@ events.delete('/api/events/:id', async (c) => {
 events.post('/api/events/:id/join', async (c) => {
   try {
     const id = Number(c.req.param('id'));
-    const body = await c.req.json<{ name?: string; paymentMethod?: string; receiptName?: string }>();
+    const body = await c.req.json<{
+      name?: string;
+      paymentMethod?: string;
+      receiptName?: string;
+      /** 領収書が必要か（#80）。未指定＝この機能より前のクライアント */
+      receiptRequested?: boolean;
+    }>();
     const isCash = body.paymentMethod === 'cash';
+
+    // 領収書の要否（#80）。boolean 以外（未指定・古いバンドル）は **null＝未回答**。
+    // ⚠️ ここを 0（不要）に倒すと、古い画面を開いたままの人の領収書が黙って出なくなる。
+    const receiptRequested = typeof body.receiptRequested === 'boolean'
+      ? (body.receiptRequested ? 1 : 0)
+      : null;
+    const receiptName = body.receiptName?.trim() || null;
+    // 「必要」と答えたのに宛名が無ければ断る。画面では押せないが、直接叩かれる経路を塞ぐ。
+    // 通すと宛名の無い領収書ができて freee 側で作り直しになる。
+    if (receiptRequested === 1 && !receiptName) {
+      return c.json({ success: false, error: 'receipt_name_required' }, 400);
+    }
 
     // 本人確認: Authorization: Bearer <LIFF idToken> を検証する。
     // クライアント申告の lineUserId は詐称できるため参照しない。
@@ -243,8 +261,11 @@ events.post('/api/events/:id/join', async (c) => {
       event_id: id,
       friend_id: friendId,
       name: body.name ?? '',
-      // 領収書の宛名（任意）。正規化は createEventBooking の中で行う
-      receipt_name: body.receiptName ?? null,
+      // 領収書の宛名。正規化は createEventBooking の中で行う。
+      // ⚠️ 「不要」と答えた人の宛名は保存しない。残すと、後から発行されたときに
+      //    「頼んでいない領収書」が届く
+      receipt_name: receiptRequested === 0 ? null : receiptName,
+      receipt_requested: receiptRequested,
       payment_status: isCash ? 'cash' : undefined,
     });
 
@@ -853,6 +874,9 @@ events.post('/api/events/:id/bookings/:bookingId/cash-received', async (c) => {
         receiptUrl: receipt.receiptUrl ?? null,
         // 未発行の理由は管理画面にだけ出す（参加者には見せない）
         receiptError: receipt.issued ? null : (receipt.error ?? null),
+        // ⚠️ 文言ではなくコードで分岐させる。「不要と答えられた（not_requested）」は
+        //    失敗ではないので、管理画面が警告ではなく事実として出せるようにする
+        receiptCode: receipt.code ?? null,
         // ⚠️ 発行できたときも出す。二重発行の疑いはここでしか伝わらない
         receiptWarning: receipt.warning ?? null,
       },

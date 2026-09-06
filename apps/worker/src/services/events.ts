@@ -59,6 +59,13 @@ export interface EventBookingRow {
    * 参加者が自由に決められる値なので、保存前に sanitizeReceiptName を通す。
    */
   receipt_name: string | null
+  /**
+   * 参加者が領収書を必要と答えたか（#80）。1 = 必要 / 0 = 不要 / null = 未回答。
+   *
+   * ⚠️ **null を「不要」と解釈しない。** この機能より前に申し込んだ予約が
+   *    黙って領収書の対象外になると、参加者に届かなくなっても誰も気づけない。
+   */
+  receipt_requested: number | null
   /** freee が発行した領収書の URL。null = 未発行 */
   receipt_url: string | null
   /** 領収書を発行した日時。null = 未発行 */
@@ -258,6 +265,13 @@ export async function createEventBooking(
     payment_status?: string
     /** 領収書の宛名（任意）。ここで必ず正規化してから保存する */
     receipt_name?: string | null
+    /**
+     * 領収書が必要か（#80）。1 = 必要 / 0 = 不要 / null = 未回答。
+     *
+     * ⚠️ **null を「不要」と解釈しない。** この機能より前に申し込んだ予約が
+     *    黙って領収書の対象外になると、運営者が気づけないまま届かなくなる。
+     */
+    receipt_requested?: 0 | 1 | null
   },
 ): Promise<EventBookingRow> {
   const paymentStatus = data.payment_status ?? 'unpaid'
@@ -265,8 +279,12 @@ export async function createEventBooking(
   //    保存の直前で必ず正規化する（制御文字・双方向制御文字・長さ）。
   const receiptName = sanitizeReceiptName(data.receipt_name)
   const result = await db.prepare(
-    'INSERT INTO event_bookings (event_id, friend_id, name, email, payment_status, receipt_name) VALUES (?, ?, ?, ?, ?, ?)',
-  ).bind(data.event_id, data.friend_id ?? null, data.name, data.email ?? '', paymentStatus, receiptName).run()
+    'INSERT INTO event_bookings (event_id, friend_id, name, email, payment_status, receipt_name, receipt_requested)'
+    + ' VALUES (?, ?, ?, ?, ?, ?, ?)',
+  ).bind(
+    data.event_id, data.friend_id ?? null, data.name, data.email ?? '',
+    paymentStatus, receiptName, data.receipt_requested ?? null,
+  ).run()
   const lastId = (result as { meta?: { last_row_id?: number } }).meta?.last_row_id
   const row = await db.prepare('SELECT * FROM event_bookings WHERE id = ?')
     .bind(lastId).first<EventBookingRow>()
@@ -670,8 +688,8 @@ export async function markCashReceived(
 /**
  * 領収書に印字する宛名を決める。
  *
- * 申込時の宛名は任意入力なので、未指定なら申込時の氏名（LINE の表示名）を使う。
- * LIFF の申込画面でも「未入力の場合は『◯◯』が宛名になります」と同じ規則を見せている。
+ * 申込時の宛名は「必要」と答えた人には必須だが（#80）、それより前の予約や
+ * API を直接叩かれた場合は空になりうる。未指定なら申込時の氏名（LINE の表示名）を使う。
  */
 export function resolveReceiptName(
   booking: {

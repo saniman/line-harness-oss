@@ -62,6 +62,9 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
   // 受領は記録できたが領収書だけ出せなかったケース。エラー（赤）と混ぜると
   // 「受領も失敗した」と誤解され、運営者が現金を二重に受け取りかねない
   const [receiptWarning, setReceiptWarning] = useState('')
+  // ⚠️ receiptWarning と分ける。「領収書は不要」は失敗ではないので、
+  //    同じ琥珀色で出すと運営者が原因を調べ始めてしまう
+  const [receiptNotice, setReceiptNotice] = useState('')
   // ⚠️ 領収書パネルは**同時に1つしか開かない**。一覧に入力欄を並べると、
   //    クリップボードを持ち回って別の人のリンクを貼る事故が起きる（#47）
   const [receiptBookingId, setReceiptBookingId] = useState<number | null>(null)
@@ -175,10 +178,15 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
     setCashBusyId(b.id)
     setCashError('')
     setReceiptWarning('')
+    setReceiptNotice('')
     try {
       const res = await api.eventBookings.markCashReceived(eventId, b.id)
+      // 参加者が「領収書は不要」と答えている場合（#80）。これは失敗ではないので
+      // 警告を出さない。⚠️ 文言ではなくコードで分岐する
+      if (res.success && res.data.receiptCode === 'not_requested') {
+        setReceiptNotice('受領を記録しました。この方は領収書が不要とのことなので、発行していません。')
       // 現金の受領は成功している。領収書だけ出せなかった場合は警告に留める
-      if (res.success && !res.data.receiptIssued) {
+      } else if (res.success && !res.data.receiptIssued) {
         setReceiptWarning(
           `受領は記録しました。領収書は発行できていません（${res.data.receiptError ?? '原因不明'}）。`,
         )
@@ -448,6 +456,9 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
             {/* ⚠️ エラーは分岐の外に出す。「他の端末で取り消された」ケースでは
                 再読込後に active が空になることがあり、else 側に置くと
                 まさにエラーを出したい場面で表示が消える */}
+            {receiptNotice && (
+              <div className="mx-4 mt-3 p-3 rounded-lg bg-gray-100 text-gray-700 text-sm">{receiptNotice}</div>
+            )}
             {receiptWarning && (
               <div className="mx-4 mt-3 p-3 rounded-lg bg-amber-50 text-amber-800 text-sm">{receiptWarning}</div>
             )}
@@ -504,6 +515,12 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
                           <p className="text-xs text-gray-500 mt-0.5 truncate">
                             領収書宛名: {b.receipt_name}
                           </p>
+                        )}
+                        {/* 参加者が「領収書は不要」と答えた申込（#80）。
+                            現金受領を押しても領収書が出ないことを**押す前に**分かるようにする。
+                            ⚠️ null（この機能より前の申込）は未回答なので出さない。従来どおり発行される */}
+                        {b.receipt_requested === 0 && (
+                          <p className="text-xs text-gray-400 mt-0.5">領収書不要</p>
                         )}
                         {/* 畳まれずにここへ来た cancel_reason は、運営者に確認してほしい理由
                             （Stripe 障害・未知の値）。文言が出る場所がないと気づけない */}
