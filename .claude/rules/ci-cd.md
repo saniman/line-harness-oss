@@ -47,3 +47,14 @@ run: |
 
 > D1 マイグレーションの CI 自動適用・トークン権限（D1:Edit 必須）・fork での `gh` の `-R` 注意は
 > `.claude/rules/deployment.md`（常時ロード）を参照。
+
+## ローカルで緑・CI で赤（外部コマンドのバージョン差・2026-09-06 追記）
+
+CI の git / node は**ローカルより新しい**。外部コマンドの「表示用の整形」に依存したコードは
+ローカルだけ通って CI で落ちる。
+
+実例: `git for-each-ref --format=%(refname:short)` が `refs/remotes/origin/HEAD` を
+2.39 では `origin/HEAD`、新しい git では `origin` と出す（PR #77 で発生）。
+
+書き方と、**この壊れ方を検出できる再現テストの作り方**は
+`.claude/rules/api-coding.md` の「外部コマンドを叩くコードは…」を参照。
