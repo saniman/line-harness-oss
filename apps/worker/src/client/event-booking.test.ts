@@ -667,9 +667,11 @@ describe('当日現金の申込画面（#80）', () => {
     expect(html).toContain('60文字')
   })
 
-  it('詳細に戻る導線がある', () => {
+  it('【重要】戻る導線をカードの中に持たない', () => {
+    // イベント詳細は「← 一覧に戻る」をカードの外・左上に置いている。
+    // 中に入れると画面ごとに戻る場所が変わって見え、UX が揃わない
     const html = buildCashFormHtml(EVENT_PAID)
-    expect(html).toContain('cash-back-btn')
+    expect(html).not.toContain('cash-back-btn')
   })
 
   it('イベント名を HTML エスケープする', () => {
@@ -888,6 +890,20 @@ describe('当日現金フローの画面遷移（#80）', () => {
       expect(document.getElementById('app')?.innerHTML).toContain('申込が完了しました')
     })
     expect(document.getElementById('app')?.innerHTML).not.toContain('領収書')
+  })
+
+  it('【重要】戻るボタンはカードの外・カードより前に置く（イベント詳細と揃える）', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(listOk(EVENT_PAID))
+    await openCashForm(fetchMock)
+
+    const back = document.getElementById('cash-back-btn') as HTMLElement
+    const card = document.querySelector('.cash-form') as HTMLElement
+
+    expect(back).not.toBeNull()
+    // カードの中に入っていない
+    expect(card.contains(back)).toBe(false)
+    // DOM 順でカードより前（＝画面の上）
+    expect(back.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('戻るボタンでイベント詳細に返る', async () => {

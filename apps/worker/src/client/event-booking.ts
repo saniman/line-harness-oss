@@ -113,6 +113,9 @@ export function buildEventDetailHtml(event: EventPublic): string {
  *    「聞いた意味」が無くなり、領収書が要る人が黙って不要側に倒れる。
  *
  * ⚠️ 宛名欄は最初隠す。「いいえ」の人に見せると、この画面でも判断の邪魔になる。
+ *
+ * ⚠️ **戻る導線はここに含めない。** イベント詳細が「← 一覧に戻る」をカードの外・左上に
+ *    置いているので、画面をまたいで位置を揃える（`renderCashForm` が描画する）。
  */
 export function buildCashFormHtml(event: EventPublic): string {
   const price = event.price ?? 0
@@ -142,7 +145,6 @@ export function buildCashFormHtml(event: EventPublic): string {
       </div>
 
       <button id="cash-submit-btn" class="btn-pink" disabled>この内容で申し込む</button>
-      <button id="cash-back-btn" class="cash-back-btn">← 戻る</button>
     </div>
   `
 }
@@ -494,7 +496,14 @@ export async function initEventBooking(options: {
    *    留まると、そこから何度も申し込みを試せてしまう。
    */
   const renderCashForm = (event: EventPublic) => {
-    app.innerHTML = buildCashFormHtml(event)
+    // 戻る導線はカードの外・左上。イベント詳細（renderDetail）と同じ形にして、
+    // 画面が変わっても「戻る」の位置が動かないようにする
+    app.innerHTML = `
+      <div>
+        <button id="cash-back-btn">← 戻る</button>
+        ${buildCashFormHtml(event)}
+      </div>
+    `
 
     const submitBtn = document.getElementById('cash-submit-btn') as HTMLButtonElement
     const nameField = document.getElementById('receipt-name-field') as HTMLElement
