@@ -1263,14 +1263,23 @@ describe('POST /api/events/:id/bookings/:bookingId/issue-receipt（#82）', () =
     expect(json.code).toBe('not_received')
   })
 
-  it('【重要】発行処理が投げても 500 にしない', async () => {
-    // ここで 500 を返すと、運営者には何が起きたのか分からない
+  it('【重要】発行処理が投げても JSON で 500 を返す（握りつぶさない）', async () => {
+    // 想定外の例外なので 500 は正しい。ただし**必ず JSON で success: false を返す**。
+    // ここで例外が素通りすると管理画面が理由を出せず、運営者が原因に辿り着けない
     mockIssueReceipt.mockRejectedValue(new Error('boom'))
 
     const res = await post({ payeeName: '株式会社サンプル' })
 
     expect(res.status).toBe(500)
     expect((await res.json() as { success: boolean }).success).toBe(false)
+  })
+
+  it('【重要】宛名が文字列でなければ 400（500 にしない）', async () => {
+    // .trim() が例外になり、入力の不備なのに 500 を返していた
+    const res = await post({ payeeName: 123 })
+
+    expect(res.status).toBe(400)
+    expect((await res.json() as { error: string }).error).toBe('receipt_name_required')
   })
 
   it.each([

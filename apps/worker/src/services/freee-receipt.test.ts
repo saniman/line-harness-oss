@@ -53,6 +53,8 @@ function makeDb(opts: DbOptions = {}) {
   const sqls: string[] = [];
   /** release の UPDATE に渡された bind 引数 */
   const released: unknown[][] = [];
+  /** 発行結果を保存する UPDATE に渡された bind 引数（宛名が入るか見る） */
+  const savedBinds: unknown[][] = [];
   const calls = { select: 0, claim: 0, release: 0, save: 0 };
   const row = opts.booking === undefined ? booking() : opts.booking;
 
@@ -86,6 +88,7 @@ function makeDb(opts: DbOptions = {}) {
             }
             if (isSave) {
               calls.save++;
+              savedBinds.push(bound);
               return opts.save === false ? null : { receipt_url: ISSUED_URL };
             }
             return null;
@@ -101,7 +104,7 @@ function makeDb(opts: DbOptions = {}) {
     }),
   } as unknown as D1Database;
 
-  return { db, sqls, calls, released };
+  return { db, sqls, calls, released, savedBinds };
 }
 
 /** 領収書を1件発行する最小の発行器 */
@@ -332,6 +335,45 @@ describe('あとから発行する（#82・運営者の明示指示）', () => {
     await issueReceiptForBooking(ENV, db, 1, 5, makeIssuer(), { forceIssue: true });
 
     expect(sqls.some((q) => q.includes('receipt_requested'))).toBe(false);
+  });
+
+  it('【重要】指示された宛名を DB にも保存する', async () => {
+    // 保存しないと、参加者への LINE は receipt_name のフォールバック（表示名）を出し、
+    // PDF と食い違う。「宛名を書いておけば取り違えに本人が気づける」という
+    // 第3.5層の防御が、誤配でないのに誤配のサインを出すことになる（#47 / receipt-notify.ts）
+    const { db, sqls } = makeDb({ booking: booking({ receipt_requested: 0, receipt_name: null }) });
+
+    await issueReceiptForBooking(ENV, db, 1, 5, makeIssuer(), {
+      forceIssue: true, payeeName: '株式会社サンプル',
+    });
+
+    const save = sqls.find((q) => q.includes('receipt_url = ?')) ?? '';
+    expect(save).toContain('receipt_name');
+  });
+
+  it('【重要】保存する宛名も正規化済みの値にする（PDF と同じ文字列）', async () => {
+    // 画面に出す値と PDF の値がずれると、確認する意味が無くなる
+    const { db, savedBinds } = makeDb({ booking: booking({ receipt_requested: 0, receipt_name: null }) });
+
+    await issueReceiptForBooking(ENV, db, 1, 5, makeIssuer(), {
+      forceIssue: true, payeeName: '  株式会社\nサンプル  ',
+    });
+
+    const saved = savedBinds[0]?.find(
+      (v) => typeof v === 'string' && v.includes('株式会社'),
+    ) as string;
+    expect(saved).not.toContain('\n');
+    expect(saved.trim()).toBe(saved);
+  });
+
+  it('宛名の指示が無ければ receipt_name は触らない', async () => {
+    // 通常の発行（参加者が「はい」と答えた分）は既に receipt_name を持っている
+    const { db, sqls } = makeDb({ booking: booking({ receipt_name: '株式会社サンプル' }) });
+
+    await issueReceiptForBooking(ENV, db, 1, 5, makeIssuer());
+
+    const save = sqls.find((q) => q.includes('receipt_url = ?')) ?? '';
+    expect(save).not.toContain('receipt_name');
   });
 
   it('明示指示が無ければ従来どおりスキップする', async () => {

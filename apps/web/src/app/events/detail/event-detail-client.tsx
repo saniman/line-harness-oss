@@ -239,15 +239,26 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
     if (!payee) return
     setIssueBusy(true)
     setIssueError('')
+    // 前の操作（現金受領）の案内が残っていると、今回の結果と混ざって読める
+    setReceiptWarning('')
+    setReceiptNotice('')
     try {
-      await api.eventBookings.issueReceipt(eventId, b.id, payee)
+      const res = await api.eventBookings.issueReceipt(eventId, b.id, payee)
+      // ⚠️ **warning を捨てない。** freee に領収書はできたが URL を取得できなかった場合、
+      //    receipt_url が NULL のままなのでボタンが再び出る。黙って閉じると運営者が
+      //    押し直し、5分後に**2枚目**が発行される（freee 側で取消が必要な経理事故）。
+      //    サービス側のコメントが「この機能が防ぎたい事故を、文言が誘発してしまう」と
+      //    書いているのがまさにこれ
+      if (res.success && res.data.receiptWarning) setReceiptWarning(res.data.receiptWarning)
       setIssueBookingId(null)
       setIssuePayee('')
-      await load()
     } catch (err) {
       // サーバーが返す理由をそのまま出す。固定文にすると原因に辿り着けない
       setIssueError(err instanceof ApiError ? err.message : '発行に失敗しました。')
     } finally {
+      // ⚠️ 成否にかかわらずサーバーの状態に合わせ直す（handleCashReceived と揃える）。
+      //    別の端末で取り消された等で失敗したとき、行が古いまま残るとボタンを押し続けられる
+      await load()
       setIssueBusy(false)
     }
   }
@@ -673,19 +684,25 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
                           value={issuePayee}
                           onChange={(e) => setIssuePayee(e.target.value)}
                           placeholder="例）株式会社サンプル"
+                          /* サーバーは60コードポイントで切り詰める。上限を出さないと
+                             黙って切れた宛名で発行される（LIFF 側と同じ理由） */
+                          maxLength={240}
                           className="w-full px-3 py-2 border rounded-lg text-sm"
                         />
                         {/* ⚠️ 表示名を初期値に入れない。確認せず押すと
                             ニックネームの領収書が出る（#80 で必須にした理由と同じ） */}
                         <p className="text-xs text-gray-400 mt-1">
-                          LINE の表示名は「{participantDisplayName(b)}」です
+                          LINE の表示名は「{participantDisplayName(b)}」です（60文字まで）
                         </p>
                         {issueError && (
                           <p className="text-xs text-red-600 mt-1">{issueError}</p>
                         )}
                         <button
                           onClick={() => handleIssueReceipt(b)}
-                          disabled={issueBusy || issuePayee.trim() === ''}
+                          /* 他の行の操作と同時に走ると load() が互いの結果を上書きする
+                             （現金受領・取り消しと同じ理由。627行のコメント参照） */
+                          disabled={issueBusy || cashBusyId !== null || cancelBusyId !== null
+                            || issuePayee.trim() === ''}
                           className="mt-2 px-3 py-1.5 rounded-lg text-sm text-white bg-blue-600 disabled:opacity-50"
                         >
                           {issueBusy ? '発行中...' : '発行'}

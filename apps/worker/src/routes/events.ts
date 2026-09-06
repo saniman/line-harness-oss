@@ -864,8 +864,10 @@ events.post('/api/events/:id/bookings/:bookingId/issue-receipt', async (c) => {
       return c.json({ success: false, error: 'Invalid id' }, 400);
     }
 
-    const body = await c.req.json<{ payeeName?: string }>().catch(() => ({} as { payeeName?: string }));
-    const payeeName = body.payeeName?.trim() || null;
+    const body = await c.req.json<{ payeeName?: unknown }>().catch(() => ({} as { payeeName?: unknown }));
+    // ⚠️ 文字列とは限らない。`{"payeeName": 123}` で .trim() を呼ぶと例外になり、
+    //    入力の不備なのに 500 を返してしまう
+    const payeeName = typeof body.payeeName === 'string' ? body.payeeName.trim() || null : null;
     // ⚠️ 宛名は必須。「いいえ」と答えた人は receipt_name が NULL なので、
     //    ここを通すと LINE の表示名（ニックネームのことがある）で発行されてしまう。
     if (!payeeName) {
