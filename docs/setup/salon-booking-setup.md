@@ -36,7 +36,9 @@
 ### 1-2. LIFF アプリのスコープに `openid` を追加する
 
 - **必要な理由**: `liff.getIDToken()`（サーバー側で friend を特定するための ID トークン）に必須。
-- **未設定時の症状**: `LINE 認証情報の取得に失敗しました。LINE アプリ内で再度開いてください。`
+- **未設定時の症状**: `LINE の認証情報を取得できませんでした。お手数ですが、この画面を閉じて、もう一度開いてください。`
+  （#84 以前は `LINE 認証情報の取得に失敗しました。LINE アプリ内で再度開いてください。` だった。
+  すでに LINE の中にいる人に出る文言だったため廃止）
 - **手順**: LINE Developers Console → LINE Login チャネル → 「LIFF」タブ → 対象 LIFF を開く
   → Scopes で `openid` にチェック（`profile` は既存）→ 保存。
 - **反映**: スコープ変更後は LIFF を一度閉じて開き直す（初回は同意画面が出る）。
@@ -108,8 +110,13 @@
 ### 4-2. `There is no login bot linked to this channel.`
 - → 「1-1. 公式アカウント（bot）リンク」を実施。
 
-### 4-3. `LINE 認証情報の取得に失敗しました。`
+### 4-3. `LINE の認証情報を取得できませんでした。`
 - → 「1-2. LIFF スコープに `openid` 追加」を実施。
+- ⚠️ 似た文言で **`この画面では LINE の情報を取得できませんでした。`** が出る場合は原因が違う。
+  そちらは **LIFF ではなくアプリ内ブラウザで開いている**（Pages の URL を直接開いた）ケース（#84）。
+  正しい入口は `https://liff.line.me/<LIFF ID>?page=...`。
+  ブラウザのコンソールに `[LIFF] 本人確認に必要な情報を取得できませんでした`
+  が出ており、`isInClient` / `isLoggedIn` / `reason` で切り分けられる。
 
 ### 4-4. `メニュー情報の取得に失敗しました。The string did not match the expected pattern.`
 - **原因**: サロン予約クライアントが `window.location.origin` ベースの**相対パス**でAPIを叩いていた。
