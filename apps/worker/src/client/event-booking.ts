@@ -69,10 +69,7 @@ export function buildEventListHtml(events: EventPublic[]): string {
   }).join('')
 }
 
-/**
- * @param displayName LINE の表示名。宛名を未入力のとき何になるかを見せるために使う
- */
-export function buildEventDetailHtml(event: EventPublic, displayName?: string): string {
+export function buildEventDetailHtml(event: EventPublic): string {
   const closed = event.application_closed === true
   const full = !event.available || event.remaining === 0
   // 締切なら有料の2経路（決済・当日現金）と無料申込の全てを止める。
@@ -84,34 +81,10 @@ export function buildEventDetailHtml(event: EventPublic, displayName?: string): 
     : `<p class="event-price">参加費: 無料</p>`
   const label = (normal: string) => (closed ? CLOSED_LABEL : full ? '満席' : normal)
 
-  // 領収書の宛名（任意）。有料イベントのときだけ出す——領収書を発行するのは
-  // 当日現金の経路だけで、そのボタン自体が有料にしか出ないため。
-  //
-  // ⚠️ 置く場所は「当日現金ボタンの直前」。決済ボタンの真上に置くと、
-  //    入力してから決済を押した人の入力が黙って消える（読むのは現金フローだけ）。
-  //
-  // 補足には「LINEの表示名になります」ではなく**実際の表示名**を埋める。
-  // 自分の表示名を覚えている人は少なく、ニックネーム登録の人ほど
-  // 「これで領収書が出ると困る」とその場で気づける。
-  const receiptNameHtml = isPaid
-    ? `<div class="receipt-name-field">
-        <label for="receipt-name-input">領収書の宛名（任意・当日現金でお支払いの方のみ・60文字まで）</label>
-        <!-- maxlength は UTF-16 コードユニット単位。サーバーは60コードポイントで切るので、
-             サロゲートペアでも手前で切られないよう 4 倍を確保する（実際の上限はサーバー側） -->
-        <input id="receipt-name-input" type="text" maxlength="240"
-               placeholder="例）株式会社サンプル" ${blocked ? 'disabled' : ''} />
-        ${displayName
-          ? `<p class="receipt-name-hint">未入力の場合は「${escapeHtml(displayName)}」が宛名になります</p>`
-          // ⚠️ 表示名が取れない＝サーバー側のフォールバックも空になるケース。
-          //    ここで黙ると、一番警告が必要な人に何も出ないことになる。
-          : `<p class="receipt-name-hint receipt-name-warn">お名前を取得できませんでした。領収書が必要な方は宛名をご入力ください</p>`}
-       </div>`
-    : ''
   const actionHtml = isPaid
     ? `<button id="checkout-btn" class="btn-pink" ${blocked ? 'disabled' : ''}>
         ${label('申込・決済へ進む 💳')}
        </button>
-       ${receiptNameHtml}
        <button id="cash-join-btn" ${blocked ? 'disabled' : ''}>
         ${closed ? CLOSED_LABEL : '当日現金の方はこちら 💴'}
        </button>`
@@ -126,6 +99,50 @@ export function buildEventDetailHtml(event: EventPublic, displayName?: string): 
       ${closed ? `<p class="event-closed">${CLOSED_MESSAGE}</p>` : `<p class="event-remaining">残席: ${event.remaining}名</p>`}
       ${priceHtml}
       ${actionHtml}
+    </div>
+  `
+}
+
+/**
+ * 当日現金の申込画面（#80）。
+ *
+ * イベント詳細に宛名の入力欄を置いていたが、**決済で払う人には無関係な欄が
+ * 支払い方法を選ぶ途中に割り込む**状態だった。選択を済ませてから詳細を聞く。
+ *
+ * ⚠️ 要否を選ぶまで申し込ませない（`disabled` で出す）。未選択のまま通せるようにすると
+ *    「聞いた意味」が無くなり、領収書が要る人が黙って不要側に倒れる。
+ *
+ * ⚠️ 宛名欄は最初隠す。「いいえ」の人に見せると、この画面でも判断の邪魔になる。
+ */
+export function buildCashFormHtml(event: EventPublic): string {
+  const price = event.price ?? 0
+  return `
+    <div class="cash-form panel">
+      <h2 class="cash-form-title">当日現金でのお申込</h2>
+      <p class="event-title">${escapeHtml(event.title)}</p>
+      <p class="event-date">${formatJST(event.start_at)} 〜 ${formatJST(event.end_at)}</p>
+      <p class="event-price">参加費: ¥${price.toLocaleString()}（当日現金）</p>
+
+      <fieldset class="receipt-choice">
+        <legend>領収書は必要ですか？</legend>
+        <label class="receipt-choice-option">
+          <input type="radio" name="receipt-wanted" id="receipt-yes" value="yes" /> はい
+        </label>
+        <label class="receipt-choice-option">
+          <input type="radio" name="receipt-wanted" id="receipt-no" value="no" /> いいえ
+        </label>
+      </fieldset>
+
+      <div id="receipt-name-field" class="receipt-name-field" hidden>
+        <label for="receipt-name-input">領収書の宛名（必須・60文字まで）</label>
+        <!-- maxlength は UTF-16 コードユニット単位。サーバーは60コードポイントで切るので、
+             サロゲートペアでも手前で切られないよう 4 倍を確保する（実際の上限はサーバー側） -->
+        <input id="receipt-name-input" type="text" maxlength="240"
+               placeholder="例）株式会社サンプル" />
+      </div>
+
+      <button id="cash-submit-btn" class="btn-pink" disabled>この内容で申し込む</button>
+      <button id="cash-back-btn" class="cash-back-btn">← 戻る</button>
     </div>
   `
 }
@@ -145,6 +162,8 @@ export interface EventActionResult {
    * 締切は最終状態なので、呼び出し側はボタンを元に戻さず締切済みとして描き直す。
    */
   applicationClosed?: boolean
+  /** 満席で断られた（409）。締切とは別状態として扱う */
+  eventFull?: boolean
 }
 
 /** 申込系エンドポイントの共通ヘッダ。本人確認は LIFF の idToken で行う。 */
@@ -187,7 +206,7 @@ function toActionError(status: number, code?: string): EventActionResult {
     if (code === 'application_closed') {
       return { success: false, applicationClosed: true, error: CLOSED_MESSAGE }
     }
-    return { success: false, error: 'このイベントは満席です' }
+    return { success: false, eventFull: true, error: 'このイベントは満席です' }
   }
   if (status === 403) {
     return { success: false, friendRequired: true, error: 'お申し込みには友だち追加が必要です' }
@@ -223,12 +242,19 @@ export async function joinFreeEvent(
   return { success: true }
 }
 
+/** 領収書の要否と宛名（#80。画面で必ず選ばせる） */
+export interface CashReceiptChoice {
+  /** 参加者が「領収書が必要」と答えたか */
+  requested: boolean
+  /** 宛名。requested のときだけ意味がある */
+  name?: string
+}
+
 export async function joinCashEvent(
   eventId: number,
   idToken: string,
   name: string,
-  /** 領収書の宛名（任意）。空なら送らず、サーバー側で name にフォールバックする */
-  receiptName?: string,
+  receipt: CashReceiptChoice,
 ): Promise<EventActionResult> {
   const stale = checkTokenFreshness(idToken)
   if (stale) return stale
@@ -239,7 +265,10 @@ export async function joinCashEvent(
     body: JSON.stringify({
       name,
       paymentMethod: 'cash',
-      ...(receiptName ? { receiptName } : {}),
+      // ⚠️ false でも必ず送る。省略するとサーバー側で「未回答」と区別できず、
+      //    不要と答えた人にも領収書が発行されてしまう
+      receiptRequested: receipt.requested,
+      ...(receipt.requested && receipt.name ? { receiptName: receipt.name } : {}),
     }),
   })
 
@@ -428,23 +457,119 @@ export async function initEventBooking(options: {
     return false
   }
 
-  const renderDetail = (event: EventPublic) => {
+  /**
+   * 締切で弾かれたときの共通処理。ボタンを元に戻すと押し続けられてしまうため、
+   * **締切済みの状態でイベント詳細ごと描き直す**（有料は決済・当日現金の2経路があるので、
+   * 押されたボタンだけ止めても、もう一方から申し込めてしまう）。
+   *
+   * @returns 締切だったら true（呼び出し側はボタン復帰処理を行わない）
+   */
+  const renderClosedDetail = (event: EventPublic, result: EventActionResult): boolean => {
+    if (!result.applicationClosed) return false
+    renderDetail({ ...event, application_closed: true })
+    return true
+  }
+
+  /**
+   * 現金の申込画面から申し込めなかったときに、詳細へ戻すかを判断する。
+   *
+   * ⚠️ **締切だけでなく満席も戻す。** 片方しか戻さないと、その状態のときだけ
+   *    この画面に留まってボタンが復活し、何度も申し込みを試せてしまう
+   *    （詳細画面と違い、ここには「もう申し込めない」と分かる情報が無い）。
+   *
+   * @returns 戻したら true（呼び出し側はボタン復帰処理を行わない）
+   */
+  const leaveCashFormIfBlocked = (event: EventPublic, result: EventActionResult): boolean => {
+    if (renderClosedDetail(event, result)) return true
+    if (!result.eventFull) return false
+    renderDetail({ ...event, available: false, remaining: 0 })
+    return true
+  }
+
+  /**
+   * 当日現金の申込画面（#80）。要否 → 宛名 → 申込の順に進む。
+   *
+   * ⚠️ 画面が1枚増える＝**選んでから申し込むまでに時間が空く**。その間に締切・満席に
+   *    なりうるので、締切が返ったら**この画面に留めず**詳細を締切状態で描き直す。
+   *    留まると、そこから何度も申し込みを試せてしまう。
+   */
+  const renderCashForm = (event: EventPublic) => {
+    app.innerHTML = buildCashFormHtml(event)
+
+    const submitBtn = document.getElementById('cash-submit-btn') as HTMLButtonElement
+    const nameField = document.getElementById('receipt-name-field') as HTMLElement
+    const nameInput = document.getElementById('receipt-name-input') as HTMLInputElement
+    const yes = document.getElementById('receipt-yes') as HTMLInputElement
+    const no = document.getElementById('receipt-no') as HTMLInputElement
+
+    /** 「必要」を選んだか。未選択と「いいえ」を区別するため null を持つ */
+    const wanted = () => (yes.checked ? true : no.checked ? false : null)
+
     /**
-     * 締切で弾かれたときの共通処理。ボタンを元に戻すと押し続けられてしまうため、
-     * 締切済みの状態で画面ごと描き直す（有料は決済・当日現金の2経路があるので、
-     * 押されたボタンだけ止めても、もう一方から申し込めてしまう）。
-     * @returns 締切だったら true（呼び出し側はボタン復帰処理を行わない）
+     * ⚠️ 画面を描き直さず、ボタンの状態だけ更新する。
+     *    入力のたびに innerHTML を差し替えるとフォーカスが飛ぶ（`.claude/rules/liff.md`）。
      */
-    const handleClosed = (result: EventActionResult): boolean => {
-      if (!result.applicationClosed) return false
-      renderDetail({ ...event, application_closed: true })
-      return true
+    const updateSubmitState = () => {
+      const w = wanted()
+      // 未選択では進ませない。必要なら宛名が空では進ませない
+      submitBtn.disabled = w === null || (w === true && nameInput.value.trim() === '')
     }
+
+    const onChoice = () => {
+      nameField.hidden = wanted() !== true
+      updateSubmitState()
+    }
+    yes.addEventListener('change', onChoice)
+    no.addEventListener('change', onChoice)
+    nameInput.addEventListener('input', updateSubmitState)
+
+    document.getElementById('cash-back-btn')?.addEventListener('click', () => { renderDetail(event) })
+
+    submitBtn.addEventListener('click', async () => {
+      const requested = wanted()
+      // 押せない状態のはずだが、直接呼ばれても進ませない
+      if (requested === null) return
+      submitBtn.disabled = true
+      submitBtn.textContent = '処理中...'
+
+      const result = await joinCashEvent(event.id, idToken ?? '', displayName ?? '', {
+        requested,
+        name: requested ? nameInput.value.trim() : undefined,
+      })
+
+      if (result.success) {
+        // 「必要ですか？」と聞いた以上、受け取ったことを返す。何も言わないと
+        // 伝わったのか分からず、当日スタッフに聞きに来ることになる。
+        // ⚠️ 「いいえ」の人には出さない（頼んでいない話をされることになる）
+        const receiptNote = requested
+          ? '<p>領収書はお支払い後、こちらの LINE でお送りします。</p>'
+          : ''
+        app.innerHTML = `
+          <div class="done-card panel">
+            <div class="check-icon">✓</div>
+            <h2>申込が完了しました！</h2>
+            <p>当日スタッフにお支払いください。</p>
+            ${receiptNote}
+          </div>
+        `
+        return
+      }
+      // 締切・満席はこの画面に留めず、詳細をその状態で描き直す
+      if (leaveCashFormIfBlocked(event, result)) return
+      if (handleActionFailure(result)) return
+      submitBtn.disabled = false
+      submitBtn.textContent = 'この内容で申し込む'
+      showError(submitBtn, result.error || 'エラーが発生しました')
+    })
+  }
+
+  const renderDetail = (event: EventPublic) => {
+    const handleClosed = (result: EventActionResult): boolean => renderClosedDetail(event, result)
 
     app.innerHTML = `
       <div>
         <button id="back-btn">← 一覧に戻る</button>
-        ${buildEventDetailHtml(event, displayName)}
+        ${buildEventDetailHtml(event)}
       </div>
     `
     document.getElementById('back-btn')?.addEventListener('click', renderList)
@@ -465,31 +590,9 @@ export async function initEventBooking(options: {
       }
     })
 
-    // 当日現金フロー
+    // 当日現金フロー: ここでは申し込まない。宛名を聞く画面へ移るだけ（#80）
     const cashBtn = document.getElementById('cash-join-btn') as HTMLButtonElement | null
-    cashBtn?.addEventListener('click', async () => {
-      if (!cashBtn) return
-      cashBtn.disabled = true
-      cashBtn.textContent = '処理中...'
-      const receiptInput = document.getElementById('receipt-name-input') as HTMLInputElement | null
-      const receiptName = receiptInput?.value.trim() || undefined
-      const result = await joinCashEvent(event.id, idToken ?? '', displayName ?? '', receiptName)
-      if (result.success) {
-        app.innerHTML = `
-          <div class="done-card panel">
-            <div class="check-icon">✓</div>
-            <h2>申込が完了しました！</h2>
-            <p>当日スタッフにお支払いください。</p>
-          </div>
-        `
-      } else {
-        if (handleClosed(result)) return
-        if (handleActionFailure(result)) return
-        cashBtn.disabled = false
-        cashBtn.textContent = '当日現金の方はこちら 💴'
-        showError(cashBtn, result.error || 'エラーが発生しました')
-      }
-    })
+    cashBtn?.addEventListener('click', () => { renderCashForm(event) })
 
     // 無料フロー
     const freeBtn = document.getElementById('free-join-btn') as HTMLButtonElement | null

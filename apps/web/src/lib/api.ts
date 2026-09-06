@@ -654,6 +654,12 @@ export const api = {
         receiptError: string | null
         /** 発行はできたが人の確認が要ること（二重発行の疑いなど） */
         receiptWarning: string | null
+        /**
+         * 未発行の理由コード。**文言ではなくこれで分岐する**。
+         * `not_requested`（参加者が「領収書は不要」と回答）は失敗ではないので、
+         * 警告ではなく事実として出す。
+         */
+        receiptCode: string | null
       }>>(
         `/api/events/${eventId}/bookings/${bookingId}/cash-received`,
         { method: 'POST' },
@@ -1053,6 +1059,12 @@ export type EventBookingItem = {
   cash_received_at: string | null
   /** 領収書の宛名（申込時の任意入力）。null なら name（LINEの表示名）が使われる */
   receipt_name: string | null
+  /**
+   * 参加者が領収書を必要と答えたか（#80）。1 = 必要 / 0 = 不要 / null = 未回答。
+   * ⚠️ null を「不要」と表示しない。この機能より前の予約は答えを持っていないだけで、
+   *    領収書は従来どおり発行される。
+   */
+  receipt_requested: number | null
   /**
    * freee が発行した領収書のURL（report_url）。null = 未発行。
    * ⚠️ **ログイン必須なので運営者にしか見せない**。参加者に送るのは receipt_share_url。

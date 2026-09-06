@@ -43,7 +43,18 @@ const EVENT_CLOSED_AND_FULL: EventPublic = {
   ...EVENT_CLOSED, id: 6, participant_count: 10, remaining: 0, available: false,
 }
 
-import { buildEventListHtml, buildEventDetailHtml, startCheckoutSession, joinFreeEvent, joinCashEvent, initEventBooking } from './event-booking.js'
+import { buildEventListHtml, buildEventDetailHtml, buildCashFormHtml, startCheckoutSession, joinFreeEvent, joinCashEvent, initEventBooking } from './event-booking.js'
+
+/**
+ * HTML 文字列を DOM にして返す。
+ * `hidden` / `disabled` は文字列一致だと属性の書き方（`hidden` / `hidden=""`）に
+ * 引きずられるので、実際にパースしたプロパティで確かめる。
+ */
+function htmlToEl(html: string): HTMLElement {
+  const el = document.createElement('div')
+  el.innerHTML = html
+  return el
+}
 
 afterEach(() => { vi.unstubAllGlobals() })
 
@@ -182,7 +193,7 @@ describe('ID トークン期限切れの扱い（#28）', () => {
     vi.stubGlobal('fetch', mockFetch)
     const expired = makeIdToken(Date.now() / 1000 - 60)
 
-    const result = await joinCashEvent(1, expired, '山田太郎')
+    const result = await joinCashEvent(1, expired, '山田太郎', { requested: false })
 
     expect(result.sessionExpired).toBe(true)
     expect(mockFetch).not.toHaveBeenCalled()
@@ -351,7 +362,7 @@ describe('joinCashEvent', () => {
       ok: true, status: 201,
       json: async () => ({ success: true, data: { id: 10 } }),
     }))
-    const result = await joinCashEvent(1, ID_TOKEN, '山田太郎')
+    const result = await joinCashEvent(1, ID_TOKEN, '山田太郎', { requested: false })
     expect(result.success).toBe(true)
   })
 
@@ -361,7 +372,7 @@ describe('joinCashEvent', () => {
       json: async () => ({ success: true, data: { id: 10 } }),
     })
     vi.stubGlobal('fetch', mockFetch)
-    await joinCashEvent(1, ID_TOKEN, '山田太郎')
+    await joinCashEvent(1, ID_TOKEN, '山田太郎', { requested: false })
     const body = JSON.parse(mockFetch.mock.calls[0][1].body)
     expect(body.paymentMethod).toBe('cash')
     expect(mockFetch.mock.calls[0][1].headers['Authorization']).toBe(`Bearer ${ID_TOKEN}`)
@@ -369,14 +380,14 @@ describe('joinCashEvent', () => {
 
   it('409（満席）の場合エラーを返す', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 409 }))
-    const result = await joinCashEvent(1, '', '山田太郎')
+    const result = await joinCashEvent(1, '', '山田太郎', { requested: false })
     expect(result.success).toBe(false)
     expect(result.error).toContain('満席')
   })
 
   it('403（友だち未登録）の場合 friendRequired: true を返す', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 403 }))
-    const result = await joinCashEvent(1, ID_TOKEN, '山田太郎')
+    const result = await joinCashEvent(1, ID_TOKEN, '山田太郎', { requested: false })
     expect(result.friendRequired).toBe(true)
   })
 })
@@ -396,7 +407,7 @@ describe('409 の区別（満席 / 締切）', () => {
 
   it('当日現金の 409 application_closed も締切の文言になる', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(closed409()))
-    const result = await joinCashEvent(1, ID_TOKEN, '山田太郎')
+    const result = await joinCashEvent(1, ID_TOKEN, '山田太郎', { requested: false })
     expect(result.error).toContain('締めきられました')
   })
 
@@ -462,7 +473,13 @@ describe('画面を開いたまま締切をまたいだとき', () => {
     vi.stubGlobal('fetch', fetchThenClosed(EVENT_PAID))
 
     await initEventBooking({ idToken: ID_TOKEN, eventId: EVENT_PAID.id })
+    // #80 で現金は申込画面を挟むようになった。締切は「申し込む」を押した時点で分かる
     ;(document.getElementById('cash-join-btn') as HTMLButtonElement).click()
+    await vi.waitFor(() => {
+      expect(document.getElementById('receipt-no')).not.toBeNull()
+    })
+    ;(document.getElementById('receipt-no') as HTMLInputElement).click()
+    ;(document.getElementById('cash-submit-btn') as HTMLButtonElement).click()
 
     await vi.waitFor(() => {
       expect(document.getElementById('app')?.innerHTML).toContain('このイベントの申し込みは締めきられました')
@@ -580,102 +597,325 @@ describe('payment routing', () => {
   })
 })
 
-describe('領収書の宛名欄（#66）', () => {
-  it('有料イベントには宛名の入力欄が出る', () => {
-    const html = buildEventDetailHtml(EVENT_PAID, 'あきひさ')
-    expect(html).toContain('receipt-name-input')
-    expect(html).toContain('領収書の宛名')
-  })
-
-  it('無料イベントには宛名の入力欄を出さない', () => {
-    // 領収書を出すのは当日現金の経路だけ。無料に置いても使い道が無く、
-    // 申込のハードルだけ上がる
-    const html = buildEventDetailHtml(EVENT_FREE, 'あきひさ')
+describe('イベント詳細から宛名欄を外す（#80）', () => {
+  it('【重要】詳細画面に宛名の入力欄を出さない', () => {
+    // 決済で払う人にとって宛名は無関係。支払い方法を選ぶ途中に置くと、
+    // 「どちらで払うか」を判断するプロセスの邪魔になる
+    const html = buildEventDetailHtml(EVENT_PAID)
     expect(html).not.toContain('receipt-name-input')
+    expect(html).not.toContain('領収書の宛名')
   })
 
-  it('入力は任意だと分かる表記になっている', () => {
-    const html = buildEventDetailHtml(EVENT_PAID, 'あきひさ')
-    expect(html).toContain('任意')
+  it('支払い方法の選択肢だけが残る', () => {
+    const html = buildEventDetailHtml(EVENT_PAID)
+    expect(html).toContain('checkout-btn')
+    expect(html).toContain('cash-join-btn')
+  })
+})
+
+describe('当日現金の申込画面（#80）', () => {
+  it('どのイベントに申し込むのかを確認できる', () => {
+    // 画面が変わるので、直前に見ていた情報がここにも無いと不安になる
+    const html = buildCashFormHtml(EVENT_PAID)
+    expect(html).toContain('有料セミナー')
+    expect(html).toContain('06/01')
+  })
+
+  it('【重要】金額と「当日現金」であることを出す', () => {
+    // いくら用意すればいいかが分からないまま申し込ませない
+    const html = buildCashFormHtml(EVENT_PAID)
+    expect(html).toContain('¥3,000')
+    expect(html).toContain('当日現金')
+  })
+
+  it('金額を3桁区切りで出す', () => {
+    const html = buildCashFormHtml({ ...EVENT_PAID, price: 12000 })
+    expect(html).toContain('¥12,000')
+  })
+
+  it('領収書の要否を聞く', () => {
+    const html = buildCashFormHtml(EVENT_PAID)
+    expect(html).toContain('領収書は必要ですか')
+    expect(html).toContain('receipt-yes')
+    expect(html).toContain('receipt-no')
+  })
+
+  it('【重要】最初は宛名欄を隠しておく', () => {
+    // 「いいえ」の人に入力欄を見せると、結局この画面でも判断の邪魔になる
+    const html = buildCashFormHtml(EVENT_PAID)
+    const field = htmlToEl(html).querySelector('#receipt-name-field') as HTMLElement
+    expect(field.hidden).toBe(true)
+  })
+
+  it('【重要】要否を選ぶまで申し込めない', () => {
+    // 未選択のまま申し込めると「聞いた意味」が無くなり、
+    // 領収書が要る人が黙って不要側に倒れる
+    const html = buildCashFormHtml(EVENT_PAID)
+    const btn = htmlToEl(html).querySelector('#cash-submit-btn') as HTMLButtonElement
+    expect(btn.disabled).toBe(true)
+  })
+
+  it('宛名が必須だと分かる表記になっている', () => {
+    const html = buildCashFormHtml(EVENT_PAID)
+    expect(html).toContain('必須')
   })
 
   it('文字数の上限を画面に出す（黙って切られないように）', () => {
     // サーバーは60コードポイントで切り詰める。書いていないと、
     // 61文字以上の法人名を入れた人が「切れた宛名の領収書」を受け取ることになる
-    const html = buildEventDetailHtml(EVENT_PAID, 'あきひさ')
+    const html = buildCashFormHtml(EVENT_PAID)
     expect(html).toContain('60文字')
   })
 
-  it('【重要】未入力時に何になるかを、実際の表示名で見せる', () => {
-    // 「LINEの表示名になります」だけでは自分の表示名を思い出せない。
-    // 実物を出せば、ニックネーム登録の人がその場で気づける。
-    const html = buildEventDetailHtml(EVENT_PAID, 'あきひさ')
-    expect(html).toContain('あきひさ')
+  it('詳細に戻る導線がある', () => {
+    const html = buildCashFormHtml(EVENT_PAID)
+    expect(html).toContain('cash-back-btn')
   })
 
-  it('【重要】表示名が取れないときこそ、入力を促す警告を出す', () => {
-    // 表示名が空 = サーバー側のフォールバックも空になるケース。
-    // ここで黙ると、一番警告が要る人に何も出ないことになる。
-    const html = buildEventDetailHtml(EVENT_PAID, '')
-    expect(html).toContain('receipt-name-input')
-    expect(html).not.toContain('が宛名になります')
-    expect(html).toContain('お名前を取得できませんでした')
-  })
-
-  it('表示名を HTML エスケープする', () => {
-    // LINE の表示名は自由文字列。エスケープしないと画面が壊れる
-    const html = buildEventDetailHtml(EVENT_PAID, '<script>alert(1)</script>')
-    expect(html).not.toContain('<script>')
+  it('イベント名を HTML エスケープする', () => {
+    const html = buildCashFormHtml({ ...EVENT_PAID, title: '<script>alert(1)</script>' })
+    expect(html).not.toContain('<script>alert(1)</script>')
     expect(html).toContain('&lt;script&gt;')
-  })
-
-  it('宛名を渡さない既存の呼び出しでも壊れない（後方互換）', () => {
-    const html = buildEventDetailHtml(EVENT_PAID)
-    expect(html).toContain('checkout-btn')
   })
 })
 
-describe('joinCashEvent の宛名送信', () => {
+describe('joinCashEvent の送信内容（#80）', () => {
   const ID_TOKEN_FRESH = ID_TOKEN
 
-  it('宛名を渡すと receiptName として送る', async () => {
+  it('【重要】「必要」なら要否と宛名の両方を送る', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ success: true }) })
     vi.stubGlobal('fetch', fetchMock)
 
-    await joinCashEvent(2, ID_TOKEN_FRESH, '山田太郎', '株式会社サンプル')
+    await joinCashEvent(2, ID_TOKEN_FRESH, '山田太郎', { requested: true, name: '株式会社サンプル' })
 
     const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
+    expect(body.receiptRequested).toBe(true)
     expect(body.receiptName).toBe('株式会社サンプル')
     expect(body.paymentMethod).toBe('cash')
   })
 
-  it('宛名を渡さなければ receiptName を送らない（後方互換）', async () => {
+  it('【重要】「不要」なら不要と明示して送る（黙って省略しない）', async () => {
+    // 省略するとサーバー側で「未回答」と区別できず、
+    // 不要と答えた人にも領収書が発行されてしまう
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ success: true }) })
     vi.stubGlobal('fetch', fetchMock)
 
-    await joinCashEvent(2, ID_TOKEN_FRESH, '山田太郎')
+    await joinCashEvent(2, ID_TOKEN_FRESH, '山田太郎', { requested: false })
 
     const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
+    expect(body.receiptRequested).toBe(false)
     expect(body.receiptName).toBeUndefined()
   })
 })
 
-describe('宛名欄と決済ボタンの関係（#68 レビュー⑥）', () => {
-  it('宛名欄は当日現金ボタンの直前に置く（決済ボタンから離す）', () => {
-    // 宛名を読むのは現金フローだけ。決済ボタンの真上にあると、
-    // 入力してから決済を押した人の入力が黙って消える。
-    const html = buildEventDetailHtml(EVENT_PAID, 'あきひさ')
-    const receiptIdx = html.indexOf('receipt-name-input')
-    const checkoutIdx = html.indexOf('checkout-btn')
-    const cashIdx = html.indexOf('cash-join-btn')
-    expect(receiptIdx).toBeGreaterThan(checkoutIdx)
-    expect(receiptIdx).toBeLessThan(cashIdx)
+describe('当日現金フローの画面遷移（#80）', () => {
+  const listOk = (event: EventPublic) => ({
+    ok: true, status: 200, json: async () => ({ success: true, data: [event] }),
   })
 
-  it('宛名が現金専用だと分かる文言になっている', () => {
-    // ⚠️ '当日現金' だけだと既存ボタンの「当日現金の方はこちら 💴」で通ってしまい、
-    //    宛名欄を丸ごと消しても緑のままになる。ラベル固有の文言で確認する。
-    const html = buildEventDetailHtml(EVENT_PAID, 'あきひさ')
-    expect(html).toContain('当日現金でお支払いの方のみ')
+  /** 詳細まで開いて「当日現金の方はこちら」を押した状態にする */
+  const openCashForm = async (fetchMock: ReturnType<typeof vi.fn>) => {
+    document.body.innerHTML = '<div id="app"></div>'
+    vi.stubGlobal('fetch', fetchMock)
+    await initEventBooking({ idToken: ID_TOKEN, displayName: 'あきひさ', eventId: EVENT_PAID.id })
+    ;(document.getElementById('cash-join-btn') as HTMLButtonElement).click()
+    await vi.waitFor(() => {
+      expect(document.getElementById('cash-submit-btn')).not.toBeNull()
+    })
+  }
+
+  it('【重要】現金ボタンでは申し込まず、画面が変わるだけ', async () => {
+    // ここで申し込んでしまうと、宛名を聞く前に予約が確定してしまう
+    const fetchMock = vi.fn().mockResolvedValue(listOk(EVENT_PAID))
+    await openCashForm(fetchMock)
+
+    // 一覧取得の1回だけ。申込リクエストは飛んでいない
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('「いいえ」を選べば宛名なしで申し込める', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(listOk(EVENT_PAID))
+      .mockResolvedValue({ ok: true, status: 200, json: async () => ({ success: true }) })
+    await openCashForm(fetchMock)
+
+    ;(document.getElementById('receipt-no') as HTMLInputElement).click()
+    const submit = document.getElementById('cash-submit-btn') as HTMLButtonElement
+    expect(submit.disabled).toBe(false)
+    submit.click()
+
+    await vi.waitFor(() => {
+      expect(document.getElementById('app')?.innerHTML).toContain('申込が完了しました')
+    })
+    const body = JSON.parse((fetchMock.mock.calls[1][1] as RequestInit).body as string)
+    expect(body.receiptRequested).toBe(false)
+  })
+
+  it('【重要】要否を選ばないまま入力イベントが起きても申し込めない', async () => {
+    // ⚠️ 初期 HTML の disabled だけを見ていると、実行時の判定から
+    //    「未選択」の条件が消えても気づけない（ミューテーションテストで判明）。
+    //    未選択のまま押せると、領収書が要る人が黙って不要側に倒れる
+    const fetchMock = vi.fn().mockResolvedValue(listOk(EVENT_PAID))
+    await openCashForm(fetchMock)
+
+    const input = document.getElementById('receipt-name-input') as HTMLInputElement
+    input.value = '株式会社サンプル'
+    input.dispatchEvent(new Event('input'))
+
+    expect((document.getElementById('cash-submit-btn') as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('「はい」を選ぶと宛名欄が出る', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(listOk(EVENT_PAID))
+    await openCashForm(fetchMock)
+
+    ;(document.getElementById('receipt-yes') as HTMLInputElement).click()
+
+    const field = document.getElementById('receipt-name-field') as HTMLElement
+    expect(field.hidden).toBe(false)
+  })
+
+  it('【重要】「はい」で宛名が空なら申し込めない', async () => {
+    // ここを通すと、必須にした意味が無くなる
+    const fetchMock = vi.fn().mockResolvedValue(listOk(EVENT_PAID))
+    await openCashForm(fetchMock)
+
+    ;(document.getElementById('receipt-yes') as HTMLInputElement).click()
+
+    expect((document.getElementById('cash-submit-btn') as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('空白だけの宛名も未入力として扱う', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(listOk(EVENT_PAID))
+    await openCashForm(fetchMock)
+
+    ;(document.getElementById('receipt-yes') as HTMLInputElement).click()
+    const input = document.getElementById('receipt-name-input') as HTMLInputElement
+    input.value = '   '
+    input.dispatchEvent(new Event('input'))
+
+    expect((document.getElementById('cash-submit-btn') as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('宛名を入れると申し込めるようになる', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(listOk(EVENT_PAID))
+      .mockResolvedValue({ ok: true, status: 200, json: async () => ({ success: true }) })
+    await openCashForm(fetchMock)
+
+    ;(document.getElementById('receipt-yes') as HTMLInputElement).click()
+    const input = document.getElementById('receipt-name-input') as HTMLInputElement
+    input.value = '株式会社サンプル'
+    input.dispatchEvent(new Event('input'))
+
+    const submit = document.getElementById('cash-submit-btn') as HTMLButtonElement
+    expect(submit.disabled).toBe(false)
+    submit.click()
+
+    await vi.waitFor(() => {
+      expect(document.getElementById('app')?.innerHTML).toContain('申込が完了しました')
+    })
+    const body = JSON.parse((fetchMock.mock.calls[1][1] as RequestInit).body as string)
+    expect(body.receiptRequested).toBe(true)
+    expect(body.receiptName).toBe('株式会社サンプル')
+  })
+
+  it('【重要】入力中に画面を描き直さない（フォーカスが飛ぶため）', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(listOk(EVENT_PAID))
+    await openCashForm(fetchMock)
+
+    ;(document.getElementById('receipt-yes') as HTMLInputElement).click()
+    const input = document.getElementById('receipt-name-input') as HTMLInputElement
+    input.focus()
+    input.value = 'サ'
+    input.dispatchEvent(new Event('input'))
+
+    // 同じ要素が生きたまま（差し替えられていない）
+    expect(document.getElementById('receipt-name-input')).toBe(input)
+    expect(document.activeElement).toBe(input)
+  })
+
+  it('【重要】満席409でも詳細画面に戻す（この画面で再試行させない）', async () => {
+    // 締切だけ戻して満席を戻さないと、満席のときだけこの画面に留まり、
+    // ボタンが復活して何度も試せてしまう
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(listOk(EVENT_PAID))
+      .mockResolvedValue({
+        ok: false, status: 409, json: async () => ({ success: false, error: 'Event is full' }),
+      })
+    await openCashForm(fetchMock)
+
+    ;(document.getElementById('receipt-no') as HTMLInputElement).click()
+    ;(document.getElementById('cash-submit-btn') as HTMLButtonElement).click()
+
+    await vi.waitFor(() => {
+      expect(document.getElementById('cash-submit-btn')).toBeNull()
+    })
+    expect((document.getElementById('cash-join-btn') as HTMLButtonElement).disabled).toBe(true)
+    expect((document.getElementById('checkout-btn') as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('【重要】「はい」で申し込んだら完了画面で領収書に触れる', async () => {
+    // 「必要ですか？」と聞いておいて完了画面が何も言わないと、
+    // 伝わったのか分からず当日スタッフに聞きに来ることになる
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(listOk(EVENT_PAID))
+      .mockResolvedValue({ ok: true, status: 200, json: async () => ({ success: true }) })
+    await openCashForm(fetchMock)
+
+    ;(document.getElementById('receipt-yes') as HTMLInputElement).click()
+    const input = document.getElementById('receipt-name-input') as HTMLInputElement
+    input.value = '株式会社サンプル'
+    input.dispatchEvent(new Event('input'))
+    ;(document.getElementById('cash-submit-btn') as HTMLButtonElement).click()
+
+    await vi.waitFor(() => {
+      expect(document.getElementById('app')?.innerHTML).toContain('申込が完了しました')
+    })
+    expect(document.getElementById('app')?.innerHTML).toContain('領収書')
+  })
+
+  it('「いいえ」なら完了画面で領収書に触れない', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(listOk(EVENT_PAID))
+      .mockResolvedValue({ ok: true, status: 200, json: async () => ({ success: true }) })
+    await openCashForm(fetchMock)
+
+    ;(document.getElementById('receipt-no') as HTMLInputElement).click()
+    ;(document.getElementById('cash-submit-btn') as HTMLButtonElement).click()
+
+    await vi.waitFor(() => {
+      expect(document.getElementById('app')?.innerHTML).toContain('申込が完了しました')
+    })
+    expect(document.getElementById('app')?.innerHTML).not.toContain('領収書')
+  })
+
+  it('戻るボタンでイベント詳細に返る', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(listOk(EVENT_PAID))
+    await openCashForm(fetchMock)
+
+    ;(document.getElementById('cash-back-btn') as HTMLButtonElement).click()
+
+    expect(document.getElementById('cash-join-btn')).not.toBeNull()
+    expect(document.getElementById('cash-submit-btn')).toBeNull()
+  })
+
+  it('【重要】申込が締切409なら詳細画面に戻して両方の経路を塞ぐ', async () => {
+    // この画面に留まると、締切後もここから何度も申し込みを試せてしまう
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(listOk(EVENT_PAID))
+      .mockResolvedValue({
+        ok: false, status: 409, json: async () => ({ success: false, error: 'application_closed' }),
+      })
+    await openCashForm(fetchMock)
+
+    ;(document.getElementById('receipt-no') as HTMLInputElement).click()
+    ;(document.getElementById('cash-submit-btn') as HTMLButtonElement).click()
+
+    await vi.waitFor(() => {
+      expect(document.getElementById('app')?.innerHTML).toContain('このイベントの申し込みは締めきられました')
+    })
+    expect((document.getElementById('cash-join-btn') as HTMLButtonElement).disabled).toBe(true)
+    expect((document.getElementById('checkout-btn') as HTMLButtonElement).disabled).toBe(true)
   })
 })

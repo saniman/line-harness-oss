@@ -130,7 +130,7 @@ const BOOKING1 = {
   email: 'yamada@example.com', status: 'confirmed',
   payment_status: 'unpaid', stripe_session_id: null, paid_at: null, amount: null,
   stripe_refund_id: null, refund_status: null,
-  cash_received_at: null, receipt_name: null, receipt_url: null, receipt_issued_at: null,
+  cash_received_at: null, receipt_name: null, receipt_requested: null, receipt_url: null, receipt_issued_at: null,
   receipt_number: null, receipt_share_url: null, receipt_share_expires_at: null,
   receipt_share_verified_at: null, receipt_share_token: null,
   receipt_share_revoked_at: null, receipt_share_opened_at: null, receipt_sent_at: null,
@@ -142,7 +142,7 @@ const PENDING_BOOKING = {
   status: 'pending', payment_status: 'unpaid',
   stripe_session_id: null, paid_at: null, amount: null,
   stripe_refund_id: null, refund_status: null,
-  cash_received_at: null, receipt_name: null, receipt_url: null, receipt_issued_at: null,
+  cash_received_at: null, receipt_name: null, receipt_requested: null, receipt_url: null, receipt_issued_at: null,
   receipt_number: null, receipt_share_url: null, receipt_share_expires_at: null,
   receipt_share_verified_at: null, receipt_share_token: null,
   receipt_share_revoked_at: null, receipt_share_opened_at: null, receipt_sent_at: null,
@@ -1098,6 +1098,97 @@ describe('POST /api/events/:id/join の領収書宛名', () => {
   })
 })
 
+describe('POST /api/events/:id/join の領収書の要否（#80）', () => {
+  beforeEach(() => {
+    vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, participant_count: 2 })
+    vi.mocked(eventsService.createEventBooking).mockResolvedValue(BOOKING1)
+  })
+
+  const join = (body: Record<string, unknown>) => app.request('/api/events/1/join', {
+    method: 'POST',
+    headers: LIFF_HEADERS,
+    body: JSON.stringify(body),
+  }, { DB: mockDb })
+
+  it('【重要】「必要」なら 1 で保存する', async () => {
+    await join({ name: '山田太郎', paymentMethod: 'cash', receiptRequested: true, receiptName: '株式会社サンプル' })
+
+    expect(eventsService.createEventBooking).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ receipt_requested: 1, receipt_name: '株式会社サンプル' }),
+    )
+  })
+
+  it('【重要】「不要」なら 0 で保存する', async () => {
+    await join({ name: '山田太郎', paymentMethod: 'cash', receiptRequested: false })
+
+    expect(eventsService.createEventBooking).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ receipt_requested: 0 }),
+    )
+  })
+
+  it('【重要】未回答（この機能より前のクライアント）は null で保存する', async () => {
+    // 0 にすると、古いバンドルを開いたままの人の領収書が黙って出なくなる
+    await join({ name: '山田太郎', paymentMethod: 'cash' })
+
+    expect(eventsService.createEventBooking).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ receipt_requested: null }),
+    )
+  })
+
+  it('【重要】「必要」なのに宛名が空なら 400 で断る', async () => {
+    // 画面では押せないようにしているが、API を直接叩かれる経路を塞ぐ。
+    // 通すと宛名の無い領収書ができて freee 側で作り直しになる
+    const res = await join({ name: '山田太郎', paymentMethod: 'cash', receiptRequested: true })
+
+    expect(res.status).toBe(400)
+    expect((await res.json() as { error: string }).error).toBe('receipt_name_required')
+    expect(eventsService.createEventBooking).not.toHaveBeenCalled()
+  })
+
+  it('空白だけの宛名も未入力として断る', async () => {
+    const res = await join({ name: '山田太郎', paymentMethod: 'cash', receiptRequested: true, receiptName: '   ' })
+
+    expect(res.status).toBe(400)
+    expect(eventsService.createEventBooking).not.toHaveBeenCalled()
+  })
+
+  it('【重要】宛名の検証より本人確認を先に行う', async () => {
+    // 入力の不備を認証より先に返すと、未認証の相手に 401 ではなく 400 を返してしまう
+    mockVerifyCaller.mockResolvedValue({ ok: false, reason: 'invalid' })
+
+    const res = await join({ name: '山田太郎', paymentMethod: 'cash', receiptRequested: true })
+
+    expect(res.status).toBe(401)
+  })
+
+  it('【重要】締切のイベントには 409 を返す（400 で上書きしない）', async () => {
+    // 400 を先に返すと、クライアントの締切ハンドリング（画面を締切状態に描き直す）を
+    // 迂回してしまい、締切後も押し続けられる
+    vi.mocked(eventsService.getEventById).mockResolvedValue({
+      ...EVENT1, participant_count: 2, start_at: new Date(Date.now() + 60_000).toISOString(),
+    })
+
+    const res = await join({ name: '山田太郎', paymentMethod: 'cash', receiptRequested: true })
+
+    expect(res.status).toBe(409)
+    expect((await res.json() as { error: string }).error).toBe('application_closed')
+  })
+
+  it('【重要】「不要」なら宛名が来ていても保存しない', async () => {
+    // 不要と答えたのに宛名が残っていると、後から発行されたときに
+    // 「頼んでいない領収書」が届く
+    await join({ name: '山田太郎', paymentMethod: 'cash', receiptRequested: false, receiptName: '株式会社サンプル' })
+
+    expect(eventsService.createEventBooking).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ receipt_requested: 0, receipt_name: null }),
+    )
+  })
+})
+
 describe('POST /api/events/:id/bookings/:bookingId/cash-received', () => {
   const PATH = '/api/events/1/bookings/5/cash-received'
 
@@ -1134,6 +1225,18 @@ describe('POST /api/events/:id/bookings/:bookingId/cash-received', () => {
       expect.anything(), expect.anything(), 1, 5, undefined,
       { eventTitle: '沖縄AI勉強会' },
     )
+  })
+
+  it('【重要】未発行の理由をコードで返す（管理画面が文言で分岐しないように）', async () => {
+    mockMarkCashReceived.mockResolvedValue({ success: true, alreadyReceived: false })
+    mockIssueReceipt.mockResolvedValue({ issued: false, code: 'not_requested' })
+
+    const res = await app.request(PATH, { method: 'POST' }, { DB: mockDb })
+
+    const json = await res.json() as { data: { receiptCode: string | null; receiptError: string | null } }
+    expect(json.data.receiptCode).toBe('not_requested')
+    // 「不要」は失敗ではないので、警告に使う error は空のまま
+    expect(json.data.receiptError).toBeNull()
   })
 
   it('発行できたら領収書のURLを返す', async () => {

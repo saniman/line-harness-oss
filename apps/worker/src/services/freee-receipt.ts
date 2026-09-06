@@ -40,7 +40,9 @@ export type ReceiptIssueCode =
   | 'freee_unavailable'
   | 'freee_reauth_required'
   | 'issue_in_progress'
-  | 'issue_failed';
+  | 'issue_failed'
+  /** 参加者が「領収書は不要」と答えている（#80）。失敗ではない */
+  | 'not_requested';
 
 export interface IssueReceiptResult {
   /** 領収書の URL が確定しているか（既発行を含む） */
@@ -137,6 +139,22 @@ export async function issueReceiptForBooking(
   //    同じ参加者に領収書が2枚発行される（freee 上は取消が必要な経理事故になる）。
   if (booking.receipt_url) {
     return { issued: true, alreadyIssued: true, receiptUrl: booking.receipt_url };
+  }
+
+  // 参加者が「領収書は不要」と答えている（#80）。頼まれていない領収書を発行すると
+  // freee 上で取消が必要な経理事故になるので、freee を呼ぶ前に降りる。
+  //
+  // ⚠️ **`error` を入れない。** 管理画面は `issued: false` かつ `error` があると
+  //    「発行できていません（原因）」と警告を出すので、不要と答えられただけの予約で
+  //    運営者が freee の設定を疑って調べ始めてしまう。これは失敗ではなく仕様どおり。
+  //
+  // ⚠️ 発行権（claim）を握る前に返す。握ると、あとで気が変わって発行するときに
+  //    タイムアウトまで詰まる。
+  //
+  // ⚠️ 冪等ガード（receipt_url）より**後**に置く。先に置くと、既に発行済みの
+  //    領収書の URL が管理画面から消える。
+  if (booking.receipt_requested === 0) {
+    return { issued: false, code: 'not_requested' };
   }
 
   if (booking.status === 'cancelled') {

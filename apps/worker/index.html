@@ -522,14 +522,16 @@
       padding: 24px 20px;
       animation: fadeIn 0.3s ease;
     }
-    .event-detail .event-title {
+    .event-detail .event-title,
+    .cash-form .event-title {
       font-size: 22px;
       font-weight: 700;
       color: #222;
       line-height: 1.4;
       margin-bottom: 12px;
     }
-    .event-detail .event-date {
+    .event-detail .event-date,
+    .cash-form .event-date {
       font-size: 14px;
       color: #555;
       margin-bottom: 10px;
@@ -556,7 +558,8 @@
       color: #999;
       margin: 12px 0 4px;
     }
-    .event-detail .event-price {
+    .event-detail .event-price,
+    .cash-form .event-price {
       font-size: 17px;
       font-weight: 700;
       color: #333;
@@ -565,9 +568,48 @@
       border-bottom: 1px solid #f0f0f0;
     }
 
-    /* 領収書の宛名（任意入力・有料イベントのみ） */
+    /* 当日現金の申込画面（#80）。イベント詳細から宛名欄を切り出した先 */
+    .cash-form-title {
+      font-size: 17px;
+      font-weight: 700;
+      color: #222;
+      margin: 0 0 14px;
+    }
+    .receipt-choice {
+      border: none;
+      margin: 20px 0 0;
+      padding: 0;
+    }
+    .receipt-choice legend {
+      font-size: 15px;
+      font-weight: 700;
+      color: #333;
+      padding: 0;
+      margin-bottom: 10px;
+    }
+    .receipt-choice-option {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 14px 12px;
+      margin-bottom: 8px;
+      border: 1px solid #e0e0e0;
+      border-radius: 10px;
+      background: #fafafa;
+      font-size: 16px;
+      color: #333;
+      cursor: pointer;
+    }
+    /* タップ範囲は行全体。ラジオだけを狙わせない */
+    .receipt-choice-option input {
+      width: 20px;
+      height: 20px;
+      margin: 0;
+      accent-color: #ff4176;
+    }
+
     .receipt-name-field {
-      margin: 0 0 20px;
+      margin: 16px 0 0;
     }
     .receipt-name-field label {
       display: block;
@@ -584,17 +626,26 @@
       border-radius: 8px;
       background: #fafafa;
     }
-    .receipt-name-field input:disabled {
-      opacity: 0.5;
+
+    #cash-submit-btn {
+      margin-top: 20px;
     }
-    .receipt-name-hint {
-      font-size: 12px;
-      color: #999;
-      margin: 6px 0 0;
+    #cash-submit-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+      box-shadow: none;
     }
-    /* 表示名が取れず、未入力だと宛名が空欄になる場合の注意喚起 */
-    .receipt-name-hint.receipt-name-warn {
-      color: #c2410c;
+    .cash-back-btn {
+      display: block;
+      width: 100%;
+      margin-top: 12px;
+      padding: 12px;
+      border: none;
+      background: none;
+      color: #666;
+      font-size: 14px;
+      font-family: inherit;
+      cursor: pointer;
     }
 
     #cash-join-btn {

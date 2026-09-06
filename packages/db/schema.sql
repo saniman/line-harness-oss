@@ -750,6 +750,11 @@ CREATE TABLE IF NOT EXISTS event_bookings (
   --    テーブル再作成（INSERT INTO v2 SELECT * ...）を書くときは、このファイルの順ではなく
   --    実 DB の PRAGMA table_info を見ること。信じると列がずれる。
   receipt_name TEXT,
+  -- 参加者が「領収書は必要か」に答えた結果（migration 827）。
+  --   1 = 必要（宛名は必須） / 0 = 不要（freee を呼ばない） / NULL = 未回答
+  -- ⚠️ NULL を「不要」と解釈しない。この列より前の予約が黙って対象外になると、
+  --    領収書が届かなくなっても誰も気づけない（services/freee-receipt.ts）。
+  receipt_requested INTEGER,
   -- リマインドを送った日時（migration 825）。NULL = 未送信
   reminder_sent_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),

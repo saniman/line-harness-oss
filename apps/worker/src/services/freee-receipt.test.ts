@@ -178,6 +178,73 @@ describe('issueReceiptForBooking（正常系）', () => {
   });
 });
 
+describe('領収書が不要と答えられた予約（#80）', () => {
+  it('【重要】freee を呼ばない', async () => {
+    // 頼まれていない領収書を発行すると、freee 上で取消が必要な経理事故になる
+    const { db } = makeDb({ booking: booking({ receipt_requested: 0 }) });
+    const issuer = makeIssuer();
+
+    const res = await issueReceiptForBooking(ENV, db, 1, 5, issuer);
+
+    expect(issuer.createReceipt).not.toHaveBeenCalled();
+    expect(res.issued).toBe(false);
+    expect(res.code).toBe('not_requested');
+  });
+
+  it('【重要】失敗として扱わない（管理者が原因を追いかけないように）', async () => {
+    // error を入れると管理画面が「発行できていません（原因）」と警告を出し、
+    // 運営者が freee の設定を疑って調べ始めてしまう
+    const { db } = makeDb({ booking: booking({ receipt_requested: 0 }) });
+
+    const res = await issueReceiptForBooking(ENV, db, 1, 5, makeIssuer());
+
+    expect(res.error).toBeUndefined();
+  });
+
+  it('【重要】発行権を握らない（あとで気が変わっても詰まらない）', async () => {
+    const { db, sqls } = makeDb({ booking: booking({ receipt_requested: 0 }) });
+
+    await issueReceiptForBooking(ENV, db, 1, 5, makeIssuer());
+
+    expect(sqls.some((q) => q.includes('receipt_issued_at = '))).toBe(false);
+  });
+
+  it('「必要」と答えた予約は今までどおり発行する', async () => {
+    const { db } = makeDb({ booking: booking({ receipt_requested: 1 }) });
+    const issuer = makeIssuer();
+
+    const res = await issueReceiptForBooking(ENV, db, 1, 5, issuer);
+
+    expect(issuer.createReceipt).toHaveBeenCalled();
+    expect(res.issued).toBe(true);
+  });
+
+  it('【重要】未回答（この機能より前の予約）は今までどおり発行する', async () => {
+    // null を「不要」と読むと、既存の予約が黙って対象外になり、
+    // 参加者に領収書が届かなくなっても誰も気づけない
+    const { db } = makeDb({ booking: booking({ receipt_requested: null }) });
+    const issuer = makeIssuer();
+
+    const res = await issueReceiptForBooking(ENV, db, 1, 5, issuer);
+
+    expect(issuer.createReceipt).toHaveBeenCalled();
+    expect(res.issued).toBe(true);
+  });
+
+  it('既に発行済みなら、不要と答えていても発行済みとして返す', async () => {
+    // 冪等ガードのほうが優先。ここで not_requested を返すと、
+    // 既に出ている領収書の URL が管理画面から消える
+    const { db } = makeDb({
+      booking: booking({ receipt_requested: 0, receipt_url: ISSUED_URL }),
+    });
+
+    const res = await issueReceiptForBooking(ENV, db, 1, 5, makeIssuer());
+
+    expect(res.issued).toBe(true);
+    expect(res.receiptUrl).toBe(ISSUED_URL);
+  });
+});
+
 describe('issueReceiptForBooking（発行しないケース）', () => {
   it('存在しない予約なら code=not_found', async () => {
     const { db } = makeDb({ booking: null });
