@@ -32,6 +32,14 @@ interface Summary {
   nextPrefix: string;
   duplicates: string[];
   ignored: string[];
+  /** リモート追跡ブランチの探索結果（#69。git が使えない場所では checked=false） */
+  remote?: {
+    checked: boolean;
+    max: number | null;
+    /** 番号 → その番号を持つブランチ名（「誰が使っているか」を人が判断するため） */
+    holders: Record<string, string[]>;
+    reason?: string;
+  };
 }
 
 /** 指定ディレクトリに対して CLI を --json で実行し、結果をパースする */
@@ -56,6 +64,67 @@ function fixture(names: string[]): string {
   const dir = mkdtempSync(join(tmpdir(), 'mignum-'));
   for (const name of names) writeFileSync(join(dir, name), '-- test\n');
   return dir;
+}
+
+/**
+ * 「リモートに別のマイグレーションがあるローカルリポジトリ」を作る。
+ *
+ * 実際の git を使う。モックにすると **ls-tree の出力形式が変わったときに気づけない**
+ * ——このスクリプトが解こうとしているのは「git に聞かないと分からない」問題なので、
+ * git に聞く部分こそ本物で確かめる必要がある。
+ *
+ * @param local  作業ツリー（= HEAD）に置くファイル
+ * @param remote 「リモートブランチだけが持つ」ファイル
+ */
+function gitFixture(local: string[], remote: Record<string, string[]> = {}): string {
+  const root = mkdtempSync(join(tmpdir(), 'mignum-git-'));
+  const git = (args: string[], cwd = root) =>
+    execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe' });
+
+  // origin として使う裸リポジトリ
+  const originDir = join(root, 'origin.git');
+  mkdirSync(originDir);
+  git(['init', '--bare', '-b', 'main'], originDir);
+
+  const work = join(root, 'work');
+  mkdirSync(work);
+  git(['init', '-b', 'main'], work);
+  git(['config', 'user.email', 't@example.test'], work);
+  git(['config', 'user.name', 'Test'], work);
+  git(['remote', 'add', 'origin', originDir], work);
+
+  const migDir = join(work, 'packages/db/migrations');
+  mkdirSync(migDir, { recursive: true });
+
+  // ブランチごとにファイルを積んで push する
+  for (const [branch, names] of Object.entries(remote)) {
+    git(['checkout', '-B', branch], work);
+    for (const name of names) writeFileSync(join(migDir, name), '-- test\n');
+    // ⚠️ 空のコミットは git が拒否する。migrations を持たないブランチも
+    //    「落ちないこと」の検証に要るので --allow-empty で作る
+    git(['add', '-A'], work);
+    git(['commit', '--allow-empty', '-m', `add ${branch}`], work);
+    git(['push', '-q', 'origin', branch], work);
+    // 次のブランチに持ち越さないよう消す
+    for (const name of names) rmSync(join(migDir, name));
+  }
+
+  // 作業ツリー（ローカルだけが持つファイル）
+  git(['checkout', '-B', 'main'], work);
+  for (const name of local) writeFileSync(join(migDir, name), '-- test\n');
+  git(['add', '-A'], work);
+  git(['commit', '-m', 'local'], work);
+
+  return work;
+}
+
+/** git リポジトリの中で CLI を実行する（--dir はリポジトリ内の相対パス） */
+function runInRepo(repo: string, args: string[] = []): Summary {
+  const out = execFileSync('node', [SCRIPT, '--json', '--dir', 'packages/db/migrations', ...args], {
+    cwd: repo,
+    encoding: 'utf8',
+  });
+  return JSON.parse(out);
 }
 
 describe('next-migration-number CLI', () => {
@@ -297,5 +366,124 @@ describe('next-migration-number CLI', () => {
       expect(out).toContain('819');
       expect(out).toContain('次の採番');
     });
+  });
+});
+
+describe('リモートブランチの採番も見る（#69）', () => {
+  const repos: string[] = [];
+  afterAll(() => {
+    for (const r of repos) rmSync(join(r, '..'), { recursive: true, force: true });
+  });
+  const make = (local: string[], remote: Record<string, string[]> = {}) => {
+    const r = gitFixture(local, remote);
+    repos.push(r);
+    return r;
+  };
+
+  it('【重要】リモートだけにある番号を検出して次番号に反映する', () => {
+    // 実際に起きた事故: ローカル最大 823・リモートの別ブランチが 824 を採番済み。
+    // ローカルしか見ないと 824 を返し、両方が 824 になる
+    const repo = make(
+      ['001_a.sql', '823_c.sql'],
+      { 'feature/66': ['824_receipt_name.sql'] },
+    );
+
+    const res = runInRepo(repo);
+
+    expect(res.next).toBe(825);
+    expect(res.nextPrefix).toBe('825');
+  });
+
+  it('【重要】どのブランチが使っているかを出す（人が譲る判断をするため）', () => {
+    const repo = make(['823_c.sql'], { 'feature/66': ['824_receipt_name.sql'] });
+
+    const res = runInRepo(repo);
+
+    expect(res.remote?.holders['824']).toContain('origin/feature/66');
+  });
+
+  it('複数のブランチが同じ番号を持っていれば両方出す', () => {
+    const repo = make(['823_c.sql'], {
+      'feature/a': ['824_a.sql'],
+      'feature/b': ['824_b.sql'],
+    });
+
+    const res = runInRepo(repo);
+
+    expect(res.remote?.holders['824']).toHaveLength(2);
+  });
+
+  it('ローカルの方が大きければローカルが優先される', () => {
+    const repo = make(['830_local.sql'], { 'feature/66': ['824_x.sql'] });
+
+    const res = runInRepo(repo);
+
+    expect(res.next).toBe(831);
+  });
+
+  it('リモートに migrations が無くても落ちない', () => {
+    const repo = make(['823_c.sql'], { 'feature/docs': [] });
+
+    const res = runInRepo(repo);
+
+    expect(res.next).toBe(824);
+    expect(res.remote?.checked).toBe(true);
+  });
+
+  it('【重要】git リポジトリでなくてもローカルだけで動く（オフライン耐性）', () => {
+    // ネットワークや git が無いと採番できない、では日常の邪魔になる。
+    // ⚠️ cwd も git の外にしないと、リポジトリ内から実行したことになって検証にならない
+    const dir = fixture(['001_a.sql', '002_b.sql']);
+    const out = execFileSync('node', [SCRIPT, '--json', '--dir', dir], {
+      cwd: dir, encoding: 'utf8',
+    });
+    const res = JSON.parse(out) as Summary;
+
+    expect(res.next).toBe(3);
+    expect(res.remote?.checked).toBe(false);
+    expect(res.remote?.reason).toBeTruthy();
+  });
+
+  it('リモートを見なかった理由が出力に残る', () => {
+    const dir = fixture(['001_a.sql']);
+    const out = execFileSync('node', [SCRIPT, '--json', '--dir', dir], {
+      cwd: dir, encoding: 'utf8',
+    });
+    const res = JSON.parse(out) as Summary;
+
+    // 「確認できなかった」ことが分からないと、見たつもりで衝突する
+    expect(res.remote?.reason).toMatch(/git/);
+  });
+
+  it('--no-remote でリモート探索を止められる', () => {
+    // CI やオフラインで待ちたくないとき
+    const repo = make(['823_c.sql'], { 'feature/66': ['824_x.sql'] });
+
+    const res = runInRepo(repo, ['--no-remote']);
+
+    expect(res.next).toBe(824);
+    expect(res.remote?.checked).toBe(false);
+  });
+
+  it('人間向け出力にリモートの使用状況が出る', () => {
+    const repo = make(['823_c.sql'], { 'feature/66': ['824_receipt_name.sql'] });
+
+    const out = execFileSync('node', [SCRIPT, '--dir', 'packages/db/migrations'], {
+      cwd: repo, encoding: 'utf8',
+    });
+
+    expect(out).toContain('825');
+    expect(out).toContain('origin/feature/66');
+  });
+
+  it('【重要】既存の JSON 契約を壊さない', () => {
+    // migration-numbering.test.ts の既存28件が守っている形
+    const dir = fixture(['001_a.sql', '002_b.sql']);
+
+    const res = run(dir);
+
+    for (const key of ['count', 'max', 'maxFile', 'next', 'nextPrefix', 'duplicates', 'ignored']) {
+      expect(res).toHaveProperty(key);
+    }
   });
 });
