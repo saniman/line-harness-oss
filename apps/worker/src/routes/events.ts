@@ -23,7 +23,7 @@ import { saveReceiptShareUrl, revokeReceiptShare } from '../services/receipt-sha
 import { sendReceiptToParticipant } from '../services/receipt-notify.js';
 import { notifyBookingCancelled } from '../services/booking-cancel-notify.js';
 import { requireRole } from '../middleware/role-guard.js';
-import type { IssueReceiptResult } from '../services/freee-receipt.js';
+import type { IssueReceiptResult, ReceiptIssueCode } from '../services/freee-receipt.js';
 import { resolveEventApplicant } from '../services/event-friend.js';
 import { isApplicationClosed } from '../services/event-deadline.js';
 import { backfillEventBookingFriends } from '../services/event-friend-backfill.js';
@@ -819,6 +819,32 @@ events.post('/api/events/:id/bookings/:bookingId/revoke-receipt', async (c) => {
 });
 
 /**
+ * 発行できなかった理由 → HTTP ステータス。
+ *
+ * ⚠️ **文言ではなくコードで対応づける**（`.claude/rules/api-coding.md`）。
+ *    それぞれ「誰が何をすれば直るか」が違うので、まとめて 502 にしない。
+ *      404 = 対象がそもそも違う（探し直す）
+ *      409 = いまは無理だが状態が変われば通る（待つ・受領する）
+ *      400 = 送った内容が足りない（入力を直す）
+ *      502 = freee 側の問題（時間をおく・再認可する）
+ */
+const ISSUE_FAILURE_STATUS: Record<ReceiptIssueCode, 400 | 404 | 409 | 502> = {
+  not_found: 404,
+  event_mismatch: 404,
+  cancelled: 409,
+  not_received: 409,
+  issue_in_progress: 409,
+  no_payee: 400,
+  no_amount: 400,
+  bad_date: 400,
+  freee_unavailable: 502,
+  freee_reauth_required: 502,
+  issue_failed: 502,
+  // 明示指示（forceIssue）で呼ぶのでここには来ないが、型の網羅性のために置く
+  not_requested: 409,
+};
+
+/**
  * 「領収書は不要」と答えられた予約を、あとから発行する（Issue #82・管理画面の導線）。
  *
  * 当日その場で「やっぱり領収書ください」と言われたときの唯一の経路。
@@ -859,9 +885,11 @@ events.post('/api/events/:id/bookings/:bookingId/issue-receipt', async (c) => {
     if (!receipt.issued) {
       // ⚠️ 成功に見せない。運営者は「発行した」と思って参加者に伝えてしまう。
       //    文言ではなくコードで分岐できるよう code も返す。
-      const status = receipt.code === 'not_found' ? 404
-        : receipt.code === 'cancelled' || receipt.code === 'not_received' ? 409
-        : 502;
+      //
+      // ⚠️ **残り全部を 502 にまとめない。** 502 は「上流（freee）が壊れている」の意味なので、
+      //    データ側の問題やイベント指定違いまで 502 にすると、運営者もログ監視も
+      //    freee を疑って原因を追うことになる。
+      const status = ISSUE_FAILURE_STATUS[receipt.code ?? 'issue_failed'] ?? 502;
       return c.json({
         success: false,
         error: receipt.error ?? '領収書を発行できませんでした。',

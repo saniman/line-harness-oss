@@ -1273,6 +1273,29 @@ describe('POST /api/events/:id/bookings/:bookingId/issue-receipt（#82）', () =
     expect((await res.json() as { success: boolean }).success).toBe(false)
   })
 
+  it.each([
+    // ⚠️ 502 は「上流（freee）が壊れている」の意味。データ側の問題やイベント指定違いを
+    //    502 で返すと、運営者が freee を疑って原因を追うことになる
+    ['not_found', 404],
+    ['event_mismatch', 404],
+    ['cancelled', 409],
+    ['not_received', 409],
+    ['issue_in_progress', 409],
+    ['no_payee', 400],
+    ['no_amount', 400],
+    ['bad_date', 400],
+    ['freee_unavailable', 502],
+    ['freee_reauth_required', 502],
+    ['issue_failed', 502],
+  ])('【重要】%s は %i を返す（原因の切り分けを壊さない）', async (code, expected) => {
+    mockIssueReceipt.mockResolvedValue({ issued: false, code, error: 'x' })
+
+    const res = await post({ payeeName: '株式会社サンプル' })
+
+    expect(res.status).toBe(expected)
+    expect((await res.json() as { code: string }).code).toBe(code)
+  })
+
   it('不正な id は 400', async () => {
     const res = await app.request('/api/events/x/bookings/5/issue-receipt', {
       method: 'POST',
