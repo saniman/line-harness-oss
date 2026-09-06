@@ -245,6 +245,106 @@ describe('領収書が不要と答えられた予約（#80）', () => {
   });
 });
 
+describe('あとから発行する（#82・運営者の明示指示）', () => {
+  it('【重要】不要と答えられていても、明示指示なら発行する', async () => {
+    // 当日「やっぱり領収書ください」と言われたときの唯一の経路
+    const { db } = makeDb({ booking: booking({ receipt_requested: 0 }) });
+    const issuer = makeIssuer();
+
+    const res = await issueReceiptForBooking(ENV, db, 1, 5, issuer, { forceIssue: true });
+
+    expect(issuer.createReceipt).toHaveBeenCalled();
+    expect(res.issued).toBe(true);
+  });
+
+  it('【重要】指示された宛名で発行する（表示名にフォールバックしない）', async () => {
+    // 「いいえ」の人は receipt_name が NULL なので、フォールバックすると
+    // LINE の表示名（ニックネームのことがある）で領収書が出てしまう
+    const { db } = makeDb({
+      booking: booking({ receipt_requested: 0, receipt_name: null, name: 'やまだ' }),
+    });
+    const issuer = makeIssuer();
+
+    await issueReceiptForBooking(ENV, db, 1, 5, issuer, {
+      forceIssue: true, payeeName: '株式会社サンプル',
+    });
+
+    const arg = vi.mocked(issuer.createReceipt).mock.calls[0][0];
+    expect(arg.payeeName).toBe('株式会社サンプル');
+  });
+
+  it('【重要】指示された宛名も正規化する（制御文字・長さ）', async () => {
+    // 運営者の手入力なので、参加者入力と同じ扱いにする
+    const { db } = makeDb({ booking: booking({ receipt_requested: 0 }) });
+    const issuer = makeIssuer();
+
+    await issueReceiptForBooking(ENV, db, 1, 5, issuer, {
+      forceIssue: true, payeeName: '  株式会社\n\nサンプル  ',
+    });
+
+    const arg = vi.mocked(issuer.createReceipt).mock.calls[0][0];
+    expect(arg.payeeName).not.toContain('\n');
+    expect(arg.payeeName.trim()).toBe(arg.payeeName);
+  });
+
+  it('【重要】明示指示でも、既に発行済みなら二重発行しない', async () => {
+    // 冪等ガードのほうが優先。freee 上で取消が必要な経理事故になる
+    const { db } = makeDb({
+      booking: booking({ receipt_requested: 0, receipt_url: ISSUED_URL }),
+    });
+    const issuer = makeIssuer();
+
+    const res = await issueReceiptForBooking(ENV, db, 1, 5, issuer, { forceIssue: true });
+
+    expect(issuer.createReceipt).not.toHaveBeenCalled();
+    expect(res.issued).toBe(true);
+    expect(res.receiptUrl).toBe(ISSUED_URL);
+  });
+
+  it('【重要】明示指示でも、現金を受け取っていなければ発行しない', async () => {
+    // 受け取っていない金額の領収書を出してはいけない
+    const { db } = makeDb({
+      booking: booking({ receipt_requested: 0, cash_received_at: null }),
+    });
+    const issuer = makeIssuer();
+
+    const res = await issueReceiptForBooking(ENV, db, 1, 5, issuer, { forceIssue: true });
+
+    expect(issuer.createReceipt).not.toHaveBeenCalled();
+    expect(res.code).toBe('not_received');
+  });
+
+  it('【重要】明示指示でも、キャンセル済みなら発行しない', async () => {
+    const { db } = makeDb({
+      booking: booking({ receipt_requested: 0, status: 'cancelled' }),
+    });
+
+    const res = await issueReceiptForBooking(ENV, db, 1, 5, makeIssuer(), { forceIssue: true });
+
+    expect(res.code).toBe('cancelled');
+  });
+
+  it('【重要】参加者の回答（receipt_requested）は書き換えない', async () => {
+    // 「参加者が不要と答えた」事実と「運営者が今回だけ発行した」判断は別の情報。
+    // 上書きすると、あとから経緯が追えなくなる
+    const { db, sqls } = makeDb({ booking: booking({ receipt_requested: 0 }) });
+
+    await issueReceiptForBooking(ENV, db, 1, 5, makeIssuer(), { forceIssue: true });
+
+    expect(sqls.some((q) => q.includes('receipt_requested'))).toBe(false);
+  });
+
+  it('明示指示が無ければ従来どおりスキップする', async () => {
+    const { db } = makeDb({ booking: booking({ receipt_requested: 0 }) });
+    const issuer = makeIssuer();
+
+    const res = await issueReceiptForBooking(ENV, db, 1, 5, issuer);
+
+    expect(issuer.createReceipt).not.toHaveBeenCalled();
+    expect(res.code).toBe('not_requested');
+  });
+});
+
 describe('issueReceiptForBooking（発行しないケース）', () => {
   it('存在しない予約なら code=not_found', async () => {
     const { db } = makeDb({ booking: null });

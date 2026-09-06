@@ -664,6 +664,20 @@ export const api = {
         `/api/events/${eventId}/bookings/${bookingId}/cash-received`,
         { method: 'POST' },
       ),
+    /**
+     * 「領収書は不要」と答えられた予約を、あとから発行する（#82）。
+     * 参加者の回答は書き換えず、この操作のときだけ発行する。
+     */
+    issueReceipt: (eventId: number, bookingId: number, payeeName: string) =>
+      fetchApi<ApiResponse<{
+        receiptIssued: boolean
+        receiptUrl: string | null
+        alreadyIssued: boolean
+        receiptWarning: string | null
+      }>>(
+        `/api/events/${eventId}/bookings/${bookingId}/issue-receipt`,
+        { method: 'POST', body: JSON.stringify({ payeeName }) },
+      ),
 
     /**
      * freee の共有リンクを登録する（#47）。

@@ -819,6 +819,74 @@ events.post('/api/events/:id/bookings/:bookingId/revoke-receipt', async (c) => {
 });
 
 /**
+ * 「領収書は不要」と答えられた予約を、あとから発行する（Issue #82・管理画面の導線）。
+ *
+ * 当日その場で「やっぱり領収書ください」と言われたときの唯一の経路。
+ * これが無いと、`receipt_requested = 0` の予約は**システム内では二度と発行できない**
+ * （現金受領ボタンは受領後に消えるため、発行を呼ぶ入口がなくなる）。
+ *
+ * ⚠️ 認証必須。公開すると第三者に領収書を発行させられる。
+ *    ロールは絞らない（受付業務のため。cash-received と同じ扱い）。
+ *
+ * ⚠️ **参加者の回答（receipt_requested）は書き換えない。** 今回だけ上書きして発行する。
+ */
+events.post('/api/events/:id/bookings/:bookingId/issue-receipt', async (c) => {
+  try {
+    const eventId = Number(c.req.param('id'));
+    const bookingId = Number(c.req.param('bookingId'));
+    if (!Number.isInteger(eventId) || !Number.isInteger(bookingId)) {
+      return c.json({ success: false, error: 'Invalid id' }, 400);
+    }
+
+    const body = await c.req.json<{ payeeName?: string }>().catch(() => ({} as { payeeName?: string }));
+    const payeeName = body.payeeName?.trim() || null;
+    // ⚠️ 宛名は必須。「いいえ」と答えた人は receipt_name が NULL なので、
+    //    ここを通すと LINE の表示名（ニックネームのことがある）で発行されてしまう。
+    if (!payeeName) {
+      return c.json({ success: false, error: 'receipt_name_required' }, 400);
+    }
+
+    const event = await getEventById(c.env.DB, eventId);
+    const receipt = await issueReceiptForBooking(
+      c.env,
+      c.env.DB,
+      eventId,
+      bookingId,
+      undefined,
+      { eventTitle: event?.title, forceIssue: true, payeeName },
+    );
+
+    if (!receipt.issued) {
+      // ⚠️ 成功に見せない。運営者は「発行した」と思って参加者に伝えてしまう。
+      //    文言ではなくコードで分岐できるよう code も返す。
+      const status = receipt.code === 'not_found' ? 404
+        : receipt.code === 'cancelled' || receipt.code === 'not_received' ? 409
+        : 502;
+      return c.json({
+        success: false,
+        error: receipt.error ?? '領収書を発行できませんでした。',
+        code: receipt.code ?? null,
+      }, status);
+    }
+
+    console.log('[freee] 領収書をあとから発行しました:', bookingId);
+
+    return c.json({
+      success: true,
+      data: {
+        receiptIssued: true,
+        receiptUrl: receipt.receiptUrl ?? null,
+        alreadyIssued: receipt.alreadyIssued ?? false,
+        receiptWarning: receipt.warning ?? null,
+      },
+    });
+  } catch (err) {
+    console.error('POST /api/events/:id/bookings/:bookingId/issue-receipt error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
  * 当日現金の受領を記録する（管理画面の「現金受領」ボタン）。
  *
  * 現金は受け取ったというデジタルな信号が無いので、人間が押す。

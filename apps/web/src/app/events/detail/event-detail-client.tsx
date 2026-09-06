@@ -65,6 +65,13 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
   // ⚠️ receiptWarning と分ける。「領収書は不要」は失敗ではないので、
   //    同じ琥珀色で出すと運営者が原因を調べ始めてしまう
   const [receiptNotice, setReceiptNotice] = useState('')
+  // 「領収書不要」の予約をあとから発行する導線（#82）。
+  // ⚠️ パネルは**同時に1つしか開かない**。一覧に入力欄を並べると、
+  //    別の人の宛名で発行する事故が起きる（#47 の共有リンクと同じ理由）
+  const [issueBookingId, setIssueBookingId] = useState<number | null>(null)
+  const [issuePayee, setIssuePayee] = useState('')
+  const [issueBusy, setIssueBusy] = useState(false)
+  const [issueError, setIssueError] = useState('')
   // ⚠️ 領収書パネルは**同時に1つしか開かない**。一覧に入力欄を並べると、
   //    クリップボードを持ち回って別の人のリンクを貼る事故が起きる（#47）
   const [receiptBookingId, setReceiptBookingId] = useState<number | null>(null)
@@ -220,6 +227,32 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
   }
 
   /**
+   * 「領収書は不要」と答えられた予約をあとから発行する（#82）。
+   *
+   * 当日その場で「やっぱり領収書ください」と言われたときの唯一の経路。
+   *
+   * ⚠️ 宛名は必須。この人は receipt_name を持たないので、空のまま送ると
+   *    LINE の表示名（ニックネームのことがある）で発行されうる。
+   */
+  const handleIssueReceipt = async (b: EventBookingItem) => {
+    const payee = issuePayee.trim()
+    if (!payee) return
+    setIssueBusy(true)
+    setIssueError('')
+    try {
+      await api.eventBookings.issueReceipt(eventId, b.id, payee)
+      setIssueBookingId(null)
+      setIssuePayee('')
+      await load()
+    } catch (err) {
+      // サーバーが返す理由をそのまま出す。固定文にすると原因に辿り着けない
+      setIssueError(err instanceof ApiError ? err.message : '発行に失敗しました。')
+    } finally {
+      setIssueBusy(false)
+    }
+  }
+
+  /**
    * 運営者が予約を取り消す（#65）。
    *
    * 現金受領済みの予約は参加者から取り消せないようにしたので、ここが唯一の導線。
@@ -232,7 +265,7 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
     const amount = resolveBookingAmount(b, event?.price ?? null)
     const amountText = amount != null ? `¥${amount.toLocaleString()}` : ''
 
-    // ⚠️ 取り消しで**お金が動く**ケースは必ず先に伝える。
+      // ⚠️ 取り消しで**お金が動く**ケースは必ず先に伝える。
     //    現金は運営者が手で返す／Stripe はこの操作で自動返金が走る。
     //    「押したら勝手に返金されていた」を起こさない
     const warnings: string[] = []
@@ -527,6 +560,22 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
                         {b.receipt_requested === 0 && (
                           <p className="text-xs text-gray-400 mt-0.5">領収書不要</p>
                         )}
+                        {/* 当日「やっぱり領収書ください」と言われたときの導線（#82）。
+                            現金を受け取っていて、まだ発行していない予約にだけ出す
+                            （未受領なら発行できないし、発行済みなら共有リンクのパネルを使う） */}
+                        {b.receipt_requested === 0 && b.cash_received_at && !b.receipt_url
+                          && b.status !== 'cancelled' && (
+                          <button
+                            onClick={() => {
+                              setIssueBookingId(issueBookingId === b.id ? null : b.id)
+                              setIssuePayee('')
+                              setIssueError('')
+                            }}
+                            className="mt-1 text-xs text-blue-600 underline"
+                          >
+                            {issueBookingId === b.id ? '閉じる' : '領収書を発行する'}
+                          </button>
+                        )}
                         {/* 畳まれずにここへ来た cancel_reason は、運営者に確認してほしい理由
                             （Stripe 障害・未知の値）。文言が出る場所がないと気づけない */}
                         {b.cancel_reason && (
@@ -612,6 +661,37 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
                         )}
                       </div>
                     </div>
+
+                    {issueBookingId === b.id && (
+                      <div className="px-4 pb-3 bg-gray-50">
+                        <label className="block text-xs text-gray-600 mb-1" htmlFor={`payee-${b.id}`}>
+                          領収書の宛名（必須）
+                        </label>
+                        <input
+                          id={`payee-${b.id}`}
+                          type="text"
+                          value={issuePayee}
+                          onChange={(e) => setIssuePayee(e.target.value)}
+                          placeholder="例）株式会社サンプル"
+                          className="w-full px-3 py-2 border rounded-lg text-sm"
+                        />
+                        {/* ⚠️ 表示名を初期値に入れない。確認せず押すと
+                            ニックネームの領収書が出る（#80 で必須にした理由と同じ） */}
+                        <p className="text-xs text-gray-400 mt-1">
+                          LINE の表示名は「{participantDisplayName(b)}」です
+                        </p>
+                        {issueError && (
+                          <p className="text-xs text-red-600 mt-1">{issueError}</p>
+                        )}
+                        <button
+                          onClick={() => handleIssueReceipt(b)}
+                          disabled={issueBusy || issuePayee.trim() === ''}
+                          className="mt-2 px-3 py-1.5 rounded-lg text-sm text-white bg-blue-600 disabled:opacity-50"
+                        >
+                          {issueBusy ? '発行中...' : '発行'}
+                        </button>
+                      </div>
+                    )}
 
                     {receiptBookingId === b.id && (
                       <ReceiptSharePanel
