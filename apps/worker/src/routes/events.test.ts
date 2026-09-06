@@ -1189,6 +1189,124 @@ describe('POST /api/events/:id/join の領収書の要否（#80）', () => {
   })
 })
 
+describe('POST /api/events/:id/bookings/:bookingId/issue-receipt（#82）', () => {
+  const PATH = '/api/events/1/bookings/5/issue-receipt'
+
+  beforeEach(() => {
+    mockIssueReceipt.mockReset()
+    mockIssueReceipt.mockResolvedValue({ issued: true, receiptUrl: 'https://freee.example/r/1' })
+  })
+
+  const post = (body: Record<string, unknown>) =>
+    app.request(PATH, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }, { DB: mockDb })
+
+  it('【重要】明示指示として発行を依頼する', async () => {
+    // forceIssue が渡らないと「不要」の予約はスキップされ、この導線が無意味になる
+    const res = await post({ payeeName: '株式会社サンプル' })
+
+    expect(res.status).toBe(200)
+    expect(mockIssueReceipt).toHaveBeenCalledWith(
+      expect.anything(), expect.anything(), 1, 5, undefined,
+      expect.objectContaining({ forceIssue: true, payeeName: '株式会社サンプル' }),
+    )
+  })
+
+  it('但し書きに使うイベント名を渡す', async () => {
+    vi.mocked(eventsService.getEventById).mockResolvedValue({ ...EVENT1, title: '沖縄AI勉強会' })
+
+    await post({ payeeName: '株式会社サンプル' })
+
+    expect(mockIssueReceipt).toHaveBeenCalledWith(
+      expect.anything(), expect.anything(), 1, 5, undefined,
+      expect.objectContaining({ eventTitle: '沖縄AI勉強会' }),
+    )
+  })
+
+  it('【重要】宛名が空なら 400 で断る（表示名で発行させない）', async () => {
+    // 「いいえ」の人は receipt_name が NULL。通すとニックネームで発行されうる
+    const res = await post({})
+
+    expect(res.status).toBe(400)
+    expect((await res.json() as { error: string }).error).toBe('receipt_name_required')
+    expect(mockIssueReceipt).not.toHaveBeenCalled()
+  })
+
+  it('空白だけの宛名も断る', async () => {
+    const res = await post({ payeeName: '   ' })
+
+    expect(res.status).toBe(400)
+    expect(mockIssueReceipt).not.toHaveBeenCalled()
+  })
+
+  it('発行できたら URL を返す', async () => {
+    const res = await post({ payeeName: '株式会社サンプル' })
+
+    const json = await res.json() as { data: { receiptIssued: boolean; receiptUrl: string } }
+    expect(json.data.receiptIssued).toBe(true)
+    expect(json.data.receiptUrl).toBe('https://freee.example/r/1')
+  })
+
+  it('【重要】発行できなければ理由を返す（成功に見せない）', async () => {
+    mockIssueReceipt.mockResolvedValue({
+      issued: false, code: 'not_received', error: 'まだ現金を受領していません。',
+    })
+
+    const res = await post({ payeeName: '株式会社サンプル' })
+
+    const json = await res.json() as { success: boolean; error: string; code: string }
+    expect(res.status).toBe(409)
+    expect(json.success).toBe(false)
+    expect(json.code).toBe('not_received')
+  })
+
+  it('【重要】発行処理が投げても 500 にしない', async () => {
+    // ここで 500 を返すと、運営者には何が起きたのか分からない
+    mockIssueReceipt.mockRejectedValue(new Error('boom'))
+
+    const res = await post({ payeeName: '株式会社サンプル' })
+
+    expect(res.status).toBe(500)
+    expect((await res.json() as { success: boolean }).success).toBe(false)
+  })
+
+  it.each([
+    // ⚠️ 502 は「上流（freee）が壊れている」の意味。データ側の問題やイベント指定違いを
+    //    502 で返すと、運営者が freee を疑って原因を追うことになる
+    ['not_found', 404],
+    ['event_mismatch', 404],
+    ['cancelled', 409],
+    ['not_received', 409],
+    ['issue_in_progress', 409],
+    ['no_payee', 400],
+    ['no_amount', 400],
+    ['bad_date', 400],
+    ['freee_unavailable', 502],
+    ['freee_reauth_required', 502],
+    ['issue_failed', 502],
+  ])('【重要】%s は %i を返す（原因の切り分けを壊さない）', async (code, expected) => {
+    mockIssueReceipt.mockResolvedValue({ issued: false, code, error: 'x' })
+
+    const res = await post({ payeeName: '株式会社サンプル' })
+
+    expect(res.status).toBe(expected)
+    expect((await res.json() as { code: string }).code).toBe(code)
+  })
+
+  it('不正な id は 400', async () => {
+    const res = await app.request('/api/events/x/bookings/5/issue-receipt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ payeeName: 'a' }),
+    }, { DB: mockDb })
+
+    expect(res.status).toBe(400)
+  })
+})
+
 describe('POST /api/events/:id/bookings/:bookingId/cash-received', () => {
   const PATH = '/api/events/1/bookings/5/cash-received'
 

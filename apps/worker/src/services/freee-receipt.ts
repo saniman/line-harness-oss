@@ -19,6 +19,7 @@ import {
   resolveReceiptName,
 } from './events.js';
 import { formatJstDate } from '../utils/format-jst.js';
+import { sanitizeReceiptName } from '../utils/receipt-name.js';
 import {
   freeeReceiptIssuer,
   FreeeReceiptApiError,
@@ -67,6 +68,22 @@ export interface IssueReceiptResult {
 export interface IssueReceiptOptions {
   /** 但し書き・件名に使うイベント名 */
   eventTitle?: string;
+  /**
+   * 「領収書は不要」と答えられていても発行する（#82）。運営者の明示指示のときだけ true。
+   *
+   * ⚠️ **参加者の回答（`receipt_requested`）は書き換えない。**
+   *    「参加者が不要と答えた」事実と「運営者が今回だけ発行する」判断は別の情報で、
+   *    上書きすると経緯が追えなくなる。ここで一時的に上書きするだけにする。
+   *
+   * ⚠️ 効くのはこの分岐だけ。冪等ガード（既発行）・キャンセル・現金未受領は**素通ししない**。
+   */
+  forceIssue?: boolean;
+  /**
+   * 宛名を明示する（#82）。「いいえ」と答えた人は `receipt_name` が NULL なので、
+   * フォールバックすると LINE の表示名（ニックネームのことがある）で発行されてしまう。
+   * 運営者が受付で聞いて入れた値をそのまま使う。
+   */
+  payeeName?: string;
 }
 
 /**
@@ -148,12 +165,12 @@ export async function issueReceiptForBooking(
   //    「発行できていません（原因）」と警告を出すので、不要と答えられただけの予約で
   //    運営者が freee の設定を疑って調べ始めてしまう。これは失敗ではなく仕様どおり。
   //
-  // ⚠️ 発行権（claim）を握る前に返す。握ると、あとで気が変わって発行するときに
-  //    タイムアウトまで詰まる。
+  // ⚠️ 発行権（claim）を握る前に返す。握ると、あとから発行するとき
+  //    （forceIssue・#82）にタイムアウトまで詰まる。
   //
   // ⚠️ 冪等ガード（receipt_url）より**後**に置く。先に置くと、既に発行済みの
   //    領収書の URL が管理画面から消える。
-  if (booking.receipt_requested === 0) {
+  if (booking.receipt_requested === 0 && !options.forceIssue) {
     return { issued: false, code: 'not_requested' };
   }
 
@@ -167,7 +184,11 @@ export async function issueReceiptForBooking(
 
   // 宛名は「指定 → 申込時の氏名」の順に解決する。全部空なら発行しない。
   // 空欄の宛名で発行すると freee 側で作り直しになるため、未発行のまま #48 に回す。
-  const payeeName = resolveReceiptName(booking);
+  // 運営者が指示した宛名があればそれを使う（#82）。参加者入力と同じく正規化を通す
+  // ——手入力なので制御文字・長さの扱いを変える理由が無い。
+  const payeeName = options.payeeName
+    ? sanitizeReceiptName(options.payeeName)
+    : resolveReceiptName(booking);
   if (!payeeName) {
     return { issued: false, code: 'no_payee', error: '領収書の宛名を決められませんでした。' };
   }
