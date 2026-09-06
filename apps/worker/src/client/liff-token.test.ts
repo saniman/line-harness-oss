@@ -8,6 +8,9 @@ import {
   buildLiffUrl,
   shouldReopenInLiff,
   buildAuthErrorMessage,
+  readLiffParam,
+  markLiffReopenResolved,
+  REOPEN_STORAGE_KEY,
 } from './liff-token.js'
 
 /** exp（秒）だけを持つダミーの ID トークン（JWT 形式）を作る */
@@ -185,31 +188,31 @@ describe('shouldReopenInLiff（LIFF へ開き直すか）', () => {
   }
 
   it('LIFF の外なら開き直す', () => {
-    expect(shouldReopenInLiff({ isInClient: false, storage: makeStorage() })).toBe(true)
+    expect(shouldReopenInLiff({ isInClient: false, storage: makeStorage(), liffIdIsTrusted: true })).toBe(true)
   })
 
   it('【重要】すでに LIFF の中なら開き直さない', () => {
     // 同じ場所へ送り直すだけで何も変わらない。ループになる
-    expect(shouldReopenInLiff({ isInClient: true, storage: makeStorage() })).toBe(false)
+    expect(shouldReopenInLiff({ isInClient: true, storage: makeStorage(), liffIdIsTrusted: true })).toBe(false)
   })
 
   it('【重要】一度試したら二度目はしない（リダイレクトの無限ループ防止）', () => {
     const storage = makeStorage()
 
-    expect(shouldReopenInLiff({ isInClient: false, storage })).toBe(true)
-    expect(shouldReopenInLiff({ isInClient: false, storage })).toBe(false)
+    expect(shouldReopenInLiff({ isInClient: false, storage, liffIdIsTrusted: true })).toBe(true)
+    expect(shouldReopenInLiff({ isInClient: false, storage, liffIdIsTrusted: true })).toBe(false)
   })
 
   it('【重要】sessionStorage が使えなければ開き直さない', () => {
     // 回数を数えられない＝ループを止められない。行き止まりのほうがまだマシ
-    expect(shouldReopenInLiff({ isInClient: false, storage: null })).toBe(false)
+    expect(shouldReopenInLiff({ isInClient: false, storage: null, liffIdIsTrusted: true })).toBe(false)
   })
 
   it('セッション復帰の回数とは別に数える', () => {
     // 期限切れ復帰（RECOVERY_STORAGE_KEY）と混ぜると、片方が他方を消してしまう
     const storage = makeStorage({ [RECOVERY_STORAGE_KEY]: '1' })
 
-    expect(shouldReopenInLiff({ isInClient: false, storage })).toBe(true)
+    expect(shouldReopenInLiff({ isInClient: false, storage, liffIdIsTrusted: true })).toBe(true)
     expect(storage.dump()[RECOVERY_STORAGE_KEY]).toBe('1')
   })
 })
@@ -217,19 +220,119 @@ describe('shouldReopenInLiff（LIFF へ開き直すか）', () => {
 describe('buildAuthErrorMessage（認証できなかったときの案内）', () => {
   it('【重要】LINE の中にいる人に「LINE アプリ内で開け」と言わない', () => {
     // すでにアプリの中にいるので、何をすればいいのか分からない案内になる（実際に混乱した）
-    const msg = buildAuthErrorMessage(true)
+    const msg = buildAuthErrorMessage({ isInClient: true, canReopen: false })
     expect(msg).not.toContain('LINE アプリ内で再度開いて')
     expect(msg).toContain('閉じて')
   })
 
   it('LIFF の外なら、開き直す導線に触れる', () => {
-    const msg = buildAuthErrorMessage(false)
+    const msg = buildAuthErrorMessage({ isInClient: false, canReopen: true })
     expect(msg).toContain('開き直す')
   })
+})
 
-  it('どちらの場合もその場で実行できる操作だけを書く', () => {
-    for (const inClient of [true, false]) {
-      expect(buildAuthErrorMessage(inClient)).not.toContain('LINE アプリ内で再度開いて')
+describe('readLiffParam（liff.state に畳まれたクエリも見る・#85 レビュー④）', () => {
+  it('通常のクエリから読める', () => {
+    expect(readLiffParam('?page=order&table=abc', 'table')).toBe('abc')
+  })
+
+  it('【重要】liff.state に畳まれていても読める', () => {
+    // liff.line.me を経由すると LINE がクエリを liff.state にまとめることがある。
+    // getPage() だけが展開していて、table / id / payment は生の search を見ていた
+    expect(readLiffParam('?liff.state=%3Fpage%3Dorder%26table%3Dabc', 'table')).toBe('abc')
+  })
+
+  it('先頭の ? が無い liff.state でも読める', () => {
+    expect(readLiffParam('?liff.state=page%3Devent%26id%3D12', 'id')).toBe('12')
+  })
+
+  it('【重要】通常のクエリを liff.state より優先する', () => {
+    // 両方にあるなら、いま開いている URL のほうが新しい
+    const search = '?table=direct&liff.state=%3Ftable%3Dfolded'
+    expect(readLiffParam(search, 'table')).toBe('direct')
+  })
+
+  it('どちらにも無ければ null', () => {
+    expect(readLiffParam('?page=order', 'table')).toBeNull()
+    expect(readLiffParam('', 'table')).toBeNull()
+  })
+
+  it('壊れた liff.state でも落ちない', () => {
+    expect(readLiffParam('?liff.state=%%%', 'table')).toBeNull()
+  })
+})
+
+describe('shouldReopenInLiff（LIFF ID の出どころ・#85 レビュー②）', () => {
+  const makeStorage = () => {
+    const m = new Map<string, string>()
+    return { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => { m.set(k, v) } }
+  }
+
+  it('【重要】LIFF ID が ?liffId= 由来なら自動で飛ばさない', () => {
+    // ?liffId= はユーザーが自由に入れられる。攻撃者の LIFF ID を入れた URL を送られると、
+    // 正規のドメインから攻撃者の LIFF へ自動遷移させられる
+    expect(shouldReopenInLiff({
+      isInClient: false, storage: makeStorage(), liffIdIsTrusted: false,
+    })).toBe(false)
+  })
+
+  it('ビルド時の値（信頼できる）なら飛ばす', () => {
+    expect(shouldReopenInLiff({
+      isInClient: false, storage: makeStorage(), liffIdIsTrusted: true,
+    })).toBe(true)
+  })
+
+  it('信頼できない場合はフラグも消費しない', () => {
+    // 消費すると、あとで正しい経路で開いたときに自動復帰できなくなる
+    const storage = makeStorage()
+    shouldReopenInLiff({ isInClient: false, storage, liffIdIsTrusted: false })
+    expect(storage.getItem(REOPEN_STORAGE_KEY)).toBeNull()
+  })
+})
+
+describe('buildAuthErrorMessage（ボタンの有無と揃える・#85 レビュー①）', () => {
+  it('【重要】ボタンを出せないときに「下のボタン」と言わない', () => {
+    // 存在しないボタンを押せと言うのは、この PR が直そうとした失敗そのもの
+    const msg = buildAuthErrorMessage({ isInClient: false, canReopen: false })
+    expect(msg).not.toContain('ボタン')
+    expect(msg).toContain('トーク')
+  })
+
+  it('ボタンを出せるときだけ「下のボタン」と言う', () => {
+    const msg = buildAuthErrorMessage({ isInClient: false, canReopen: true })
+    expect(msg).toContain('ボタン')
+  })
+
+  it('LIFF の中ならボタンの有無に関わらず「閉じて開き直す」', () => {
+    for (const canReopen of [true, false]) {
+      const msg = buildAuthErrorMessage({ isInClient: true, canReopen })
+      expect(msg).toContain('閉じて')
+      expect(msg).not.toContain('ボタン')
     }
+  })
+
+  it('どの組み合わせでも旧文言は出さない', () => {
+    for (const isInClient of [true, false]) {
+      for (const canReopen of [true, false]) {
+        expect(buildAuthErrorMessage({ isInClient, canReopen }))
+          .not.toContain('LINE アプリ内で再度開いて')
+      }
+    }
+  })
+})
+
+describe('markLiffReopenResolved（#85 レビュー⑤）', () => {
+  it('【重要】無事に入れたら開き直しのフラグを戻す', () => {
+    // 戻さないと、そのセッション中は二度目の救済が効かない
+    const m = new Map<string, string>([[REOPEN_STORAGE_KEY, '1']])
+    const storage = { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => { m.set(k, v) } }
+
+    markLiffReopenResolved(storage)
+
+    expect(shouldReopenInLiff({ isInClient: false, storage, liffIdIsTrusted: true })).toBe(true)
+  })
+
+  it('storage が無くても落ちない', () => {
+    expect(() => markLiffReopenResolved(null)).not.toThrow()
   })
 })

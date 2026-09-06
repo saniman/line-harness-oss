@@ -119,13 +119,27 @@ export function markLiffSessionHealthy(storage: MinimalStorage | null): void {
 export const REOPEN_STORAGE_KEY = 'liff_reopen_attempted'
 
 /**
- * LIFF ID の形。
+ * 無事に ID トークンを取れた＝開き直しは解決済み。次に詰まったとき再び救済できるようにする。
  *
- * ⚠️ `liffId` は `?liffId=` から読むので**ユーザーが自由に入れられる**。
- *    素通しして URL に埋めると、こちらが作ったリンクで別の場所へ送ることになる。
- *    数字10桁 + '-' + 英数字、という実際の形に合うものだけ通す。
+ * これが無いと、一度フラグを立てたあとはそのセッション中ずっと自動復帰が効かず、
+ * 2回目以降は手動のボタン画面までしか戻れない。
  */
-const LIFF_ID_PATTERN = /^\d{10}-[0-9a-zA-Z]{8}$/
+export function markLiffReopenResolved(storage: MinimalStorage | null): void {
+  storage?.setItem(REOPEN_STORAGE_KEY, '0')
+}
+
+/**
+ * LIFF ID の形（多層防御の一枚目）。
+ *
+ * ⚠️ **これは「安全な文字だけか」の確認であって、信頼の判断ではない。**
+ *    `liffId` は `?liffId=` から読むのでユーザーが自由に入れられる。
+ *    「自動で飛ばしてよい ID か」は `shouldReopenInLiff` の `liffIdIsTrusted` で決める。
+ *
+ * ⚠️ 桁数を固定しない。`\d{10}-[0-9a-zA-Z]{8}` のように実物へ寄せて書くと、
+ *    LINE がチャネルIDの桁数を変えた瞬間に**正当な ID を弾いて機能が黙って無効化**される。
+ *    ここで防ぎたいのは `/` `:` `?` `#` などでパスから抜け出されることだけ。
+ */
+const LIFF_ID_PATTERN = /^[0-9]+-[0-9a-zA-Z]+$/
 
 /**
  * LIFF として開き直すための URL を組み立てる。
@@ -144,6 +158,14 @@ export interface ReopenDeps {
   isInClient: boolean
   /** sessionStorage（使えない環境では null） */
   storage: MinimalStorage | null
+  /**
+   * LIFF ID がビルド時の値（＝こちらが決めた値）から来ているか。
+   *
+   * ⚠️ `?liffId=` 由来のときは **false**。ユーザーが自由に入れられるので、
+   *    攻撃者の LIFF ID を入れた URL を送られると、正規のドメインから
+   *    攻撃者の LIFF へ自動遷移させられる（形の検証だけでは防げない）。
+   */
+  liffIdIsTrusted: boolean
 }
 
 /**
@@ -156,9 +178,13 @@ export interface ReopenDeps {
  *
  * @returns true なら呼び出し側が LIFF URL へ遷移する
  */
-export function shouldReopenInLiff({ isInClient, storage }: ReopenDeps): boolean {
+export function shouldReopenInLiff({ isInClient, storage, liffIdIsTrusted }: ReopenDeps): boolean {
   // すでに LIFF の中。同じ場所へ送り直しても何も変わらない
   if (isInClient) return false
+  // 信頼できない宛先へは自動で飛ばさない。
+  // ⚠️ フラグを消費する**前**に返す。消費すると、あとで正しい経路で開いたときに
+  //    自動復帰できなくなる
+  if (!liffIdIsTrusted) return false
   // 回数を数えられない＝ループを止められない。行き止まりのほうがまだマシ
   if (!storage) return false
   if (storage.getItem(REOPEN_STORAGE_KEY) === '1') return false
@@ -173,9 +199,58 @@ export function shouldReopenInLiff({ isInClient, storage }: ReopenDeps): boolean
  *    この文言が出る人はすでに LINE の中にいるので、実行できる操作を指していない。
  *    その場で本当にできることだけを書く。
  */
-export function buildAuthErrorMessage(isInClient: boolean): string {
-  return isInClient
-    // LIFF ブラウザでは liff.login() が使えないため、開き直す以外に手が無い
-    ? 'LINE の認証情報を取得できませんでした。お手数ですが、この画面を閉じて、もう一度開いてください。'
-    : 'この画面では LINE の情報を取得できませんでした。下のボタンから開き直すと申し込めます。'
+export interface AuthErrorContext {
+  isInClient: boolean
+  /** ［LINE で開き直す］ボタンを実際に出せるか */
+  canReopen: boolean
+}
+
+/**
+ * ID トークンを取れなかったときの案内文。
+ *
+ * ⚠️ 「LINE アプリ内で再度開いてください」は**使わない**。
+ *    この文言が出る人はすでに LINE の中にいるので、実行できる操作を指していない。
+ *
+ * ⚠️ **ボタンの有無と同じ条件で決める。** 「下のボタンから」と書いたのに
+ *    ボタンが描画されないと、存在しないものを押せと言うことになる
+ *    ——まさにこの修正が無くそうとしている失敗そのもの。
+ */
+export function buildAuthErrorMessage({ isInClient, canReopen }: AuthErrorContext): string {
+  // LIFF ブラウザでは liff.login() が使えないため、開き直す以外に手が無い
+  if (isInClient) {
+    return 'LINE の認証情報を取得できませんでした。お手数ですが、この画面を閉じて、もう一度開いてください。'
+  }
+  if (canReopen) {
+    return 'この画面では LINE の情報を取得できませんでした。下のボタンから開き直すと申し込めます。'
+  }
+  // 送り先を作れない（LIFF ID が無い・形が違う）。押せるものが無いので、
+  // その人が実際にできる操作だけを書く
+  return 'この画面では LINE の情報を取得できませんでした。お手数ですが、LINE のトーク画面から、もう一度リンクを開いてください。'
+}
+
+/**
+ * クエリパラメータを、`liff.state` に畳まれている場合も含めて読む（#85 レビュー④）。
+ *
+ * `https://liff.line.me/<id>?page=order&table=xxx` を開くと、LINE はエンドポイントへ
+ * **クエリを `liff.state` に畳んで**渡すことがある（`?liff.state=%3Fpage%3Dorder...`）。
+ * `getPage()` だけがこれを展開していたため、`table` / `id` / `payment` を
+ * `location.search` から直接読んでいる箇所は**値を取り落としていた**
+ * （例: 卓上QRから入ったのに「テーブル情報が見つかりません」）。
+ *
+ * ⚠️ 生のクエリを優先する。両方にあるなら、いま開いている URL のほうが新しい。
+ */
+export function readLiffParam(search: string, name: string): string | null {
+  const params = new URLSearchParams(search)
+  const direct = params.get(name)
+  if (direct !== null) return direct
+
+  const liffState = params.get('liff.state')
+  if (!liffState) return null
+  try {
+    const stateStr = liffState.startsWith('?') ? liffState.slice(1) : liffState
+    return new URLSearchParams(stateStr).get(name)
+  } catch {
+    // 壊れた liff.state で画面ごと落とさない
+    return null
+  }
 }

@@ -25,6 +25,8 @@ import {
   buildLiffUrl,
   shouldReopenInLiff,
   buildAuthErrorMessage,
+  readLiffParam,
+  markLiffReopenResolved,
 } from './liff-token.js';
 import { apiUrl } from './api-url.js';
 import { buildFriendAddHtml } from './friend-add.js';
@@ -49,12 +51,16 @@ declare const liff: {
 };
 
 // Resolve LIFF ID: ?liffId= param (from endpoint URL) > env var (fallback to ①)
-function detectLiffId(): string {
+//
+// ⚠️ `?liffId=` は**ユーザーが自由に入れられる**。多アカウント運用のために
+//    優先しているが、「自動で遷移してよい宛先か」の判断には使えない。
+//    出どころも一緒に返し、リダイレクトはビルド時の値のときだけ許す（#85 レビュー②）。
+function detectLiffId(): { id: string; trusted: boolean } {
   const fromParam = new URLSearchParams(window.location.search).get('liffId');
-  if (fromParam) return fromParam;
-  return import.meta.env?.VITE_LIFF_ID || '';
+  if (fromParam) return { id: fromParam, trusted: false };
+  return { id: import.meta.env?.VITE_LIFF_ID || '', trusted: true };
 }
-const LIFF_ID = detectLiffId();
+const { id: LIFF_ID, trusted: LIFF_ID_TRUSTED } = detectLiffId();
 
 // ID トークンの有効期限は発行から1時間しかない（#28）。ページを開いたまま放置されると、
 // ボタンを押した時点では期限切れのトークンを送ることになりサーバーに 401 で弾かれる。
@@ -90,6 +96,8 @@ function ensureFreshSession(idToken: string, showErrorFn: (msg: string) => void)
   if (!isIdTokenExpired(idToken, Date.now())) {
     // 有効なトークンで開けている＝セッションは健全。次に切れたとき再び自動復帰できるようにする。
     markLiffSessionHealthy(sessionStorageOrNull);
+    // 開き直しの救済も解決済み。戻さないとこのセッション中は二度目が効かない（#85 レビュー⑤）
+    markLiffReopenResolved(sessionStorageOrNull);
     return true;
   }
   if (recoverSession()) return false; // リロード / 再ログインへ遷移するので描画しない
@@ -118,16 +126,13 @@ function apiCall(path: string, options?: RequestInit): Promise<Response> {
 function getPage(): string | null {
   const path = window.location.pathname.replace(/^\/+/, '');
   if (path === 'book') return 'book';
-  const params = new URLSearchParams(window.location.search);
-  const direct = params.get('page');
-  if (direct) return direct;
-  // liff.state contains the original query string encoded (e.g. "?page=book")
-  const liffState = params.get('liff.state');
-  if (liffState) {
-    const stateStr = liffState.startsWith('?') ? liffState.slice(1) : liffState;
-    return new URLSearchParams(stateStr).get('page');
-  }
-  return null;
+  // liff.state に畳まれた場合も含めて読む（readLiffParam のコメント参照）
+  return readLiffParam(window.location.search, 'page');
+}
+
+/** 画面の分岐に使うクエリ。liff.state に畳まれていても取り落とさない（#85 レビュー④） */
+function queryParam(name: string): string | null {
+  return readLiffParam(window.location.search, name);
 }
 
 function getRedirectUrl(): string | null {
@@ -274,13 +279,16 @@ function showError(message: string) {
  *
  * 3フロー（サロン予約・モバイルオーダー・イベント）で同じ処理をしていたので1箇所にまとめた。
  */
-function handleMissingIdToken(): void {
+function handleMissingIdToken(reason: 'id_token' | 'profile' = 'id_token'): void {
   const isInClient = liff.isInClient();
 
   // ⚠️ なぜ取れなかったのかを後から辿れるようにする。「時々起きる」と報告されても、
   //    これが無いと推測でしか直せない。
   //    ⚠️ ID トークン・表示名・ユーザーIDは**絶対に出さない**（資格情報 / PII）
-  console.error('[LIFF] ID トークンを取得できませんでした:', {
+  console.error('[LIFF] 本人確認に必要な情報を取得できませんでした:', {
+    // ⚠️ 何が欠けたのかを分ける。プロフィール取得の一時エラーまで
+    //    「ID トークンが無い」と記録すると、原因を誤って追うことになる（#85 レビュー⑥）
+    reason,
     isInClient,
     isLoggedIn: liff.isLoggedIn(),
     os: liff.getOS?.() ?? 'unknown',
@@ -293,27 +301,44 @@ function handleMissingIdToken(): void {
   const liffUrl = buildLiffUrl(LIFF_ID, window.location.search);
 
   // LIFF の外なら、正しい入口へ自動で送り直す（1回だけ）
-  if (liffUrl && shouldReopenInLiff({ isInClient, storage: sessionStorageOrNull })) {
+  if (liffUrl && shouldReopenInLiff({
+    isInClient,
+    storage: sessionStorageOrNull,
+    liffIdIsTrusted: LIFF_ID_TRUSTED,
+  })) {
     window.location.href = liffUrl;
     return;
   }
 
   // 送り直しても駄目だった / そもそも LIFF の中だった場合の案内。
   // ⚠️ 「LINE アプリ内で再度開いてください」は出さない。この人はもう LINE の中にいる
-  const message = buildAuthErrorMessage(isInClient);
+  // 外部ブラウザで、かつ送り先を作れるときだけボタンを出せる。
+  // ⚠️ 文言はこの条件と**同じ値**から決める。「下のボタンから」と書いたのに
+  //    ボタンが出ないと、存在しないものを押せと言うことになる（#85 レビュー①）
+  const canReopen = !isInClient && liffUrl !== null;
+  const message = buildAuthErrorMessage({ isInClient, canReopen });
+
   const container = document.getElementById('app');
   if (!container) return;
-  // 外部ブラウザのときだけ、その場で押せる導線を出す（文言だけでは詰む）
-  const button = !isInClient && liffUrl
-    ? `<p><a class="btn-pink liff-reopen-btn" href="${escapeHtml(liffUrl)}">LINE で開き直す</a></p>`
-    : '';
   container.innerHTML = `
     <div class="card">
       <h2>エラー</h2>
       <p class="error">${escapeHtml(message)}</p>
-      ${button}
     </div>
   `;
+
+  // ⚠️ href を文字列に埋めない。escapeHtml は textContent → innerHTML なので
+  //    **`"` をエスケープしない**（& < > だけ）。属性値に使うと抜け出せる。
+  //    liffUrl には location.search が入るので、DOM API で組み立てる（#85 レビュー③）
+  if (canReopen && liffUrl) {
+    const p = document.createElement('p');
+    const a = document.createElement('a');
+    a.className = 'btn-pink liff-reopen-btn';
+    a.href = liffUrl;
+    a.textContent = 'LINE で開き直す';
+    p.appendChild(a);
+    container.querySelector('.card')?.appendChild(p);
+  }
 }
 
 // ─── Core Flow ──────────────────────────────────────────
@@ -501,7 +526,7 @@ async function initOrder(): Promise<void> {
   // initSalonBooking と同じ初期化シーケンス（profile/idToken/friendFlag 並列取得 →
   // UUID linking → 未友達なら friend-add gate → React mount）。
   // 注文には ?table=<qr_token> が必須。QR/LIFF URL から受け取る。
-  const tableToken = new URLSearchParams(window.location.search).get('table');
+  const tableToken = queryParam('table');
   if (!tableToken) {
     showError('テーブル情報が見つかりません。卓上のQRコードから開いてください。');
     return;
@@ -570,9 +595,9 @@ async function initEventFlow(): Promise<void> {
   //   ⑤ 友達なら申込画面
   // 申込エンドポイント側でも idToken 検証＋友だちゲートをかけているため、
   // ここは「ユーザーに正しい導線を見せる」ためのゲート（防御はサーバー側が本体）。
-  const eventParams = new URLSearchParams(window.location.search);
-  const payment = eventParams.get('payment');
-  const eventId = eventParams.get('id') ? Number(eventParams.get('id')) : undefined;
+  const payment = queryParam('payment');
+  const eventIdParam = queryParam('id');
+  const eventId = eventIdParam ? Number(eventIdParam) : undefined;
 
   // 取得失敗でも画面を殺さない。決済結果の表示に profile / idToken は不要なので、
   // ここで例外を投げると「支払ったのに完了画面が出ない」事故になる。
@@ -616,7 +641,7 @@ async function initEventFlow(): Promise<void> {
 
   // 以降の申込フローはサーバーが idToken で本人確認するため idToken が必須。
   if (!idToken || !profile) {
-    handleMissingIdToken();
+    handleMissingIdToken(!idToken ? 'id_token' : 'profile');
     return;
   }
 
@@ -696,9 +721,7 @@ async function main() {
     } else if (page === 'order') {
       await initOrder();
     } else if (page === 'form') {
-      const params = new URLSearchParams(window.location.search);
-      const formId = params.get('id');
-      await initForm(formId);
+      await initForm(queryParam('id'));
     } else if (page === 'event') {
       await initEventFlow();
     } else if (!page) {
