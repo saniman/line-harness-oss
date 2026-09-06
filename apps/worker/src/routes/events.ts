@@ -218,11 +218,6 @@ events.post('/api/events/:id/join', async (c) => {
       ? (body.receiptRequested ? 1 : 0)
       : null;
     const receiptName = body.receiptName?.trim() || null;
-    // 「必要」と答えたのに宛名が無ければ断る。画面では押せないが、直接叩かれる経路を塞ぐ。
-    // 通すと宛名の無い領収書ができて freee 側で作り直しになる。
-    if (receiptRequested === 1 && !receiptName) {
-      return c.json({ success: false, error: 'receipt_name_required' }, 400);
-    }
 
     // 本人確認: Authorization: Bearer <LIFF idToken> を検証する。
     // クライアント申告の lineUserId は詐称できるため参照しない。
@@ -256,6 +251,16 @@ events.post('/api/events/:id/join', async (c) => {
       return c.json({ success: false, error: 'friend_required' }, 403);
     }
     const friendId = applicant.friendId;
+
+    // 「必要」と答えたのに宛名が無ければ断る。画面では押せないが、直接叩かれる経路を塞ぐ。
+    // 通すと宛名の無い領収書ができて freee 側で作り直しになる。
+    //
+    // ⚠️ 本人確認・締切・満席・友だちゲートの**後**に置く。前に出すと、未認証の相手に
+    //    401 ではなく 400 を返し、締切のイベントでも 409 application_closed ではなく
+    //    400 を返してしまう（クライアントの締切ハンドリングを迂回する）。
+    if (receiptRequested === 1 && !receiptName) {
+      return c.json({ success: false, error: 'receipt_name_required' }, 400);
+    }
 
     const booking = await createEventBooking(c.env.DB, {
       event_id: id,

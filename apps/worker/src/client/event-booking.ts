@@ -162,6 +162,8 @@ export interface EventActionResult {
    * 締切は最終状態なので、呼び出し側はボタンを元に戻さず締切済みとして描き直す。
    */
   applicationClosed?: boolean
+  /** 満席で断られた（409）。締切とは別状態として扱う */
+  eventFull?: boolean
 }
 
 /** 申込系エンドポイントの共通ヘッダ。本人確認は LIFF の idToken で行う。 */
@@ -204,7 +206,7 @@ function toActionError(status: number, code?: string): EventActionResult {
     if (code === 'application_closed') {
       return { success: false, applicationClosed: true, error: CLOSED_MESSAGE }
     }
-    return { success: false, error: 'このイベントは満席です' }
+    return { success: false, eventFull: true, error: 'このイベントは満席です' }
   }
   if (status === 403) {
     return { success: false, friendRequired: true, error: 'お申し込みには友だち追加が必要です' }
@@ -460,14 +462,27 @@ export async function initEventBooking(options: {
    * **締切済みの状態でイベント詳細ごと描き直す**（有料は決済・当日現金の2経路があるので、
    * 押されたボタンだけ止めても、もう一方から申し込めてしまう）。
    *
-   * 現金の申込画面から呼ばれたときも詳細に戻す。その画面に留まると
-   * 締切後もそこから何度も申し込みを試せてしまう。
-   *
    * @returns 締切だったら true（呼び出し側はボタン復帰処理を行わない）
    */
   const renderClosedDetail = (event: EventPublic, result: EventActionResult): boolean => {
     if (!result.applicationClosed) return false
     renderDetail({ ...event, application_closed: true })
+    return true
+  }
+
+  /**
+   * 現金の申込画面から申し込めなかったときに、詳細へ戻すかを判断する。
+   *
+   * ⚠️ **締切だけでなく満席も戻す。** 片方しか戻さないと、その状態のときだけ
+   *    この画面に留まってボタンが復活し、何度も申し込みを試せてしまう
+   *    （詳細画面と違い、ここには「もう申し込めない」と分かる情報が無い）。
+   *
+   * @returns 戻したら true（呼び出し側はボタン復帰処理を行わない）
+   */
+  const leaveCashFormIfBlocked = (event: EventPublic, result: EventActionResult): boolean => {
+    if (renderClosedDetail(event, result)) return true
+    if (!result.eventFull) return false
+    renderDetail({ ...event, available: false, remaining: 0 })
     return true
   }
 
@@ -523,17 +538,24 @@ export async function initEventBooking(options: {
       })
 
       if (result.success) {
+        // 「必要ですか？」と聞いた以上、受け取ったことを返す。何も言わないと
+        // 伝わったのか分からず、当日スタッフに聞きに来ることになる。
+        // ⚠️ 「いいえ」の人には出さない（頼んでいない話をされることになる）
+        const receiptNote = requested
+          ? '<p>領収書はお支払い後、こちらの LINE でお送りします。</p>'
+          : ''
         app.innerHTML = `
           <div class="done-card panel">
             <div class="check-icon">✓</div>
             <h2>申込が完了しました！</h2>
             <p>当日スタッフにお支払いください。</p>
+            ${receiptNote}
           </div>
         `
         return
       }
-      // 締切・満席はこの画面に留めず、詳細を締切状態で描き直す
-      if (renderClosedDetail(event, result)) return
+      // 締切・満席はこの画面に留めず、詳細をその状態で描き直す
+      if (leaveCashFormIfBlocked(event, result)) return
       if (handleActionFailure(result)) return
       submitBtn.disabled = false
       submitBtn.textContent = 'この内容で申し込む'

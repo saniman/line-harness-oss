@@ -170,9 +170,14 @@ export default function EventDetailClient({ eventId }: { eventId: number }) {
     //    押し間違い防止として一度も機能しない。
     const resolved = resolveBookingAmount(b, event?.price ?? null)
     const amount = resolved != null ? `¥${resolved.toLocaleString()}` : '（金額未設定）'
+    // ⚠️ 「領収書不要」と答えた申込に「発行されます」と出すと、押した直後の
+    //    「発行していません」と矛盾する。押す**前に**分かるのが #80 の目的
+    const receiptLine = b.receipt_requested === 0
+      ? 'この方は領収書が不要とのことなので、発行されません。'
+      : '記録すると領収書が発行されます。'
     if (!confirm(
       `${participantDisplayName(b)} さんから ${amount} を受け取りましたか？\n\n` +
-      `記録すると領収書が発行されます。取り消しはできません。`
+      `${receiptLine}取り消しはできません。`
     )) return
 
     setCashBusyId(b.id)

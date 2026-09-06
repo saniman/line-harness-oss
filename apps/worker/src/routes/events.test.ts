@@ -1155,6 +1155,28 @@ describe('POST /api/events/:id/join の領収書の要否（#80）', () => {
     expect(eventsService.createEventBooking).not.toHaveBeenCalled()
   })
 
+  it('【重要】宛名の検証より本人確認を先に行う', async () => {
+    // 入力の不備を認証より先に返すと、未認証の相手に 401 ではなく 400 を返してしまう
+    mockVerifyCaller.mockResolvedValue({ ok: false, reason: 'invalid' })
+
+    const res = await join({ name: '山田太郎', paymentMethod: 'cash', receiptRequested: true })
+
+    expect(res.status).toBe(401)
+  })
+
+  it('【重要】締切のイベントには 409 を返す（400 で上書きしない）', async () => {
+    // 400 を先に返すと、クライアントの締切ハンドリング（画面を締切状態に描き直す）を
+    // 迂回してしまい、締切後も押し続けられる
+    vi.mocked(eventsService.getEventById).mockResolvedValue({
+      ...EVENT1, participant_count: 2, start_at: new Date(Date.now() + 60_000).toISOString(),
+    })
+
+    const res = await join({ name: '山田太郎', paymentMethod: 'cash', receiptRequested: true })
+
+    expect(res.status).toBe(409)
+    expect((await res.json() as { error: string }).error).toBe('application_closed')
+  })
+
   it('【重要】「不要」なら宛名が来ていても保存しない', async () => {
     // 不要と答えたのに宛名が残っていると、後から発行されたときに
     // 「頼んでいない領収書」が届く

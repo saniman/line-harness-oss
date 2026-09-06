@@ -835,6 +835,61 @@ describe('当日現金フローの画面遷移（#80）', () => {
     expect(document.activeElement).toBe(input)
   })
 
+  it('【重要】満席409でも詳細画面に戻す（この画面で再試行させない）', async () => {
+    // 締切だけ戻して満席を戻さないと、満席のときだけこの画面に留まり、
+    // ボタンが復活して何度も試せてしまう
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(listOk(EVENT_PAID))
+      .mockResolvedValue({
+        ok: false, status: 409, json: async () => ({ success: false, error: 'Event is full' }),
+      })
+    await openCashForm(fetchMock)
+
+    ;(document.getElementById('receipt-no') as HTMLInputElement).click()
+    ;(document.getElementById('cash-submit-btn') as HTMLButtonElement).click()
+
+    await vi.waitFor(() => {
+      expect(document.getElementById('cash-submit-btn')).toBeNull()
+    })
+    expect((document.getElementById('cash-join-btn') as HTMLButtonElement).disabled).toBe(true)
+    expect((document.getElementById('checkout-btn') as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('【重要】「はい」で申し込んだら完了画面で領収書に触れる', async () => {
+    // 「必要ですか？」と聞いておいて完了画面が何も言わないと、
+    // 伝わったのか分からず当日スタッフに聞きに来ることになる
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(listOk(EVENT_PAID))
+      .mockResolvedValue({ ok: true, status: 200, json: async () => ({ success: true }) })
+    await openCashForm(fetchMock)
+
+    ;(document.getElementById('receipt-yes') as HTMLInputElement).click()
+    const input = document.getElementById('receipt-name-input') as HTMLInputElement
+    input.value = '株式会社サンプル'
+    input.dispatchEvent(new Event('input'))
+    ;(document.getElementById('cash-submit-btn') as HTMLButtonElement).click()
+
+    await vi.waitFor(() => {
+      expect(document.getElementById('app')?.innerHTML).toContain('申込が完了しました')
+    })
+    expect(document.getElementById('app')?.innerHTML).toContain('領収書')
+  })
+
+  it('「いいえ」なら完了画面で領収書に触れない', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(listOk(EVENT_PAID))
+      .mockResolvedValue({ ok: true, status: 200, json: async () => ({ success: true }) })
+    await openCashForm(fetchMock)
+
+    ;(document.getElementById('receipt-no') as HTMLInputElement).click()
+    ;(document.getElementById('cash-submit-btn') as HTMLButtonElement).click()
+
+    await vi.waitFor(() => {
+      expect(document.getElementById('app')?.innerHTML).toContain('申込が完了しました')
+    })
+    expect(document.getElementById('app')?.innerHTML).not.toContain('領収書')
+  })
+
   it('戻るボタンでイベント詳細に返る', async () => {
     const fetchMock = vi.fn().mockResolvedValue(listOk(EVENT_PAID))
     await openCashForm(fetchMock)
