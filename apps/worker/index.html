@@ -569,6 +569,15 @@
     }
 
     /* 当日現金の申込画面（#80）。イベント詳細から宛名欄を切り出した先 */
+
+    /* ⚠️ .panel は背景・角丸・影だけで**余白を持たない**。
+       付け忘れると中身がカードの端に張り付く（実機で発覚）。
+       値は .event-detail と揃える。行き来したときに文字の位置がずれないように */
+    .cash-form {
+      border-radius: 16px;
+      padding: 24px 20px;
+      animation: fadeIn 0.3s ease;
+    }
     .cash-form-title {
       font-size: 17px;
       font-weight: 700;
