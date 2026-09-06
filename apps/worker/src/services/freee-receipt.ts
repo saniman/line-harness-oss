@@ -366,19 +366,44 @@ export async function issueReceiptForBooking(
 
   // ⚠️ receipt_url をログに出さない。URL を知っていれば誰でも開ける可能性があるため、
   //    ログに残すのは booking_id だけにする。
-  const saved = await db
-    .prepare(
-      `UPDATE event_bookings
-          SET receipt_url = ?,
-              receipt_number = ?,
-              receipt_issued_at = datetime('now'),
-              updated_at = datetime('now')
-        WHERE id = ?
-          AND receipt_url IS NULL
-      RETURNING receipt_url`,
-    )
-    .bind(result.receiptUrl, result.receiptNumber, bookingId)
-    .first<{ receipt_url: string }>();
+  // ⚠️ 運営者が指示した宛名（#82）は **DB にも残す**。残さないと receipt_name が NULL のままで、
+  //    参加者への LINE も管理画面の確認欄も `resolveReceiptName` のフォールバック
+  //    （＝ LINE の表示名）を出し、**PDF と食い違う**。
+  //    宛名を書いておくのは「取り違えに本人が気づけるようにする」ため（#47 の第3.5層）なので、
+  //    ここがずれると、誤配でないのに誤配のサインを出すことになる。
+  //
+  //    保存するのは freee へ送ったのと**同じ正規化済みの値**（payeeName）。
+  //    画面に出す値と PDF の値がずれては確認する意味が無い。
+  const overridePayee = options.payeeName ? payeeName : null;
+  const saved = overridePayee
+    ? await db
+      .prepare(
+        `UPDATE event_bookings
+            SET receipt_url = ?,
+                receipt_number = ?,
+                receipt_name = ?,
+                receipt_issued_at = datetime('now'),
+                updated_at = datetime('now')
+          WHERE id = ?
+            AND receipt_url IS NULL
+        RETURNING receipt_url`,
+      )
+      .bind(result.receiptUrl, result.receiptNumber, overridePayee, bookingId)
+      .first<{ receipt_url: string }>()
+    // 通常の発行は receipt_name を持っているので触らない
+    : await db
+      .prepare(
+        `UPDATE event_bookings
+            SET receipt_url = ?,
+                receipt_number = ?,
+                receipt_issued_at = datetime('now'),
+                updated_at = datetime('now')
+          WHERE id = ?
+            AND receipt_url IS NULL
+        RETURNING receipt_url`,
+      )
+      .bind(result.receiptUrl, result.receiptNumber, bookingId)
+      .first<{ receipt_url: string }>();
 
   // 発行権を持っていたので通常ここは通らない。通ったなら claim の期限切れ等で
   // 2本が同時に走った可能性があり、**freee 上に迷子の領収書が1枚ある**。
