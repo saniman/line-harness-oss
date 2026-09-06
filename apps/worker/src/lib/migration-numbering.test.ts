@@ -24,6 +24,9 @@ const SCRIPT = join(
   '../../../../packages/db/scripts/next-migration-number.mjs',
 );
 
+/** このリポジトリのルート（SCRIPT から4階層上が packages/db/scripts なので、その2つ上） */
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../../../..');
+
 interface Summary {
   count: number;
   max: number | null;
@@ -38,6 +41,8 @@ interface Summary {
     max: number | null;
     /** 番号 → その番号を持つブランチ名（「誰が使っているか」を人が判断するため） */
     holders: Record<string, string[]>;
+    /** 読めなかったブランチ（浅いクローン・壊れた ref。集計に入っていない） */
+    failed?: string[];
     reason?: string;
   };
 }
@@ -265,11 +270,15 @@ describe('next-migration-number CLI', () => {
   describe('実際の migrations ディレクトリ', () => {
     // 番号をハードコードすると migration 追加のたびに壊れるので、
     // 「次番号 = 最大 + 1」という不変条件だけを検証する。
-    it('既定のディレクトリを読み、次番号が最大+1になる', () => {
+    it('既定のディレクトリを読み、次番号が「ローカルとリモートの最大 + 1」になる', () => {
+      // ⚠️ max は**ローカルだけ**の最大（既存の JSON 契約）。リモートの別ブランチが
+      //    大きい番号を持っていれば next はそれを上回る。ここを max + 1 で固定すると、
+      //    #69 が本来の仕事をした瞬間に CI が赤くなる
       const r = run();
       expect(r.count).toBeGreaterThan(0);
       expect(r.max).not.toBeNull();
-      expect(r.next).toBe((r.max as number) + 1);
+      const highest = Math.max(r.max as number, r.remote?.max ?? 0);
+      expect(r.next).toBe(highest + 1);
     });
 
     it('既知の重複（009 / 018 / 043）が衝突ではなく重複として報告される', () => {
@@ -474,6 +483,122 @@ describe('リモートブランチの採番も見る（#69）', () => {
 
     expect(out).toContain('825');
     expect(out).toContain('origin/feature/66');
+  });
+
+  // ⚠️ ここが #69 の本丸。`git ls-tree <branch> <path>` の path は
+  //    **リポジトリのルートではなく実行時のカレントディレクトリからの相対**として
+  //    解釈される。ルート以外から実行するとリモートが 0 件になり、しかも
+  //    checked=true のまま「衝突なし」に見える（= #69 の事故が再現する）。
+  //    このリポジトリの正規の呼び出し方は
+  //      node "$(git rev-parse --show-toplevel)/packages/db/scripts/next-migration-number.mjs"
+  //    で **cwd は移動しない**（作業は apps/worker 起点）ので、これは例外ケースではなく既定の経路。
+  it('【重要】リポジトリのルート以外から実行してもリモートを検出する', () => {
+    const repo = make(['823_c.sql'], { 'feature/66': ['824_receipt_name.sql'] });
+
+    const out = execFileSync(
+      'node',
+      [SCRIPT, '--json', '--dir', join(repo, 'packages/db/migrations')],
+      { cwd: join(repo, 'packages/db'), encoding: 'utf8' },
+    );
+    const res = JSON.parse(out) as Summary;
+
+    expect(res.remote?.checked).toBe(true);
+    expect(res.remote?.holders['824']).toContain('origin/feature/66');
+    expect(res.next).toBe(825);
+  });
+
+  it('【重要】無関係なディレクトリを --dir で指したらリモートは混ぜない', () => {
+    // リモート側は packages/db/migrations 決め打ちで見ている。ローカルが別の
+    // ディレクトリなら、その番号はこのリポジトリの採番とは無関係なので
+    // 混ぜてはいけない（混ぜると「次の採番」が意味不明な値になる）
+    const dir = fixture(['001_a.sql', '002_b.sql']);
+    const out = execFileSync('node', [SCRIPT, '--json', '--dir', dir], {
+      cwd: REPO_ROOT, encoding: 'utf8',
+    });
+    const res = JSON.parse(out) as Summary;
+
+    expect(res.next).toBe(3);
+    expect(res.remote?.checked).toBe(false);
+    expect(res.remote?.reason).toBeTruthy();
+  });
+
+  it('【重要】別のリポジトリの中から絶対パスで叩かれてもリモートを混ぜない', () => {
+    // cwd の git リポジトリと、--dir が指すリポジトリが別物のとき、
+    // cwd 側のブランチを読んで採番すると無関係な番号に押し上げられる
+    const other = make(['900_unrelated.sql'], { 'feature/x': ['950_unrelated.sql'] });
+    const dir = fixture(['001_a.sql']);
+
+    const out = execFileSync('node', [SCRIPT, '--json', '--dir', dir], {
+      cwd: other, encoding: 'utf8',
+    });
+    const res = JSON.parse(out) as Summary;
+
+    expect(res.next).toBe(2);
+    expect(res.remote?.checked).toBe(false);
+  });
+
+  it('origin/HEAD は実体のあるブランチではないので出さない', () => {
+    // origin/main への symref。残すと「いもしないレーン」が使用中に見える
+    const repo = make(['823_c.sql'], { main: ['824_x.sql'] });
+    execFileSync('git', ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'], {
+      cwd: repo, stdio: 'pipe',
+    });
+
+    const res = runInRepo(repo);
+
+    expect(res.remote?.holders['824']).toEqual(['origin/main']);
+  });
+
+  it('【重要】リモート追跡ブランチが1本も無ければ「確認できなかった」にする', () => {
+    // 「見たけど 0 件」と同じ扱いにすると出力に何も出ず、確認済みに見えてしまう。
+    // remote が origin という名前でない・新しい worktree・浅いチェックアウトで起きる
+    const repo = make(['823_c.sql']);
+
+    const res = runInRepo(repo);
+
+    expect(res.remote?.checked).toBe(false);
+    expect(res.remote?.reason).toBeTruthy();
+    expect(res.next).toBe(824);
+  });
+
+  it('【重要】読めなかったブランチは握りつぶさず報告する', () => {
+    // 「migrations が無い」と「読めなかった」を同じ扱いにすると、
+    // 827 を持つブランチが黙って消えたまま checked: true が返る
+    const repo = make(['823_c.sql'], { 'feature/66': ['824_x.sql'] });
+    // 実体の無いオブジェクトを指す壊れた ref を作る（浅いクローン等の再現）
+    writeFileSync(join(repo, '.git/refs/remotes/origin/broken'), `${'0'.repeat(39)}1\n`);
+
+    const res = runInRepo(repo);
+
+    expect(res.remote?.failed).toContain('origin/broken');
+    // 読めた分の集計は続ける（1本壊れただけで採番が止まると日常の邪魔になる）
+    expect(res.next).toBe(825);
+  });
+
+  it('読めなかったブランチは人間向け出力にも警告として出る', () => {
+    const repo = make(['823_c.sql'], { 'feature/66': ['824_x.sql'] });
+    writeFileSync(join(repo, '.git/refs/remotes/origin/broken'), `${'0'.repeat(39)}1\n`);
+
+    const out = execFileSync('node', [SCRIPT, '--dir', 'packages/db/migrations'], {
+      cwd: repo, encoding: 'utf8',
+    });
+
+    expect(out).toContain('origin/broken');
+    expect(out).toContain('衝突');
+  });
+
+  it('【重要】ブランチ数が同時実行の上限を超えても取りこぼさない', () => {
+    // git の同時実行数に上限をつけた（EAGAIN/EMFILE 対策）。手書きの並列プールなので、
+    // 上限を超える本数で**1本も落とさない**ことを確かめる。ここを取りこぼすと
+    // 「見たのに見つからなかった」= #69 がそのまま再発する
+    const remote: Record<string, string[]> = {};
+    for (let i = 0; i < 12; i++) remote[`feature/${i}`] = [`${840 + i}_x.sql`];
+    const repo = make(['823_c.sql'], remote);
+
+    const res = runInRepo(repo);
+
+    expect(Object.keys(res.remote?.holders ?? {})).toHaveLength(12);
+    expect(res.next).toBe(852);
   });
 
   it('【重要】既存の JSON 契約を壊さない', () => {

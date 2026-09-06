@@ -34,7 +34,7 @@
  *    「リモートは確認できなかった」と明示する。
  */
 import { readdirSync, realpathSync } from 'node:fs';
-import { execFileSync, execFile } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
@@ -132,6 +132,42 @@ export function summarizeMigrationsDir(dir = DEFAULT_MIGRATIONS_DIR) {
 const execFileAsync = promisify(execFile);
 
 /**
+ * 同時に走らせる `git` の本数。
+ *
+ * 上限なしで `Promise.all` すると、ブランチ数だけ git プロセスが一斉に立ち上がる
+ * （34 ブランチで CPU 439%）。ブランチが増えると EAGAIN / EMFILE で
+ * **一部のブランチだけ静かに読めなくなる**——それが起きるのは並列レーンが
+ * 活発なとき、つまり一番衝突しやすいときなので、必ず絞る。
+ */
+const GIT_CONCURRENCY = 8;
+
+/** 上限つきで並列実行する（Promise.all の代わり。順序は入力どおり保つ） */
+async function mapWithLimit(items, limit, fn) {
+  const results = new Array(items.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const i = cursor++;
+      results[i] = await fn(items[i]);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+/** リモート側で migrations が置かれているパス（リポジトリのルートからの相対） */
+const MIGRATIONS_PATH_IN_REPO = 'packages/db/migrations';
+
+/** 比較用にパスを realpath へそろえる（/tmp → /private/tmp などの差を吸収する） */
+function canonical(path) {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+/**
  * リモート追跡ブランチが使っている番号を集める。
  *
  * ⚠️ **失敗しても例外を投げない。** git が無い・リポジトリでない等は、
@@ -144,15 +180,55 @@ const execFileAsync = promisify(execFile);
  *
  * ⚠️ ブランチごとの `ls-tree` は**並列で回す**。直列だと 33 ブランチで 2.2 秒かかり、
  *    採番のたびに待たされて使われなくなる（並列なら 0.5 秒程度）。
+ *
+ * ⚠️ `ls-tree` には **`--full-tree` が必須**。付けないとパス指定が
+ *    「リポジトリのルート」ではなく「実行時のカレントディレクトリ」からの相対に
+ *    解釈され、ルート以外から実行すると **0 件になる**。しかも失敗ではないので
+ *    checked: true のまま「衝突なし」に見えてしまい、#69 の事故がそのまま再現する。
+ *    このリポジトリの正規の呼び出し方（`node "$(git rev-parse --show-toplevel)/…"`）は
+ *    cwd を移動しないので、これは例外ケースではなく既定の経路。
+ *
+ * @param cwd git を実行する場所
+ * @param dir ローカル側で集計している migrations ディレクトリ。
+ *            **cwd のリポジトリの migrations と一致するときだけ**リモートを見る
+ *            （リモート側は `packages/db/migrations` 決め打ちなので、
+ *            別ディレクトリの番号と混ぜると「次の採番」が無意味な値になる）
  */
-export async function collectRemoteMigrationNumbers(cwd = process.cwd()) {
+export async function collectRemoteMigrationNumbers(cwd = process.cwd(), dir = DEFAULT_MIGRATIONS_DIR) {
   const git = (args) =>
     execFileAsync('git', args, { cwd, encoding: 'utf8', timeout: 10_000 });
+
+  let root;
+  try {
+    const { stdout } = await git(['rev-parse', '--show-toplevel']);
+    root = stdout.trim();
+  } catch (err) {
+    return {
+      checked: false,
+      max: null,
+      holders: {},
+      reason: `git リポジトリとして認識できませんでした（${err.code ?? err.message}）`,
+    };
+  }
+
+  // 集計対象がこのリポジトリの migrations でなければ、リモートの番号は無関係。
+  // （別リポジトリの中から絶対パスで叩かれた場合もここで弾かれる）
+  const expected = canonical(resolve(root, MIGRATIONS_PATH_IN_REPO));
+  if (canonical(resolve(cwd, dir)) !== expected) {
+    return {
+      checked: false,
+      max: null,
+      holders: {},
+      reason: `集計対象が ${expected} ではないため、リモートは見ていません`,
+    };
+  }
 
   let branches;
   try {
     const { stdout } = await git(['for-each-ref', '--format=%(refname:short)', 'refs/remotes/origin']);
-    branches = stdout.split('\n').filter(Boolean);
+    // origin/HEAD は origin/main への symref。実体のあるブランチではないので除く
+    // （残すと「826 … origin/HEAD, origin/main」と出て、いもしないレーンが増える）
+    branches = stdout.split('\n').filter((b) => b && b !== 'origin/HEAD');
   } catch (err) {
     return {
       checked: false,
@@ -162,22 +238,36 @@ export async function collectRemoteMigrationNumbers(cwd = process.cwd()) {
     };
   }
 
-  if (branches.length === 0) return { checked: true, max: null, holders: {} };
+  // 「見たけど 0 件」と「そもそも見ていない」は区別する。checked: true にすると
+  // 出力に何も出ず、確認済みのように読めてしまう（remote が origin という名前でない、
+  // 新しい worktree でリモート追跡 ref がまだ無い、CI の浅いチェックアウト等で起きる）
+  if (branches.length === 0) {
+    return {
+      checked: false,
+      max: null,
+      holders: {},
+      reason: 'リモート追跡ブランチ（refs/remotes/origin）が1本もありません',
+    };
+  }
 
-  const listings = await Promise.all(
-    branches.map((b) =>
-      git(['ls-tree', '--name-only', b, 'packages/db/migrations/'])
-        .then((r) => [b, r.stdout])
-        // migrations が無いブランチ・壊れた ref はスキップして他を続ける
-        .catch(() => [b, '']),
-    ),
+  // ⚠️ 「migrations を持たないブランチ」（exit 0・空出力）と「読めなかったブランチ」
+  //    （浅いクローン・壊れた ref・タイムアウト）を**区別する**。ひとまとめに
+  //    握りつぶすと、827 を持つブランチが黙って消えたまま checked: true が返り、
+  //    #69 の事故が「確認済み」の顔をして再発する
+  const listings = await mapWithLimit(branches, GIT_CONCURRENCY, (b) =>
+    // --full-tree でカレントディレクトリに依存させない（上の注意を参照）
+    git(['ls-tree', '--full-tree', '--name-only', b, `${MIGRATIONS_PATH_IN_REPO}/`])
+      .then((r) => ({ branch: b, out: r.stdout, ok: true }))
+      .catch(() => ({ branch: b, out: '', ok: false })),
   );
+
+  const failed = listings.filter((l) => !l.ok).map((l) => l.branch).sort();
 
   /** @type {Map<number, Set<string>>} */
   const holders = new Map();
   let max = null;
 
-  for (const [branch, out] of listings) {
+  for (const { branch, out } of listings) {
     for (const path of out.split('\n')) {
       const name = path.split('/').pop();
       if (!name) continue;
@@ -195,7 +285,7 @@ export async function collectRemoteMigrationNumbers(cwd = process.cwd()) {
     holdersOut[formatMigrationPrefix(n)] = [...set].sort();
   }
 
-  return { checked: true, max, holders: holdersOut };
+  return { checked: true, max, holders: holdersOut, failed };
 }
 
 /**
@@ -207,7 +297,8 @@ export async function collectRemoteMigrationNumbers(cwd = process.cwd()) {
  *    次番号（next / nextPrefix）だけがリモートを織り込む。
  */
 export async function summarizeWithRemote(dir, { skipRemote = false, cwd } = {}) {
-  const local = summarizeMigrationsDir(dir);
+  const targetDir = dir ?? DEFAULT_MIGRATIONS_DIR;
+  const local = summarizeMigrationsDir(targetDir);
   if (skipRemote) {
     return {
       ...local,
@@ -215,7 +306,7 @@ export async function summarizeWithRemote(dir, { skipRemote = false, cwd } = {})
     };
   }
 
-  const remote = await collectRemoteMigrationNumbers(cwd);
+  const remote = await collectRemoteMigrationNumbers(cwd, targetDir);
   if (!remote.checked || remote.max === null) return { ...local, remote };
 
   const max = local.max === null ? remote.max : Math.max(local.max, remote.max);
@@ -300,12 +391,23 @@ async function main(argv) {
   const remote = summary.remote;
   if (remote?.checked) {
     // 次番号を押し上げたのがリモートなら、誰が使っているかを見せる。
-    // 「相手が push 済みなら自分が譲る」を人が判断できるようにするため
+    // 「相手が push 済みなら自分が譲る」を人が判断できるようにするため。
+    // ⚠️ ローカルが空（max === null）のときに 0 を下限にすると全番号を並べてしまうので、
+    //    その場合はリモートの最大だけに絞る
+    const floor = summary.max ?? remote.max ?? 0;
     const used = Object.entries(remote.holders)
-      .filter(([n]) => Number(n) >= (summary.max ?? 0))
+      .filter(([n]) => Number(n) >= floor)
       .map(([n, brs]) => `  ${n} … ${brs.join(', ')}`);
     if (used.length > 0) {
       lines.push('', 'リモートで採番済み（ローカルに無い番号を含む）:', ...used);
+    }
+    // 読めなかったブランチは黙って落とさない。そこに次の番号があるかもしれない
+    if (remote.failed?.length > 0) {
+      lines.push(
+        '',
+        `⚠️ 読めなかったリモートブランチ: ${remote.failed.join(', ')}`,
+        '  これらのブランチが使っている番号は集計に入っていない（衝突の可能性あり）。',
+      );
     }
   } else {
     lines.push(
