@@ -18,7 +18,14 @@
 import { initBooking } from './booking.js';
 import { initForm } from './form.js';
 import { initEventBooking } from './event-booking.js';
-import { isIdTokenExpired, recoverLiffSession, markLiffSessionHealthy } from './liff-token.js';
+import {
+  isIdTokenExpired,
+  recoverLiffSession,
+  markLiffSessionHealthy,
+  buildLiffUrl,
+  shouldReopenInLiff,
+  buildAuthErrorMessage,
+} from './liff-token.js';
 import { apiUrl } from './api-url.js';
 import { buildFriendAddHtml } from './friend-add.js';
 import { safeRedirectTarget } from '../lib/safe-redirect.js';
@@ -34,6 +41,9 @@ declare const liff: {
   getLanguage(): string;
   getFriendship(): Promise<{ friendFlag: boolean }>;
   isInClient(): boolean;
+  /** 診断用（#84）。SDK の版によっては未実装なので optional にする */
+  getOS?(): string;
+  getLineVersion?(): string | null;
   closeWindow(): void;
   openWindow(params: { url: string; external?: boolean }): void;
 };
@@ -255,6 +265,57 @@ function showError(message: string) {
   `;
 }
 
+/**
+ * ID トークンが取れなかったときの共通処理（#84）。
+ *
+ * ここに来る一番多い原因は、**LIFF の URL ではなく Pages のエンドポイント URL を
+ * 直接開いている**こと。LINE はそれを LIFF ではなくアプリ内ブラウザで表示するため、
+ * `liff.init()` も `liff.login()` も通るのに `getIDToken()` だけが null になる。
+ *
+ * 3フロー（サロン予約・モバイルオーダー・イベント）で同じ処理をしていたので1箇所にまとめた。
+ */
+function handleMissingIdToken(): void {
+  const isInClient = liff.isInClient();
+
+  // ⚠️ なぜ取れなかったのかを後から辿れるようにする。「時々起きる」と報告されても、
+  //    これが無いと推測でしか直せない。
+  //    ⚠️ ID トークン・表示名・ユーザーIDは**絶対に出さない**（資格情報 / PII）
+  console.error('[LIFF] ID トークンを取得できませんでした:', {
+    isInClient,
+    isLoggedIn: liff.isLoggedIn(),
+    os: liff.getOS?.() ?? 'unknown',
+    lineVersion: liff.getLineVersion?.() ?? 'unknown',
+    // LIFF 経由で起動したか（liff.state が付くのは LIFF からの遷移）
+    hasLiffState: new URLSearchParams(window.location.search).has('liff.state'),
+    page: getPage(),
+  });
+
+  const liffUrl = buildLiffUrl(LIFF_ID, window.location.search);
+
+  // LIFF の外なら、正しい入口へ自動で送り直す（1回だけ）
+  if (liffUrl && shouldReopenInLiff({ isInClient, storage: sessionStorageOrNull })) {
+    window.location.href = liffUrl;
+    return;
+  }
+
+  // 送り直しても駄目だった / そもそも LIFF の中だった場合の案内。
+  // ⚠️ 「LINE アプリ内で再度開いてください」は出さない。この人はもう LINE の中にいる
+  const message = buildAuthErrorMessage(isInClient);
+  const container = document.getElementById('app');
+  if (!container) return;
+  // 外部ブラウザのときだけ、その場で押せる導線を出す（文言だけでは詰む）
+  const button = !isInClient && liffUrl
+    ? `<p><a class="btn-pink liff-reopen-btn" href="${escapeHtml(liffUrl)}">LINE で開き直す</a></p>`
+    : '';
+  container.innerHTML = `
+    <div class="card">
+      <h2>エラー</h2>
+      <p class="error">${escapeHtml(message)}</p>
+      ${button}
+    </div>
+  `;
+}
+
 // ─── Core Flow ──────────────────────────────────────────
 
 async function linkAndAddFlow() {
@@ -378,7 +439,7 @@ async function initSalonBooking(): Promise<void> {
     liff.getFriendship(),
   ]);
   if (!idToken) {
-    showError('LINE 認証情報の取得に失敗しました。LINE アプリ内で再度開いてください。');
+    handleMissingIdToken();
     return;
   }
   if (!ensureFreshSession(idToken, showError)) return;
@@ -452,7 +513,7 @@ async function initOrder(): Promise<void> {
     liff.getFriendship(),
   ]);
   if (!idToken) {
-    showError('LINE 認証情報の取得に失敗しました。LINE アプリ内で再度開いてください。');
+    handleMissingIdToken();
     return;
   }
   if (!ensureFreshSession(idToken, showError)) return;
@@ -555,7 +616,7 @@ async function initEventFlow(): Promise<void> {
 
   // 以降の申込フローはサーバーが idToken で本人確認するため idToken が必須。
   if (!idToken || !profile) {
-    showError('LINE 認証情報の取得に失敗しました。LINE アプリ内で再度開いてください。');
+    handleMissingIdToken();
     return;
   }
 

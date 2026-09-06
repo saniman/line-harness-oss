@@ -436,6 +436,13 @@
       transform: scale(0.98);
       box-shadow: 0 2px 8px rgba(255, 65, 118, 0.3);
     }
+    /* <a> に .btn-pink を当てるとき用（#84 の「LINE で開き直す」）。
+       ボタンと違ってリンクは下線・文字色・中央揃えが効かないので補う */
+    a.btn-pink {
+      text-align: center;
+      text-decoration: none;
+      box-sizing: border-box;
+    }
     .btn-pink:disabled {
       background: #ddd;
       color: #aaa;

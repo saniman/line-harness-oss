@@ -5,6 +5,9 @@ import {
   recoverLiffSession,
   markLiffSessionHealthy,
   RECOVERY_STORAGE_KEY,
+  buildLiffUrl,
+  shouldReopenInLiff,
+  buildAuthErrorMessage,
 } from './liff-token.js'
 
 /** exp（秒）だけを持つダミーの ID トークン（JWT 形式）を作る */
@@ -139,5 +142,94 @@ describe('LIFF セッションの復帰', () => {
     expect(storage.getItem(RECOVERY_STORAGE_KEY)).toBe('0')
     expect(recoverLiffSession(deps)).toBe(true)
     expect(reload).toHaveBeenCalledTimes(2)
+  })
+})
+
+// ─── #84: Pages の URL を直接開いたときの行き止まり ───────────
+
+describe('buildLiffUrl（LIFF として開き直す URL）', () => {
+  it('クエリをそのまま引き継ぐ', () => {
+    expect(buildLiffUrl('1661159603-5qlDj5wV', '?page=event'))
+      .toBe('https://liff.line.me/1661159603-5qlDj5wV?page=event')
+  })
+
+  it('クエリが無ければ付けない', () => {
+    expect(buildLiffUrl('1661159603-5qlDj5wV', ''))
+      .toBe('https://liff.line.me/1661159603-5qlDj5wV')
+  })
+
+  it('複数のパラメータも保つ（どのイベントを見ていたかを失わない）', () => {
+    const url = buildLiffUrl('1661159603-5qlDj5wV', '?page=event&eventId=12')
+    expect(url).toContain('page=event')
+    expect(url).toContain('eventId=12')
+  })
+
+  it('【重要】LIFF ID の形が違えば組み立てない', () => {
+    // liffId は ?liffId= から読むためユーザーが自由に入れられる。
+    // 素通しすると、こちらが作ったリンクで別の場所へ送ることになる
+    expect(buildLiffUrl('https://evil.example.com', '?page=event')).toBeNull()
+    expect(buildLiffUrl('../../evil', '')).toBeNull()
+    expect(buildLiffUrl('//evil.example.com', '')).toBeNull()
+    expect(buildLiffUrl('', '?page=event')).toBeNull()
+  })
+})
+
+describe('shouldReopenInLiff（LIFF へ開き直すか）', () => {
+  const makeStorage = (init: Record<string, string> = {}) => {
+    const m = new Map(Object.entries(init))
+    return {
+      getItem: (k: string) => m.get(k) ?? null,
+      setItem: (k: string, v: string) => { m.set(k, v) },
+      dump: () => Object.fromEntries(m),
+    }
+  }
+
+  it('LIFF の外なら開き直す', () => {
+    expect(shouldReopenInLiff({ isInClient: false, storage: makeStorage() })).toBe(true)
+  })
+
+  it('【重要】すでに LIFF の中なら開き直さない', () => {
+    // 同じ場所へ送り直すだけで何も変わらない。ループになる
+    expect(shouldReopenInLiff({ isInClient: true, storage: makeStorage() })).toBe(false)
+  })
+
+  it('【重要】一度試したら二度目はしない（リダイレクトの無限ループ防止）', () => {
+    const storage = makeStorage()
+
+    expect(shouldReopenInLiff({ isInClient: false, storage })).toBe(true)
+    expect(shouldReopenInLiff({ isInClient: false, storage })).toBe(false)
+  })
+
+  it('【重要】sessionStorage が使えなければ開き直さない', () => {
+    // 回数を数えられない＝ループを止められない。行き止まりのほうがまだマシ
+    expect(shouldReopenInLiff({ isInClient: false, storage: null })).toBe(false)
+  })
+
+  it('セッション復帰の回数とは別に数える', () => {
+    // 期限切れ復帰（RECOVERY_STORAGE_KEY）と混ぜると、片方が他方を消してしまう
+    const storage = makeStorage({ [RECOVERY_STORAGE_KEY]: '1' })
+
+    expect(shouldReopenInLiff({ isInClient: false, storage })).toBe(true)
+    expect(storage.dump()[RECOVERY_STORAGE_KEY]).toBe('1')
+  })
+})
+
+describe('buildAuthErrorMessage（認証できなかったときの案内）', () => {
+  it('【重要】LINE の中にいる人に「LINE アプリ内で開け」と言わない', () => {
+    // すでにアプリの中にいるので、何をすればいいのか分からない案内になる（実際に混乱した）
+    const msg = buildAuthErrorMessage(true)
+    expect(msg).not.toContain('LINE アプリ内で再度開いて')
+    expect(msg).toContain('閉じて')
+  })
+
+  it('LIFF の外なら、開き直す導線に触れる', () => {
+    const msg = buildAuthErrorMessage(false)
+    expect(msg).toContain('開き直す')
+  })
+
+  it('どちらの場合もその場で実行できる操作だけを書く', () => {
+    for (const inClient of [true, false]) {
+      expect(buildAuthErrorMessage(inClient)).not.toContain('LINE アプリ内で再度開いて')
+    }
   })
 })
