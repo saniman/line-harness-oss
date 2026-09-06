@@ -549,6 +549,21 @@ describe('リモートブランチの採番も見る（#69）', () => {
     expect(res.remote?.holders['824']).toEqual(['origin/main']);
   });
 
+  it('【重要】symref は名前ではなく symref かどうかで落とす', () => {
+    // ⚠️ `%(refname:short)` が refs/remotes/origin/HEAD をどう縮めるかは
+    //    git のバージョンで変わる（2.39 は `origin/HEAD`、新しい git は `origin`）。
+    //    名前で弾く実装は **ローカルで緑・CI で赤**になった（実際に発生）。
+    //    HEAD 以外の名前の symref で、名前ベースの判定を確実に落とす。
+    const repo = make(['823_c.sql'], { main: ['824_x.sql'] });
+    execFileSync('git', ['symbolic-ref', 'refs/remotes/origin/mirror', 'refs/remotes/origin/main'], {
+      cwd: repo, stdio: 'pipe',
+    });
+
+    const res = runInRepo(repo);
+
+    expect(res.remote?.holders['824']).toEqual(['origin/main']);
+  });
+
   it('【重要】リモート追跡ブランチが1本も無ければ「確認できなかった」にする', () => {
     // 「見たけど 0 件」と同じ扱いにすると出力に何も出ず、確認済みに見えてしまう。
     // remote が origin という名前でない・新しい worktree・浅いチェックアウトで起きる

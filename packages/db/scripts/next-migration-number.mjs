@@ -225,10 +225,23 @@ export async function collectRemoteMigrationNumbers(cwd = process.cwd(), dir = D
 
   let branches;
   try {
-    const { stdout } = await git(['for-each-ref', '--format=%(refname:short)', 'refs/remotes/origin']);
-    // origin/HEAD は origin/main への symref。実体のあるブランチではないので除く
-    // （残すと「826 … origin/HEAD, origin/main」と出て、いもしないレーンが増える）
-    branches = stdout.split('\n').filter((b) => b && b !== 'origin/HEAD');
+    const { stdout } = await git([
+      'for-each-ref',
+      '--format=%(refname:short)%09%(symref)',
+      'refs/remotes/origin',
+    ]);
+    // symref（origin/HEAD → origin/main）は実体のあるブランチではないので除く。
+    // 残すと「826 … origin/HEAD, origin/main」と出て、いもしないレーンが増える。
+    //
+    // ⚠️ 名前で判定してはいけない。`%(refname:short)` が
+    //    `refs/remotes/origin/HEAD` をどう縮めるかは git のバージョンで変わる
+    //    （2.39 は `origin/HEAD`、新しい git は `origin`）。実際 CI だけが赤くなった。
+    //    symref が空かどうかで見れば、どの版でも正しく落とせる。
+    branches = stdout
+      .split('\n')
+      .map((line) => line.split('\t'))
+      .filter(([name, symref]) => name && !symref)
+      .map(([name]) => name);
   } catch (err) {
     return {
       checked: false,
