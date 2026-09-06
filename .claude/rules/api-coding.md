@@ -189,6 +189,52 @@ buildMessage(theme) // OK
 **vitest はこの型エラーを無視して通過する。CI（tsc）で初めて落ちるため気づきにくい。**
 push 前に必ず `npx tsc --noEmit` を実行すること。
 
+### 外部コマンドを叩くコードは「ローカルと CI で版が違う」前提で書く（2026-09-06 追記）
+
+症状: `migration-numbering.test.ts` がローカルで緑・**CI だけ赤**。
+
+```
+expected [ 'origin', 'origin/main' ] to deeply equal [ 'origin/main' ]
+```
+
+原因: `git for-each-ref --format=%(refname:short)` が `refs/remotes/origin/HEAD` を
+どう縮めるかは **git のバージョンで変わる**（ローカル 2.39.5 = `origin/HEAD`、
+CI の新しい git = `origin`）。実装が**名前で**弾いていたため CI では素通りした。
+
+❌ 誤（出力の「表示用の文字列」に依存する）
+```js
+branches = stdout.split('\n').filter((b) => b && b !== 'origin/HEAD');
+```
+
+✅ 正（意味を表すフィールドで判定する）
+```js
+// symref かどうかで見れば、短縮形の綴りが変わっても壊れない
+const { stdout } = await git([
+  'for-each-ref', '--format=%(refname:short)%09%(symref)', 'refs/remotes/origin',
+]);
+branches = stdout
+  .split('\n')
+  .map((line) => line.split('\t'))
+  .filter(([name, symref]) => name && !symref)
+  .map(([name]) => name);
+```
+
+#### テストの書き方も同じ罠を踏む
+
+再現テストを **`origin/HEAD` という名前**で書くと、ローカルの git では
+名前ベースの実装でも通ってしまい、この壊れ方を検出できない
+（実際に検出できず CI まで持ち込んだ）。
+**`origin/mirror` のような別名の symref** で書けば、どの版でも実装の誤りが落ちる。
+
+> 再現テストは「たまたま今の環境で通る値」ではなく、
+> **実装が間違っていたら必ず落ちる値**で書く。
+
+対処:
+- 外部コマンドの**表示用の整形**（短縮名・色・ロケール依存の文言）に依存しない。
+  機械可読な形を選ぶ（`%(symref)` などのフィールド指定・`--porcelain`・`-z`・
+  `git -c core.quotePath=false`（非ASCIIパスのエスケープを止める））
+- ローカルで緑でも安心しない。`git --version` / `node --version` は CI の方が新しい
+
 ### D1テーブルにカラムを追加したらテスト fixture も全件更新する
 TypeScript の型インターフェースにカラムを追加した後、テスト内の定数（`BOOKING1` 等）が
 型を満たさなくなり CI が型エラーで落ちる。
