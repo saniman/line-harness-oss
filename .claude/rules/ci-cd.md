@@ -79,12 +79,41 @@ CI の git / node は**ローカルより新しい**。外部コマンドの「�
 ダッシュボード（Workers & Pages → 対象 Worker → Settings → Triggers）を見たら
 **Cron Triggers が1本も登録されていなかった**。
 
-原因: Cron Triggers は**アカウント単位**で本数の上限がある（無料プランは少ない）。
-上限を超えると **`wrangler deploy` は成功するのに、トリガーだけ登録されない**。
+### 原因: `wrangler deploy` は Cron Triggers を同期していなかった
 
-> ⚠️ **デプロイ成功 ≠ cron が登録された。**
-> CI は緑、コードは正しい、データも条件を満たす。なのに何も動かない。
-> 誰も気づけない類の失敗で、今回は**イベント当日に参加者へ案内が届かない**形で表面化した。
+当初「無料プランのアカウント上限（5本）に当たった」と考えたが、**違った**。
+Cloudflare API で実際に問い合わせたところ:
+
+```
+line-harness      3本（0 23 * * SUN / 0 23 * * WED / 0 */6 * * *）
+shiny-wind-43b1   0本
+────────────────────────────
+アカウント合計    3本   ← 上限には当たっていない。枠は空いていた
+```
+
+`wrangler.toml` には**4本**書いてあるのに、本番には**3本**しか無かった。
+しかも3本の作成日は 2026-06-06 / 06-06 / 06-16 で、**その後の何十回ものデプロイで
+一度も更新されていない**。`*/5 * * * *` だけが欠けた状態が数ヶ月続いていた。
+
+> ⚠️ **`wrangler.toml` に書いてある ≠ 本番に登録されている。**
+> デプロイは成功する。CI は緑。コードは正しい。データも条件を満たす。
+> なのに何も動かない。誰も気づけない類の失敗で、今回は
+> **イベント当日に参加者へ案内が届かない**形で表面化した。
+
+復旧は API で4本を明示的に登録して行った（登録の1分後に配信された）。
+
+```bash
+TOKEN=$(grep '^oauth_token' ~/.wrangler/config/default.toml | sed 's/.*= *"//; s/"$//')
+ACCT=<account_id>   # apps/worker/dist/line_harness/wrangler.json の account_id
+# ⚠️ このエンドポイントは一覧を**丸ごと置き換える**。必ず全部を送る
+curl -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  --data '[{"cron":"*/5 * * * *"},{"cron":"0 */6 * * *"},{"cron":"0 23 * * SUN"},{"cron":"0 23 * * WED"}]' \
+  "https://api.cloudflare.com/client/v4/accounts/$ACCT/workers/scripts/line-harness/schedules"
+
+# 確認（GET すると現在の登録が見える）
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "https://api.cloudflare.com/client/v4/accounts/$ACCT/workers/scripts/line-harness/schedules"
+```
 
 ### 対処
 
@@ -92,7 +121,10 @@ CI の git / node は**ローカルより新しい**。外部コマンドの「�
   1本（`*/5 * * * *`）に寄せて中で時刻判定すれば本数は増えない。
   本数を増やすほど上限に当たりやすく、かつ
   「`*/5` と `0 */6` が 00:00/06:00/12:00/18:00 UTC で同時発火する」二重実行の罠も増える
-- cron を**追加・変更したときは、ダッシュボードで実際に登録されたか目視する**
+- cron を**追加・変更したときは、上の GET で本番の登録を確認する**。
+  `wrangler.toml` を直しただけ・デプロイしただけでは反映されていないことがある
+- ⚠️ **次のデプロイで消えないか、デプロイ後にもう一度 GET で確認する**
+  （今回 API で入れた `*/5` が、次の `wrangler deploy` で失われないかは未検証）
 - 上限に当たったら、他の Worker の不要な cron を消すか、統合する
 
 ### 同じ症状（「cron で動くはずの処理が動かない」）が出たときの切り分け手順
@@ -108,7 +140,8 @@ npx wrangler d1 execute line-harness --remote --json --command="<DUE_SQL>"
 npx wrangler tail line-harness --format pretty
 ```
 
-- **scheduled が1件も出ない** → cron が発火していない＝**登録側の問題**。ダッシュボードの Triggers を見る
+- **scheduled が1件も出ない** → cron が発火していない＝**登録側の問題**。
+  上の GET で本番の登録一覧を見る（ダッシュボードより確実で速い）
 - **出るが処理が走っていない** → `scheduled()` 内の分岐かサービス側の問題
 
 ⚠️ `scheduled()` は `Promise.allSettled(jobs)` で例外を握るので、
