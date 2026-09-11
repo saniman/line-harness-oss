@@ -184,6 +184,15 @@ export interface EventBookingWithFriend extends EventBookingRow {
   friend_display_name: string | null
   friend_is_following: number | null
   /**
+   * イベントの開催日時（`events.start_at`）。**領収書の領収日はこれだけで決まる**（#113）。
+   *
+   * ⚠️ 受領日時（`cash_received_at`）で代用しないこと。夜のイベントで受付の締めが
+   *    24 時を回ると、イベント翌日付の領収書が出る（本番で発生）。
+   *
+   * null = イベント行が取れなかった。領収日を決められないので発行しない。
+   */
+  event_start_at?: string | null
+  /**
    * 実際に領収書へ載る宛名（サーバーで解決済み）。null = 決められない。
    * 管理画面はこれを表示する（自前で組み立てると実物と食い違う）。
    */
@@ -226,10 +235,16 @@ export async function getEventBookingForReceipt(
   db: D1Database,
   id: number,
 ): Promise<EventBookingWithFriend | null> {
+  // ⚠️ events も **LEFT** JOIN する。INNER にすると、イベント行が消えているときに
+  //    予約ごと取れず「予約が見つかりません」と返ってしまい、運営者が原因を誤解する。
+  //    LEFT なら event_start_at が null になり、呼び出し側が「開催日が取れない」と
+  //    正しく判定できる（services/freee-receipt.ts）。
   const row = await db.prepare(
-    `SELECT b.*, f.display_name AS friend_display_name, f.is_following AS friend_is_following
+    `SELECT b.*, f.display_name AS friend_display_name, f.is_following AS friend_is_following,
+            e.start_at AS event_start_at
      FROM event_bookings b
      LEFT JOIN friends f ON f.id = b.friend_id
+     LEFT JOIN events e ON e.id = b.event_id
      WHERE b.id = ?`,
   ).bind(id).first<EventBookingWithFriend>()
   return row ?? null
