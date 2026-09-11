@@ -199,9 +199,19 @@ export async function issueReceiptForBooking(
     return { issued: false, code: 'no_amount', error: '領収書に載せる金額がありません。' };
   }
 
-  const issueDate = formatJstDate(booking.cash_received_at);
+  // 領収日は**イベント実施日**。現金を受け取ったのはイベント当日なので、これが取引日になる。
+  //
+  // ⚠️ **`cash_received_at` を使わないこと（#113・本番で発生）。**
+  //    あれは運営者が受領ボタンを押した時刻でしかない。夜のイベントで片付けを終えて
+  //    押すと JST の日付をまたぎ、**イベント翌日付の領収書**が出る。
+  //    例: イベント 09/11 19:00 → ボタン 09/12 00:30 → 領収日 09-12
+  //
+  // ⚠️ イベント日が取れないときに `cash_received_at` へフォールバックしないこと。
+  //    「イベント行が消えたときだけ再発する」形でこのバグが戻り、誰も気づけない。
+  //    発行せずに運営者へ返す（現金受領の記録自体は成功のまま。呼び出し側の設計）。
+  const issueDate = booking.event_start_at ? formatJstDate(booking.event_start_at) : null;
   if (!issueDate) {
-    return { issued: false, code: 'bad_date', error: '受領日時を解釈できませんでした。' };
+    return { issued: false, code: 'bad_date', error: 'イベントの開催日を解釈できませんでした。' };
   }
 
   // ────────────────────────────────────────────────────────────────

@@ -27,6 +27,11 @@ function booking(overrides: Record<string, unknown> = {}) {
     status: 'confirmed',
     payment_status: 'cash',
     cash_received_at: '2026-09-06 09:00:00',
+    /**
+     * イベントの開催日時（events.start_at を JOIN したもの）。領収日の唯一の元データ。
+     * jstDatetimeLocalToIso が作る UTC の ISO 8601 形式。
+     */
+    event_start_at: '2026-09-06T00:00:00.000Z',
     receipt_url: null,
     receipt_issued_at: null,
     ...overrides,
@@ -148,9 +153,10 @@ describe('issueReceiptForBooking（正常系）', () => {
     expect(arg.description).toContain('無料セミナー');
   });
 
-  it('発行日は JST の暦日で渡す', async () => {
-    // UTC で渡すと日付が1日ずれた領収書が出る
-    const { db } = makeDb({ booking: booking({ cash_received_at: '2026-09-06 16:30:00' }) });
+  it('領収日は JST の暦日で渡す', async () => {
+    // UTC のまま渡すと日付が1日ずれた領収書が出る
+    // events.start_at は UTC の ISO（JST 09/07 01:30 開始）
+    const { db } = makeDb({ booking: booking({ event_start_at: '2026-09-06T16:30:00.000Z' }) });
     const issuer = makeIssuer();
 
     await issueReceiptForBooking(ENV, db, 1, 5, issuer);
@@ -158,6 +164,57 @@ describe('issueReceiptForBooking（正常系）', () => {
     const arg = vi.mocked(issuer.createReceipt).mock.calls[0][0];
     // UTC 16:30 = JST 翌日 01:30
     expect(arg.issueDate).toBe('2026-09-07');
+  });
+
+  it('領収日はイベント実施日にする（受領ボタンを押した日ではない）', async () => {
+    // #113 の再現。夜のイベントで、片付け後に受領ボタンを押すと日付をまたぐ。
+    //   イベント  JST 2026-09-11 19:00 開始
+    //   ボタン    JST 2026-09-12 00:30（UTC 2026-09-11 15:30）
+    // cash_received_at を見ていると領収日が 09-12 になり、イベント翌日の証憑になる。
+    const { db } = makeDb({
+      booking: booking({
+        event_start_at: '2026-09-11T10:00:00.000Z',
+        cash_received_at: '2026-09-11 15:30:00',
+      }),
+    });
+    const issuer = makeIssuer();
+
+    await issueReceiptForBooking(ENV, db, 1, 5, issuer);
+
+    const arg = vi.mocked(issuer.createReceipt).mock.calls[0][0];
+    expect(arg.issueDate).toBe('2026-09-11');
+  });
+
+  it('受領した時刻が変わっても領収日は動かない', async () => {
+    // 領収日がイベント日**だけ**に依存することを固定する。
+    // 片方だけ直すと「昼のイベントでは合うが夜はずれる」状態に戻る。
+    const issueDates = await Promise.all(
+      ['2026-09-11 00:10:00', '2026-09-11 15:30:00', '2026-09-14 08:00:00'].map(async (receivedAt) => {
+        const { db } = makeDb({
+          booking: booking({ event_start_at: '2026-09-11T10:00:00.000Z', cash_received_at: receivedAt }),
+        });
+        const issuer = makeIssuer();
+        await issueReceiptForBooking(ENV, db, 1, 5, issuer);
+        return vi.mocked(issuer.createReceipt).mock.calls[0][0].issueDate;
+      }),
+    );
+
+    expect(issueDates).toEqual(['2026-09-11', '2026-09-11', '2026-09-11']);
+  });
+
+  it('イベント実施日が取れなければ発行しない（受領日時にフォールバックしない）', async () => {
+    // ⚠️ ここで cash_received_at に逃がすと #113 が「イベントが消えたときだけ再発する」
+    //    形で戻り、しかも誰も気づけない。発行せずに運営者へ返す。
+    const { db, calls } = makeDb({ booking: booking({ event_start_at: null }) });
+    const issuer = makeIssuer();
+
+    const res = await issueReceiptForBooking(ENV, db, 1, 5, issuer);
+
+    expect(res.issued).toBe(false);
+    expect(res.code).toBe('bad_date');
+    expect(issuer.createReceipt).not.toHaveBeenCalled();
+    // 発行権も握らない（握ると次の試行がタイムアウトまで詰まる）
+    expect(calls.claim).toBe(0);
   });
 
   it('URL と発行日時を DB に保存する', async () => {
