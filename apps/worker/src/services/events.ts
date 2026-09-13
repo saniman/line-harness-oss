@@ -184,15 +184,6 @@ export interface EventBookingWithFriend extends EventBookingRow {
   friend_display_name: string | null
   friend_is_following: number | null
   /**
-   * イベントの開催日時（`events.start_at`）。**領収書の領収日はこれだけで決まる**（#113）。
-   *
-   * ⚠️ 受領日時（`cash_received_at`）で代用しないこと。夜のイベントで受付の締めが
-   *    24 時を回ると、イベント翌日付の領収書が出る（本番で発生）。
-   *
-   * null = イベント行が取れなかった。領収日を決められないので発行しない。
-   */
-  event_start_at?: string | null
-  /**
    * 実際に領収書へ載る宛名（サーバーで解決済み）。null = 決められない。
    * 管理画面はこれを表示する（自前で組み立てると実物と食い違う）。
    */
@@ -231,14 +222,32 @@ export async function getEventBookingsAdmin(
  * ⚠️ `getEventBookingById` 自体に JOIN を足さないこと。呼び出し元が多く、
  *    戻り値の形が変わると影響範囲が読めない。この用途専用に分ける。
  */
+export interface EventBookingForReceipt extends EventBookingWithFriend {
+  /**
+   * イベントの開催日時（`events.start_at`）。**領収書の領収日の元データ**（#113）。
+   *
+   * ⚠️ 受領日時（`cash_received_at`）で代用しないこと。夜のイベントで受付の締めが
+   *    24 時を回ると、イベント翌日付の領収書が出る（本番で発生）。
+   *
+   * null = イベント行が取れなかった。領収日を決められないので発行しない。
+   *
+   * ⚠️ **`EventBookingWithFriend` ではなくこの型を必須にしてある。**
+   *    管理画面用の `getEventBookingsAdmin` はこの列を SELECT していないので、
+   *    その行を領収書発行に流用すると全件 `bad_date` で無音に止まる。型で弾く。
+   */
+  event_start_at: string | null
+}
+
 export async function getEventBookingForReceipt(
   db: D1Database,
   id: number,
-): Promise<EventBookingWithFriend | null> {
-  // ⚠️ events も **LEFT** JOIN する。INNER にすると、イベント行が消えているときに
-  //    予約ごと取れず「予約が見つかりません」と返ってしまい、運営者が原因を誤解する。
-  //    LEFT なら event_start_at が null になり、呼び出し側が「開催日が取れない」と
-  //    正しく判定できる（services/freee-receipt.ts）。
+): Promise<EventBookingForReceipt | null> {
+  // events は **LEFT** JOIN にしてある。
+  // `event_bookings.event_id` は `REFERENCES events(id) ON DELETE CASCADE` なので、
+  // **通常は親の無い予約は存在しない**（イベントを消せば予約ごと消える）。
+  // つまり INNER でも実挙動は同じで、これは FK が効かない状況（外部からの流し込み等）に
+  // 備えた保険。INNER だとそのとき予約ごと取れず「予約が見つかりません」という
+  // 見当違いのエラーになるので、LEFT にして「開催日が取れない」と言えるようにしている。
   const row = await db.prepare(
     `SELECT b.*, f.display_name AS friend_display_name, f.is_following AS friend_is_following,
             e.start_at AS event_start_at
@@ -246,7 +255,7 @@ export async function getEventBookingForReceipt(
      LEFT JOIN friends f ON f.id = b.friend_id
      LEFT JOIN events e ON e.id = b.event_id
      WHERE b.id = ?`,
-  ).bind(id).first<EventBookingWithFriend>()
+  ).bind(id).first<EventBookingForReceipt>()
   return row ?? null
 }
 

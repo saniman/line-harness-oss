@@ -156,7 +156,13 @@ describe('issueReceiptForBooking（正常系）', () => {
   it('領収日は JST の暦日で渡す', async () => {
     // UTC のまま渡すと日付が1日ずれた領収書が出る
     // events.start_at は UTC の ISO（JST 09/07 01:30 開始）
-    const { db } = makeDb({ booking: booking({ event_start_at: '2026-09-06T16:30:00.000Z' }) });
+    // 受領は開催より後にしておく（早いと「早い方を採る」分岐に入り、変換の確認にならない）
+    const { db } = makeDb({
+      booking: booking({
+        event_start_at: '2026-09-06T16:30:00.000Z',
+        cash_received_at: '2026-09-06 17:00:00', // JST 09/07 02:00
+      }),
+    });
     const issuer = makeIssuer();
 
     await issueReceiptForBooking(ENV, db, 1, 5, issuer);
@@ -200,6 +206,24 @@ describe('issueReceiptForBooking（正常系）', () => {
     );
 
     expect(issueDates).toEqual(['2026-09-11', '2026-09-11', '2026-09-11']);
+  });
+
+  it('開催前に受領していれば、その受領日を領収日にする（未来日の領収書を出さない）', async () => {
+    // 現金受領ボタンは confirmed && cash && 未受領 でだけ出ており、**開催日を見ていない**。
+    // 開催前に押せてしまうので、イベント日で固定すると「まだ来ていない日付」の
+    // 領収書が出る（証憑として無効）。早い方＝実際にお金が動いた日を使う。
+    const { db } = makeDb({
+      booking: booking({
+        event_start_at: '2026-09-11T10:00:00.000Z', // JST 09/11 19:00 開催
+        cash_received_at: '2026-09-08 01:00:00', // JST 09/08 10:00 に受領（3日前）
+      }),
+    });
+    const issuer = makeIssuer();
+
+    await issueReceiptForBooking(ENV, db, 1, 5, issuer);
+
+    const arg = vi.mocked(issuer.createReceipt).mock.calls[0][0];
+    expect(arg.issueDate).toBe('2026-09-08');
   });
 
   it('イベント実施日が取れなければ発行しない（受領日時にフォールバックしない）', async () => {
