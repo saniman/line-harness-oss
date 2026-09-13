@@ -85,7 +85,7 @@ CI の git / node は**ローカルより新しい**。外部コマンドの「�
 Cloudflare API で実際に問い合わせたところ:
 
 ```
-line-harness      3本（0 23 * * SUN / 0 23 * * WED / 0 */6 * * *）
+line-harness      3本（0 23 * * SUN / 0 23 * * WED / 0 */6 * * *）  ← 2026-09-10 当時
 shiny-wind-43b1   0本
 ────────────────────────────
 アカウント合計    3本   ← 上限には当たっていない。枠は空いていた
@@ -102,12 +102,17 @@ shiny-wind-43b1   0本
 
 復旧は API で4本を明示的に登録して行った（登録の1分後に配信された）。
 
+⚠️ **`--data` は「今あるべき全部」を書く。** このエンドポイントは一覧を丸ごと置き換えるので、
+1本でも書き漏らすと**その場で消える**。逆に、廃止した cron を書いたままにすると**復活する**
+（`0 */6 * * *` は #118 で廃止済み。現在の正は下の3本）。
+最新は `apps/worker/wrangler.toml` の `[triggers] crons` を正とする。
+
 ```bash
 TOKEN=$(grep '^oauth_token' ~/.wrangler/config/default.toml | sed 's/.*= *"//; s/"$//')
 ACCT=<account_id>   # apps/worker/dist/line_harness/wrangler.json の account_id
 # ⚠️ このエンドポイントは一覧を**丸ごと置き換える**。必ず全部を送る
 curl -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  --data '[{"cron":"*/5 * * * *"},{"cron":"0 */6 * * *"},{"cron":"0 23 * * SUN"},{"cron":"0 23 * * WED"}]' \
+  --data '[{"cron":"*/5 * * * *"},{"cron":"0 23 * * SUN"},{"cron":"0 23 * * WED"}]' \
   "https://api.cloudflare.com/client/v4/accounts/$ACCT/workers/scripts/line-harness/schedules"
 
 # 確認（GET すると現在の登録が見える）
@@ -121,6 +126,7 @@ curl -s -H "Authorization: Bearer $TOKEN" \
   1本（`*/5 * * * *`）に寄せて中で時刻判定すれば本数は増えない。
   本数を増やすほど上限に当たりやすく、かつ
   「`*/5` と `0 */6` が 00:00/06:00/12:00/18:00 UTC で同時発火する」二重実行の罠も増える
+  （この組み合わせは #118 で解消済み。expirer は `*/5` に統合した）
 - cron を**追加・変更したときは、上の GET で本番の登録を確認する**。
   `wrangler.toml` を直しただけ・デプロイしただけでは反映されていないことがある
 - ⚠️ **次のデプロイで消えないか、デプロイ後にもう一度 GET で確認する**

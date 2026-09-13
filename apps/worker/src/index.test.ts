@@ -84,7 +84,11 @@ describe('cron の配線（#118）', () => {
 
     await fire('*/5 * * * *', makeEnv());
 
-    expect(spy.mock.calls.some((c) => String(c[0]).includes('booking-expirer'))).toBe(true);
+    // ⚠️ includes だと 'event-booking-expirer error:' にもマッチしてしまい、
+    //    イベント側がエラーを吐くようになった瞬間にこのテストが空振りする
+    expect(
+      spy.mock.calls.some((c) => String(c[0]).startsWith('booking-expirer error:')),
+    ).toBe(true);
     // 片方の失敗で他方まで止めない
     expect(mockRunEventBookingExpirer).toHaveBeenCalled();
     spy.mockRestore();

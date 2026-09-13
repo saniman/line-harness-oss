@@ -95,3 +95,32 @@ describe('runExpirer', () => {
     expect(updates.some((u) => u.sql.includes("status='expired'"))).toBe(true);
   });
 });
+
+describe('1回あたりの件数上限（#118）', () => {
+  test('【重要】1回で捌く件数に上限を置く（サブリクエストの集中を防ぐ）', async () => {
+    // #118 で */5 に移り、配信パイプラインと同じ invocation を共有するようになった。
+    // 1件ごとに UPDATE ×2 ＋ LINE 通知が走るので、上限が大きいと滞留の解消時に
+    // 同 tick の配信系ごと Workers のサブリクエスト上限に当たる。
+    // ⚠️ 5分ごとなので、上限を下げても排出能力はむしろ上がる
+    //    （50×288=14,400件/日 > 従来 200×4=800件/日）。
+    const sqls: string[] = [];
+    const db = {
+      prepare: vi.fn().mockImplementation((sql: string) => {
+        sqls.push(sql);
+        return {
+          bind: vi.fn().mockReturnThis(),
+          all: vi.fn().mockResolvedValue({ results: [] }),
+          first: vi.fn().mockResolvedValue(null),
+          run: vi.fn().mockResolvedValue({ meta: { changes: 0 } }),
+        };
+      }),
+    } as unknown as D1Database;
+
+    await runExpirer(db, { now: new Date(), sender: vi.fn() });
+
+    const select = sqls.find((q) => q.includes("b.status = 'requested'")) ?? '';
+    const m = /LIMIT\s+(\d+)/.exec(select);
+    expect(m).not.toBeNull();
+    expect(Number(m![1])).toBeLessThanOrEqual(50);
+  });
+});
