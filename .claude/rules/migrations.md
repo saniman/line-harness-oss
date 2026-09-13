@@ -135,15 +135,198 @@ schema.sql は新規インストール用の正規ソース（マイグレーシ
   `migrations apply --remote` を自動実行する）。手動適用は CI が使えない例外時のみ。
 - リモート適用（`--remote`）は共有リソースへの操作。並列レーンでは走らせない・実行可否は人間に確認する。
 
-## SQLite ALTER TABLE 制約
-CHECK 制約は ALTER TABLE で変更不可。既存の CHECK 制約を変えたい場合はテーブル再作成が必要：
-  1. 新テーブル作成（v2）
-  2. INSERT INTO v2 SELECT * FROM 旧テーブル
-  3. DROP TABLE 旧テーブル
-  4. ALTER TABLE v2 RENAME TO 旧テーブル名
+## ⛔ テーブル再作成は子テーブルを道連れにする（#110・本番で消失）
 
-> テーブル再作成の詳細な注意（実DDLをカラム順まで確認する・`SELECT *` を使わない・enum廃止はCHECKを触らない等）は
-> `.claude/rules/api-coding.md` の D1操作セクションを参照（worker src を触ると自動ロード）。
+CHECK 制約は `ALTER TABLE` で変更できないため、変えたいときはテーブル再作成になる。
+**その素朴な手順は、子テーブルのデータを全部消す。**
+
+```sql
+-- ❌ この形で本番のデータが消えた（806 / 820）
+CREATE TABLE scenarios_v3 (...);
+INSERT INTO scenarios_v3 (明示列) SELECT 明示列 FROM scenarios;
+DROP TABLE scenarios;        -- ← ここで子に ON DELETE が伝播する
+ALTER TABLE scenarios_v3 RENAME TO scenarios;
+```
+
+SQLite は外部キーが有効なとき **`DROP TABLE` が暗黙の `DELETE FROM` を行い**、
+子へ `ON DELETE CASCADE` / `SET NULL` が伝播する。
+**親は `INSERT ... SELECT` で救われるのに、子は誰も救わない。**
+
+2026-09-03 に 820 を適用し、`scenario_steps` が DB 全体で 0 件になった。
+マイグレーションは成功し、親は残り、アプリもエラーを出さないため、
+**配信されるはずの日に何も起きないことで 8 日後にようやく気づいた**。
+
+### 伝播は 1 段では終わらない（#111）
+
+子が CASCADE で消えるとき、**その子を参照している孫にも伝播する**。
+
+```
+DROP TABLE scenarios
+  ├ scenario_steps    (CASCADE)   行が消える
+  │   └ messages_log  (SET NULL)  紐付けが外れる   ← 2 段目。見落としやすい
+  └ friend_scenarios  (CASCADE)   行が消える
+```
+
+### ⚠️ D1 では `PRAGMA foreign_keys = OFF` が効かない（2026-09-13 実測）
+
+素の SQLite なら PRAGMA で止められるが、**D1 では止まらない**。
+D1 は文ごとに実行するため PRAGMA の設定が次の文に持ち越されない
+（`PRAGMA foreign_keys` を読むと既定で `1`）。
+
+| 方法 | 素の SQLite | **D1** |
+|---|---|---|
+| 何もしない | 子が消える | 子が消える |
+| `PRAGMA foreign_keys = OFF` | ✅ 子が残る | ❌ **子が消える** |
+| `PRAGMA defer_foreign_keys = ON` | ❌ 子が消える | ❌ 子が消える |
+| **子を退避して書き戻す** | ✅ 子が残る | ✅ **子が残る** |
+
+> `defer_foreign_keys` は**制約チェックを遅らせるだけで、CASCADE 動作は止めない**。
+> D1 のドキュメントで見かけるからと選ぶと、素の SQLite でも D1 でもデータが消える。
+
+### ✅ 安全な型（D1 で実測済み）
+
+**退避対象は必ずツールで洗い出す。目視で数えると落とす**（この節の初版が実際に
+`friend_scenarios` を書き落とし、レビューで指摘された）。
+
+下は `scenarios` を作り直す場合の完全な例。`820` の部分は自分のマイグレーション番号にする。
+
+```sql
+-- ═══ ① 巻き添えになる子・孫を退避する ═══
+--
+-- ⚠️ **IF NOT EXISTS を必ず付ける。** マイグレーションは途中で失敗すると
+--    「未適用」のまま再実行される。素の CREATE だと2周目が
+--    `table already exists` で詰まり、人が控えを消してから再実行すると
+--    **空になった子を退避して唯一の控えを潰す**（復旧不能）。
+--    IF NOT EXISTS なら2周目は1周目の控えをそのまま残す（実測確認済み）。
+--
+-- ⚠️ 退避表には番号を入れて所有者を明示する（他のマイグレーションと衝突させない）。
+
+CREATE TABLE IF NOT EXISTS _bk820_scenario_steps   AS SELECT * FROM scenario_steps;    -- CASCADE
+CREATE TABLE IF NOT EXISTS _bk820_friend_scenarios AS SELECT * FROM friend_scenarios;  -- CASCADE
+-- SET NULL の孫は**巨大なことがある**。全列コピーせず、戻すのに要る列だけ・
+-- 紐付いている行だけに絞り、相関サブクエリ用の索引を張る（無いと O(N²) で終わらない）。
+CREATE TABLE IF NOT EXISTS _bk820_messages_log AS
+  SELECT id, scenario_step_id FROM messages_log WHERE scenario_step_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_bk820_messages_log ON _bk820_messages_log (id);
+
+-- ═══ ② 親を作り直す ═══
+CREATE TABLE scenarios_v3 (...);
+INSERT INTO scenarios_v3 (明示列リスト) SELECT 明示列リスト FROM scenarios;
+DROP TABLE scenarios;                       -- 子は空・孫の紐付けは NULL になる（想定内）
+ALTER TABLE scenarios_v3 RENAME TO scenarios;
+
+-- ⚠️ **親のインデックス・トリガーは DROP TABLE と一緒に消える。** 張り直す。
+--    前例: 035_account_management_v2.sql は idx_broadcasts_status を明示的に作り直している。
+CREATE INDEX IF NOT EXISTS idx_scenarios_... ON scenarios (...);
+
+-- ═══ ③ 先に「子の行」を戻す ═══
+--
+-- ⚠️ ここを飛ばして④をやると FOREIGN KEY constraint failed になる
+--    （孫が指す先の子の行がまだ無い）。
+-- ⚠️ FK 列が **nullable** な CASCADE 子は、FK が NULL の行が**生き残っている**。
+--    全行 INSERT すると主キー衝突するので、既に居る行を除く。
+INSERT INTO scenario_steps (明示列リスト)
+  SELECT 明示列リスト FROM _bk820_scenario_steps b
+   WHERE NOT EXISTS (SELECT 1 FROM scenario_steps x WHERE x.id = b.id);
+INSERT INTO friend_scenarios (明示列リスト)
+  SELECT 明示列リスト FROM _bk820_friend_scenarios b
+   WHERE NOT EXISTS (SELECT 1 FROM friend_scenarios x WHERE x.id = b.id);
+
+-- ═══ ④ そのあと「孫の紐付け」を戻す ═══
+--
+-- ⚠️ INSERT で戻さないこと。SET NULL の孫は**行が残っている**ので
+--    UNIQUE constraint failed になる。UPDATE で紐付け列だけ書き戻す。
+UPDATE messages_log SET scenario_step_id = (
+  SELECT b.scenario_step_id FROM _bk820_messages_log b WHERE b.id = messages_log.id
+) WHERE id IN (SELECT id FROM _bk820_messages_log);
+```
+
+### 退避表は同じマイグレーションで消さない
+
+```sql
+-- 821_drop_backup_tables.sql（次のマイグレーション）
+DROP TABLE IF EXISTS _bk820_scenario_steps;
+DROP TABLE IF EXISTS _bk820_friend_scenarios;
+DROP TABLE IF EXISTS _bk820_messages_log;
+```
+
+理由は2つ。
+
+- **途中失敗の再実行に耐えるため。** 同じファイル内で消すと、①の `IF NOT EXISTS` が
+  意味を失う（消してから作り直すので、2周目が空を退避する）
+- **後から気づけるため。** CI が自動適用するので、人が結果を見るのは適用**後**。
+  退避漏れ（例: `friend_scenarios` を落としていた）に気づいた時点で控えが残っていれば戻せる
+
+本番で件数を確認し、問題ないと判断してから次のマイグレーションで落とす。
+
+### 復元の形は「消え方」で決まる
+
+| 巻き添えの種類 | 何が起きたか | 戻し方 |
+|---|---|---|
+| `CASCADE` ＋ FK が `NOT NULL` | 行が全部消える | `INSERT INTO <子> (明示列) SELECT ...` |
+| `CASCADE` ＋ FK が nullable | FK が NULL の行だけ残る | `INSERT ... WHERE NOT EXISTS (...)` |
+| `SET NULL` | 行は残り**紐付け列が NULL** | `UPDATE <子> SET <FK列> = (...)` |
+
+### 書くときのチェックリスト
+
+- [ ] **`audit-cascade-loss.mjs` の出力に載っている子を全部**退避したか（目視で数えない）
+- [ ] **孫**まで見たか（CASCADE の子を参照する表にも伝播する）
+- [ ] 退避は `CREATE TABLE IF NOT EXISTS`（再実行で控えを潰さない）
+- [ ] 退避表に番号を入れたか／**同じマイグレーションで消していない**か
+- [ ] 巨大な表は列と行を絞り、相関サブクエリ用の索引を張ったか
+- [ ] 親の**インデックス・トリガー**を張り直したか
+- [ ] 戻す順番は「**子の行 → 孫の紐付け**」か（逆は FK 違反）
+- [ ] `SET NULL` を `INSERT` で戻していないか（主キー衝突）
+- [ ] `INSERT` は**明示列リスト**か（`SELECT *` は実 DB の列順に依存して壊れる）
+- [ ] **データを入れた状態で**ローカル検証したか（次項）
+
+### ⚠️ 空の DB で検算しても意味が無い
+
+ローカル D1 は本番のデータを持っていない。件数を数えても `0 = 0` で必ず通るので、
+**①③④ を丸ごと書き忘れた素朴な手順（＝ 820 そのもの）でも緑になる**。
+820 が誰にも止められずに本番へ出たのは、まさにこの穴。
+
+必ず**先に種データを入れてから**適用する。
+
+```bash
+# apps/worker から実行
+# 1) 親と子に数行入れる（本番を模す。id は実スキーマに合わせる）
+pnpm exec wrangler d1 execute line-harness --local --command="INSERT INTO ..."
+
+# 2) 適用前の件数を控える
+pnpm exec wrangler d1 execute line-harness --local \
+  --command="SELECT (SELECT COUNT(*) FROM <子>) AS child,
+                    (SELECT COUNT(*) FROM <孫> WHERE <FK列> IS NOT NULL) AS link_kept"
+
+# 3) マイグレーションを適用し、2) と同じクエリで**数が一致する**ことを確認する
+pnpm exec wrangler d1 migrations apply line-harness --local
+```
+
+> 件数が減っていたら退避漏れ。**0 件どうしの一致は「通った」ではない。**
+
+### 影響範囲の洗い出し
+
+**先に再作成マイグレーションを書いてから**流す。スクリプトは `migrations/*.sql` を読むので、
+書きかけのファイルも対象になる。書く前に流すと自分の `DROP TABLE` は出てこない
+（空の出力が「被害なし」と区別できない）。
+
+```bash
+# ① 本番の実スキーマを取る（apps/worker から。schema.sql は実 DB とズレるので結論には使わない）
+cd apps/worker && pnpm exec wrangler d1 execute line-harness --remote --json \
+  --command="SELECT name, sql FROM sqlite_master WHERE type='table'" > /tmp/master.json
+
+# ② 洗い出す（リポジトリのルートから）
+cd "$(git rev-parse --show-toplevel)" \
+  && node packages/db/scripts/audit-cascade-loss.mjs --schema /tmp/master.json
+```
+
+過去 6 本の `DROP TABLE` の被害調査結果は `packages/db/MIGRATIONS.md` に記録済み。
+
+> ⚠️ **適用済みのマイグレーションは修正しない。** ファイルを変えると再適用されて本番が壊れる。
+> すでに消えたデータは、運営者が作り直すしかない。
+
+> テーブル再作成の他の注意（実 DDL をカラム順まで確認する・enum 廃止は CHECK を触らない等）は
+> `.claude/rules/api-coding.md` の D1 操作セクションを参照（worker src を触ると自動ロード）。
 
 
 ## 並列レーンでの採番（Issue #69・2026-09-06）

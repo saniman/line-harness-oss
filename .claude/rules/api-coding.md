@@ -78,6 +78,19 @@ UPDATE menus SET menu_type='food' WHERE id LIKE 'seedmo-%' AND menu_type<>'food'
   → シードはファイル化し、`pnpm exec wrangler d1 execute … --command="$(cat seed.sql)"` で読み込む
   （`pnpm exec` の `--command` は速く確認プロンプトも出ない。`--remote` でも対話なし）
 
+### ⛔ テーブル再作成の前に必ず読む: 子テーブルが道連れになる（#110・本番で消失）
+
+`DROP TABLE <親>` は、外部キーが有効だと**暗黙の `DELETE FROM` を行い子へ伝播する**。
+親は `INSERT ... SELECT` で救われるのに、子は誰も救わない。
+2026-09-03 に本番で `scenario_steps` が全消しになり、気づくまで 8 日かかった。
+
+**D1 では `PRAGMA foreign_keys = OFF` が効かない**（実測済み）。
+子を一時表へ退避して書き戻すしかない。**孫まで伝播する**ことにも注意。
+
+👉 安全な型（コピペ可能）と洗い出し手順は **`.claude/rules/migrations.md`
+「テーブル再作成は子テーブルを道連れにする」** にある。**先にそちらを読むこと。**
+下の「カラム順」の注意は、そのうえで守る。
+
 ### CHECK制約変更のテーブル再作成は実DBのカラム順に厳密一致させる（2026-06-13 追記）
 
 症状: schema.sql の定義が実DBと乖離していることがある。後続の `ALTER TABLE ADD COLUMN` の
