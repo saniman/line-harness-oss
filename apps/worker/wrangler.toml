@@ -35,7 +35,7 @@ migrations_dir = "../../packages/db/migrations"
 # bucket_name = "line-harness-images"
 
 [triggers]
-crons = ["*/5 * * * *", "0 */6 * * *", "0 23 * * SUN", "0 23 * * WED"]  # 6h=booking expirer SUN=月曜08:00 JST(AIニュース) WED=木曜08:00 JST(プロンプト)
+crons = ["*/5 * * * *", "0 23 * * SUN", "0 23 * * WED"]  # SUN=月曜08:00 JST(AIニュース) WED=木曜08:00 JST(プロンプト)。expirer は */5 に統合（#118）
 
 # Workers Logs（#49）。console.error だけのベストエフォート処理が「無音で失敗」しても
 # 後から追えるようにする。イベント申込のメール通知が一度も動いていなかったのに
@@ -111,4 +111,4 @@ enabled = true
 head_sampling_rate = 1
 
 [env.production.triggers]
-crons = ["*/5 * * * *", "0 */6 * * *", "0 23 * * SUN", "0 23 * * WED"]  # 6h=booking expirer SUN=月曜08:00 JST(AIニュース) WED=木曜08:00 JST(プロンプト)
+crons = ["*/5 * * * *", "0 23 * * SUN", "0 23 * * WED"]  # SUN=月曜08:00 JST(AIニュース) WED=木曜08:00 JST(プロンプト)。expirer は */5 に統合（#118）

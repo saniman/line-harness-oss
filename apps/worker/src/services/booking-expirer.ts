@@ -44,7 +44,12 @@ export async function runExpirer(
          INNER JOIN friends f ON f.id = b.friend_id
         WHERE b.status = 'requested'
           AND b.requested_at < ?
-        LIMIT 200`,
+        -- ⚠️ 1回あたりの件数を絞る（#118）。この処理は */5 に移り、配信パイプラインと
+        --    同じ invocation でサブリクエスト予算を共有するようになった。1件ごとに
+        --    UPDATE ×2 ＋ LINE 通知が走るので、大きいと滞留の解消時に同 tick の配信系ごと
+        --    Workers の上限に当たる。
+        --    5分ごとなので**排出能力はむしろ上がる**（50×288=14,400件/日 > 旧 200×4=800件/日）。
+        LIMIT 50`,
     )
     .bind(cutoff)
     .all<StaleRow>();
