@@ -445,6 +445,34 @@ async function scheduled(
     jobs.push(checkAccountHealth(env.DB));
     jobs.push(refreshLineAccessTokens(env.DB));
 
+    // 掃除系（#118。以前は `0 */6 * * *` で回していた）。
+    // どちらも締切が「今 − TTL」の絶対時刻＋条件付き UPDATE なので、
+    // 5分ごとに走っても冪等。むしろ LIMIT があるぶん捌けが良くなる。
+    //
+    // ⚠️ cron を1本に減らすのが目的。`*/5` と `0 */6` は 00:00/06:00/12:00/18:00 UTC で
+    //    同時発火し、at-least-once な配信が二重に走る罠があった（2026-06-17 の事故）。
+    //
+    // ⚠️ **2つは独立して失敗させる。** 片方が落ちても他方は動かす
+    //    （Promise.allSettled なので、ここで catch しなくても他のジョブは止まらない）。
+    jobs.push(
+      runExpirer(env.DB, { now: new Date(), sender: sendBookingNotification })
+        .then((r) => {
+          console.log(
+            `[booking-expirer] expired=${r.expired} idempotency_purged=${r.idempotencyPurged}`,
+          );
+        })
+        .catch((e) => { console.error('booking-expirer error:', e); }),
+    );
+    // イベント申込の掃除ネット（Issue #56）。
+    // 本来は checkout.session.expired webhook が即座に片付けるが、webhook は
+    // Stripe ダッシュボードで送信イベントを有効化しないと飛んでこない。
+    // 設定漏れに気づく手立てが無いため、届かなくても最終的に片付くようにする。
+    jobs.push(
+      runEventBookingExpirer(env.DB, { now: new Date() })
+        .then((r) => { console.log(`[event-booking-expirer] expired=${r.expired}`); })
+        .catch((e) => { console.error('event-booking-expirer error:', e); }),
+    );
+
     await Promise.allSettled(jobs);
 
     // Fetch broadcast insights (runs daily, self-throttled)
@@ -474,33 +502,6 @@ async function scheduled(
       }
     } catch (e) {
       console.error('booking-reminders error:', e);
-    }
-  }
-
-  // Salon booking expirer — 6h cron tick only.
-  if (cronExpr === '0 */6 * * *') {
-    try {
-      const result = await runExpirer(env.DB, {
-        now: new Date(),
-        sender: sendBookingNotification,
-      });
-      console.log(
-        `[booking-expirer] expired=${result.expired} idempotency_purged=${result.idempotencyPurged}`,
-      );
-    } catch (e) {
-      console.error('booking-expirer error:', e);
-    }
-
-    // イベント申込の掃除ネット（Issue #56）。
-    // 本来は checkout.session.expired webhook が即座に片付けるが、webhook は
-    // Stripe ダッシュボードで送信イベントを有効化しないと飛んでこない。
-    // 設定漏れに気づく手立てが無いため、届かなくても最終的に片付くようにする。
-    // サロン予約の expirer とは独立して失敗させる（片方が落ちても他方は動かす）。
-    try {
-      const evResult = await runEventBookingExpirer(env.DB, { now: new Date() });
-      console.log(`[event-booking-expirer] expired=${evResult.expired}`);
-    } catch (e) {
-      console.error('event-booking-expirer error:', e);
     }
   }
 }
