@@ -199,10 +199,35 @@ export async function issueReceiptForBooking(
     return { issued: false, code: 'no_amount', error: '領収書に載せる金額がありません。' };
   }
 
-  const issueDate = formatJstDate(booking.cash_received_at);
-  if (!issueDate) {
+  // 領収日は「お金が動いた日」。現金はイベント当日に受け取る運用なので、原則は開催日。
+  //
+  // ⚠️ **受領ボタンを押した時刻（`cash_received_at`）をそのまま使わないこと（#113・本番で発生）。**
+  //    夜のイベントで片付けを終えて押すと JST の日付をまたぎ、**イベント翌日付**の領収書が出る。
+  //    例: イベント 09/11 19:00 → ボタン 09/12 00:30 → 領収日 09-12
+  //
+  // ⚠️ **開催日で固定もしないこと。** 受領ボタンは `confirmed && cash && 未受領` でだけ出ており
+  //    **開催日を見ていない**（UI にも markCashReceived にもガードが無い）。開催前に押せるので、
+  //    開催日に固定すると**まだ来ていない日付**の領収書が出る＝証憑として無効。
+  //
+  // 早い方を採ると、どちらの向きのズレも同時に塞げる。
+  //    当日受領 → 翌 00:30 に押す  min(09-11, 09-12) = 09-11  （#113 の修正）
+  //    押し忘れて 3 日後に押す      min(09-11, 09-14) = 09-11  （同上）
+  //    誤って 3 日前に押す          min(09-11, 09-08) = 09-08  （未来日にしない）
+  //
+  // ⚠️ 開催日が取れないときに受領日時へフォールバックしないこと。
+  //    「イベント行が取れないときだけ再発する」形で #113 が戻り、誰も気づけない。
+  //    発行せずに運営者へ返す（現金受領の記録自体は成功のまま。呼び出し側の設計）。
+  const eventDate = booking.event_start_at ? formatJstDate(booking.event_start_at) : null;
+  if (!eventDate) {
+    return { issued: false, code: 'bad_date', error: 'イベントの開催日を解釈できませんでした。' };
+  }
+  // cash_received_at はここまでのガードで非 null。解釈できない値はデータ破損なので発行しない。
+  const receivedDate = formatJstDate(booking.cash_received_at);
+  if (!receivedDate) {
     return { issued: false, code: 'bad_date', error: '受領日時を解釈できませんでした。' };
   }
+  // YYYY-MM-DD は辞書順＝時系列順なので、そのまま比較してよい
+  const issueDate = receivedDate < eventDate ? receivedDate : eventDate;
 
   // ────────────────────────────────────────────────────────────────
   // ここから先は freee を呼ぶ。**先に発行権を取ってから呼ぶ**。
