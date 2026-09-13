@@ -16,7 +16,7 @@
 import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -34,6 +34,12 @@ interface Finding {
   /** rows_deleted = 行ごと消える / link_cleared = 紐付けだけ外れる */
   risk: string;
   timeColumn: string | null;
+  /** 直接の子は 0、孫は 1（CASCADE を何段たどったか） */
+  depth: number;
+  /** 落とされた親から子までの経路 */
+  via: string[];
+  /** 外部キーの列名（SET NULL で紐付けが外れる列） */
+  column: string | null;
 }
 
 interface Report {
@@ -170,6 +176,142 @@ CREATE TABLE kids (id TEXT PRIMARY KEY, parent_id TEXT REFERENCES parents (id));
         const hit = report.findings.find((f) => f.child === 'kids');
         expect(hit?.onDelete).toBe('NO ACTION');
         expect(hit?.risk).not.toBe('rows_deleted');
+      },
+    );
+  });
+
+  it('【2次伝播】孫まで追う（scenario_steps が消えると messages_log の紐付けも外れる）', () => {
+    // 初版はここを見落としていた。子が CASCADE で消えるとき、その子を参照している
+    // 孫にも ON DELETE が効く。直接の子だけ見ると 2 段目を丸ごと取りこぼす。
+    withFixture(
+      { '900_drop.sql': 'DROP TABLE parents;' },
+      `CREATE TABLE parents (id TEXT PRIMARY KEY);
+CREATE TABLE kids (
+  id TEXT PRIMARY KEY,
+  parent_id TEXT NOT NULL REFERENCES parents (id) ON DELETE CASCADE,
+  created_at TEXT
+);
+CREATE TABLE logs (
+  id TEXT PRIMARY KEY,
+  kid_id TEXT REFERENCES kids (id) ON DELETE SET NULL,
+  created_at TEXT
+);`,
+      (args) => {
+        const report = run(args);
+        const grandchild = report.findings.find((f) => f.child === 'logs');
+        expect(grandchild).toBeDefined();
+        expect(grandchild?.depth).toBe(1);
+        expect(grandchild?.risk).toBe('link_cleared');
+        expect(grandchild?.via).toEqual(['parents', 'kids', 'logs']);
+      },
+    );
+  });
+
+  it('【2次伝播】SET NULL で止まる（行が残るので、その先へは伝播しない）', () => {
+    withFixture(
+      { '900_drop.sql': 'DROP TABLE parents;' },
+      `CREATE TABLE parents (id TEXT PRIMARY KEY);
+CREATE TABLE kids (id TEXT PRIMARY KEY, parent_id TEXT REFERENCES parents (id) ON DELETE SET NULL);
+CREATE TABLE logs (id TEXT PRIMARY KEY, kid_id TEXT REFERENCES kids (id) ON DELETE CASCADE);`,
+      (args) => {
+        const report = run(args);
+        expect(report.findings.some((f) => f.child === 'kids')).toBe(true);
+        // kids の行は残るので logs には何も起きない
+        expect(report.findings.some((f) => f.child === 'logs')).toBe(false);
+      },
+    );
+  });
+
+  it('本番でも 2 次伝播を検出する（scenarios → scenario_steps → messages_log）', () => {
+    // schema.sql にもこの経路はある。実データの判定根拠になるので回帰で固定する
+    const report = runOnRepo();
+    const hit = report.findings.find(
+      (f) => f.child === 'messages_log' && f.parent === 'scenario_steps',
+    );
+    expect(hit?.onDelete).toBe('SET NULL');
+    expect(hit?.via).toEqual(['scenarios', 'scenario_steps', 'messages_log']);
+  });
+
+  it('シンボリックリンク経由で実行しても結果を出す', () => {
+    // ⚠️ argv[1] を realpath に揃えないと import.meta.url と一致せず、
+    //    **何も出力せず exit 0** になる。それは「被害ゼロ」と見分けがつかない。
+    //    兄弟スクリプト（next-migration-number.mjs）が踏んだ罠と同じ。
+    const dir = mkdtempSync(join(tmpdir(), 'cascade-audit-link-'));
+    try {
+      const link = join(dir, 'audit-link.mjs');
+      symlinkSync(SCRIPT, link);
+      const out = execFileSync('node', [
+        link,
+        '--migrations', join(REPO_ROOT, 'packages/db/migrations'),
+        '--schema', join(REPO_ROOT, 'packages/db/schema.sql'),
+        '--json',
+      ], { encoding: 'utf8' });
+      expect(out.trim()).not.toBe('');
+      expect((JSON.parse(out) as Report).findings.length).toBeGreaterThan(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('ブロックコメント内の DROP TABLE は実在しない', () => {
+    // コメントアウトされた DROP を拾うと、ありもしない被害を報告する
+    withFixture(
+      { '900_drop.sql': '/* 検討したがやめた\n DROP TABLE parents;\n */\nALTER TABLE kids ADD COLUMN memo TEXT;' },
+      `CREATE TABLE parents (id TEXT PRIMARY KEY);
+CREATE TABLE kids (id TEXT PRIMARY KEY, parent_id TEXT REFERENCES parents (id) ON DELETE CASCADE);`,
+      (args) => {
+        const report = run(args);
+        expect(report.drops).toHaveLength(0);
+        expect(report.findings).toHaveLength(0);
+      },
+    );
+  });
+
+  it('コメントアウトされた外部キーを子として拾わない', () => {
+    // マイグレーション側だけコメントを落としてスキーマ側を落とさないと、
+    // 同じ書き方が片方でだけ通る非対称な挙動になる
+    withFixture(
+      { '900_drop.sql': 'DROP TABLE parents;' },
+      `CREATE TABLE parents (id TEXT PRIMARY KEY);
+CREATE TABLE kids (
+  id TEXT PRIMARY KEY,
+  -- parent_id TEXT REFERENCES parents (id) ON DELETE CASCADE,
+  memo TEXT
+);`,
+      (args) => {
+        const report = run(args);
+        expect(report.findings).toHaveLength(0);
+      },
+    );
+  });
+
+  it('1行で書かれた CREATE TABLE でも時刻列を見つける', () => {
+    // ⚠️ sqlite_master が返す sql は 1 行のことがある。改行で列を割っていると
+    //    最初の列しか拾えず、時刻列が null になり「適用日より前の行が残っているか」の
+    //    クエリが**黙って出力されない**。それは「消えた」と「元々無かった」を分ける
+    //    唯一の根拠なので、欠けると調査の結論が崩れる。
+    withFixture(
+      { '900_drop.sql': 'DROP TABLE parents;' },
+      `CREATE TABLE parents (id TEXT PRIMARY KEY);
+CREATE TABLE kids (id TEXT PRIMARY KEY, status TEXT CHECK (status IN ('a','b')), parent_id TEXT REFERENCES parents (id) ON DELETE CASCADE, created_at TEXT);`,
+      (args) => {
+        const report = run(args);
+        const hit = report.findings.find((f) => f.child === 'kids');
+        expect(hit?.timeColumn).toBe('created_at');
+        expect(report.queries.some((q) => q.includes('MIN(created_at)'))).toBe(true);
+      },
+    );
+  });
+
+  it('SET NULL の子には、紐付けが外れた件数を数えるクエリを出す', () => {
+    withFixture(
+      { '900_drop.sql': 'DROP TABLE parents;' },
+      `CREATE TABLE parents (id TEXT PRIMARY KEY);
+CREATE TABLE kids (id TEXT PRIMARY KEY, parent_id TEXT REFERENCES parents (id) ON DELETE SET NULL, created_at TEXT);`,
+      (args) => {
+        const report = run(args);
+        expect(report.findings.find((f) => f.child === 'kids')?.column).toBe('parent_id');
+        expect(report.queries.some((q) => /SUM\(CASE WHEN parent_id IS NULL/.test(q))).toBe(true);
       },
     );
   });
