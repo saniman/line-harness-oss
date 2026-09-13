@@ -278,3 +278,122 @@ fork の `events` テーブルは upstream と**根本的に異なる設計**を
 
 upstream の `037_event_booking.sql` はこの設計差のため適用不可。
 将来的には fork の Stripe 統合を upstream に PR することで解消を目指す（`docs/OSS-SYNC-CHARTER.md` 参照）。
+
+---
+
+## `DROP TABLE` の巻き添え被害 洗い出し結果（Issue #111・2026-09-13 実施）
+
+`DROP TABLE <親>` は、外部キーが有効な SQLite では暗黙の `DELETE FROM <親>` を行い、
+子テーブルへ `ON DELETE` が伝播する。テーブル再作成は親を `INSERT ... SELECT` で救うが、
+**子は誰も救わない**（詳細と再発防止は #110）。
+
+### 伝播は 1 段では終わらない
+
+子が CASCADE で消えるとき、**その子を参照している孫にも伝播する**。
+
+```
+DROP TABLE scenarios
+  ├ scenario_steps    (CASCADE)   行が消える
+  │   └ messages_log  (SET NULL)  紐付けが外れる   ← 2 段目
+  ├ friend_scenarios  (CASCADE)   行が消える
+  └ entry_routes / tracked_links / forms (SET NULL)
+```
+
+直接の子だけを見ると 2 段目を丸ごと見落とす（本調査の初版で実際に見落とした）。
+
+### 洗い出しの手順
+
+`packages/db/scripts/audit-cascade-loss.mjs` を使う（読み取り専用）。
+
+```bash
+pnpm exec wrangler d1 execute line-harness --remote --json \
+  --command="SELECT name, sql FROM sqlite_master WHERE type='table'" > /tmp/master.json
+node packages/db/scripts/audit-cascade-loss.mjs --schema /tmp/master.json
+```
+
+> ⚠️ `--schema` に **`schema.sql` を使わないこと**。実 DB にだけ存在する参照が
+> **3 本**（`entry_routes` / `tracked_links` / `forms` → `scenarios`）あり、
+> `schema.sql` で走らせると結果が食い違う。
+>
+> ⚠️ **スキーマは「今」の姿しか分からない。** 突き合わせているのは過去に実行された
+> `DROP TABLE` なので、当時の `ON DELETE` が今と同じとは限らず、DROP より後に
+> 追加された子も混ざる。下表は**当時のマイグレーション本文と実データで裏を取った結果**であり、
+> スクリプトの出力そのものではない。
+
+### 対象マイグレーション（`DROP TABLE` を含む 6 本）
+
+| マイグレーション | 本番適用日 | 落とす親 |
+|---|---|---|
+| `027_dedup_delivery.sql` | — | `friend_scenarios` |
+| `032_event_bookings_pending.sql` | — | `event_bookings` |
+| `035_account_management_v2.sql` | 2026-06-03 | `broadcasts` |
+| `804_event_bookings_pending.sql` | — | `event_bookings` |
+| `806_scenarios_event_booking_trigger.sql` | 2026-06-13 | `scenarios` |
+| `820_scenarios_event_cancelled_trigger.sql` | 2026-09-03 | `scenarios` |
+
+### 判定結果
+
+| 伝播先 | 経路 | 挙動 | 現在 | 最古データ | 判定 |
+|---|---|---|---|---|---|
+| `scenario_steps` | 806 / 820 ← `scenarios` | CASCADE | 1 件 | 2026-09-11 19:58 | ❌ **消失確定** |
+| `friend_scenarios` | 806 / 820 ← `scenarios` | CASCADE | 5 件 | 2026-09-06 | ❌ **消失の疑い濃厚** |
+| `messages_log.scenario_step_id` | 806 / 820 ← `scenarios` ← `scenario_steps` | SET NULL | 非 NULL **0 件** | — | ❌ **紐付けは失われている**（件数は復元不能） |
+| `broadcast_insights` | 035 ← `broadcasts` | CASCADE | 1 件 | 2026-07-04 | ⚠️ 判定不能（実害小） |
+| `messages_log.broadcast_id` | 035 ← `broadcasts` | SET NULL | 非 NULL **0 件** | — | ⚠️ 判定不能 |
+| `entry_routes` | 806 / 820 ← `scenarios` | SET NULL | 0 件 | — | ✅ 実害なし（未使用） |
+| `tracked_links` | 806 / 820 ← `scenarios` | SET NULL | 0 件 | — | ✅ 実害なし（未使用） |
+| `forms` | 806 / 820 ← `scenarios` | SET NULL | 0 件 | — | ✅ 実害なし（未使用） |
+| `event_bookings`（032 / 804） | — | — | — | — | ✅ **伝播先なし** |
+| `friend_scenarios`（027 で親として） | — | — | — | — | ✅ **伝播先なし**（ただし下記注意） |
+
+> ⚠️ **「伝播先なし」は「そのテーブルのデータが無事」という意味ではない。**
+> スクリプトが見ているのは巻き添えだけで、マイグレーション本文が明示的に
+> `DELETE` している場合は別。実際 `027_dedup_delivery.sql` は冒頭で
+> `DELETE FROM friend_scenarios WHERE status != 'completed' AND ...` を実行しており、
+> これは意図した重複排除だが、**巻き添えの調査では検出されない**。
+
+### 根拠
+
+**`scenario_steps`（消失確定）**
+現存する 1 件は `2026-09-11 19:58` 作成＝ #110 の調査当日に手で作り直したもの。
+820 の適用（2026-09-03）より前の行は 1 件も無い。#110 で素の SQLite による再現も済み。
+
+**`friend_scenarios`（消失の疑い濃厚）** ← 本調査で新たに判明
+820 の適用（2026-09-03）より前の行が 1 件も無い。現存 5 件は最古 `2026-09-06` で、
+**全件が `completed`**。これは #110 が書いた「ステップ 0 件のシナリオは登録された瞬間に
+`completed` になる」という壊れ方と完全に一致する＝事故**後**に積まれた行しかない。
+イベント参加者の自動登録は 2026-06-13 から稼働しているため、行が存在したはず。
+
+**`messages_log.scenario_step_id`（紐付けは失われている）** ← 本調査で新たに判明
+`scenario_steps` の消失は確定しているので、**紐付いていた行があったなら必ず NULL になっている**
+（構造上そうなる）。実際、非 NULL の行は現在 0 件。
+配信コード（`services/step-delivery.ts:264`）は `scenario_step_id` を書いているので、
+シナリオ配信が行われていれば紐付きがあったはず。
+
+⚠️ ただし **何件失われたかは復元できない**。今 0 件なのが「外された」のか
+「元々配信が無かった」のかは、残っている情報からは区別できない。
+実害は「**どのメッセージがシナリオ配信だったのか、もう区別できない**」こと。
+
+**`broadcast_insights`（判定不能）**
+テーブル自体は `013` で作成済みなので 035 より前から存在した。035 より前の `broadcasts` は
+4 件あるが、insights を持つ broadcast は**全期間で 1 件だけ**（最古 2026-07-04）。
+インサイトは画面から都度取得する機能で利用自体が少なく、「消えた」のか
+「元々取っていない」のか区別できない。**LINE API から再取得できるため実害は小さい。**
+
+**`messages_log.broadcast_id`（判定不能）**
+250 件すべて NULL。内訳は `delivery_type` が NULL の 244 件と `reply` の 6 件。
+035 適用（2026-06-03）より前が 125 件、後が 125 件（= 244 のうち 119 + `reply` 6）。
+前半だけ見れば SET NULL の被害に見えるが、**035 より後に作られた行も全件 NULL** なので
+「035 が消した」とは断定できない。
+
+> 📌 **別途調査すべき事項**: 一斉配信の本体（`services/broadcast.ts:102`）は
+> `broadcast_id` を正しく bind しているのに、紐付いた行が 1 件も無い。
+> 配信ログと broadcast の紐付けが機能していない疑いがある。
+> #111 のスコープ外なので、必要なら別 Issue を立てること。
+
+### 復旧について
+
+- `scenario_steps` / `friend_scenarios` とも、**運営者による再作成が必要**（このリポジトリの作業ではない）
+- D1 の Time Travel は 30 日。820 の適用は 2026-09-03 なので、
+  **2026-10-03 頃までは復元の余地がある**（ただし DB 全体の巻き戻しになるため、
+  現行データとの突き合わせが必須。安易に実行しないこと）
